@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
@@ -5,6 +6,8 @@ import dotenv from 'dotenv';
 const serverDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const rootDir = path.resolve(serverDir, '..');
 dotenv.config({ path: path.join(rootDir, '.env') });
+const rootPackage = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
+const appVersion = String(rootPackage.version || 'unknown');
 
 const resolveFromRoot = (value, fallback) => {
   const raw = String(value || fallback || '').trim();
@@ -26,6 +29,7 @@ const clientOrigins = Array.from(new Set([
 ]));
 
 export const config = Object.freeze({
+  appVersion,
   port: Number(process.env.PORT || 4300),
   clientOrigins,
   // Kept for compatibility with older diagnostics/UI code.

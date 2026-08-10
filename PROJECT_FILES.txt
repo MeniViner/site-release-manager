@@ -1,6 +1,9 @@
 ./.env.example
+./.env.iis.example
 ./.gitignore
+./CREATE_IIS_PACKAGE.cmd
 ./CREATE_PROJECT_7Z.txt
+./IIS-DEPLOY-README.txt
 ./MIGRATION-v0.2.0.md
 ./PATCH-v0.2.3.txt
 ./PATCH-v0.2.4.txt
@@ -10,6 +13,9 @@
 ./PATCH-v0.2.8.txt
 ./PATCH-v0.2.9.txt
 ./PATCH-v0.3.0.txt
+./PATCH-v0.3.1.txt
+./PATCH-v0.3.2.txt
+./PATCH-v0.3.3.txt
 ./PROJECT_FILES.txt
 ./README.md
 ./REPAIR-v0.2.2.txt
@@ -22,7 +28,10 @@
 ./client/src/releaseFolder.js
 ./client/src/styles.css
 ./client/vite.config.js
+./index.js
 ./package.json
+./scripts/create-iis-package.mjs
+./scripts/deploy-manager-sharepoint.mjs
 ./scripts/dev.mjs
 ./scripts/doctor.mjs
 ./scripts/install-all.mjs
@@ -31,6 +40,7 @@
 ./scripts/project-env.mjs
 ./scripts/setup.mjs
 ./scripts/upgrade-v0.2.mjs
+./scripts/verify-iis-package.mjs
 ./scripts/verify-system.mjs
 ./scripts/verify-transfer.mjs
 ./scripts/write-client-runtime-config.mjs
@@ -52,6 +62,7 @@
 ./server/src/services/seedData.js
 ./server/src/utils/files.js
 ./server/src/utils/versioning.js
+./server/test/deploymentRuntime.test.js
 ./server/test/files.test.js
 ./server/test/runTelemetry.test.js
 ./server/test/versioning.test.js
@@ -61,3 +72,4 @@
 ./sharepoint-deployer/ready/index.html
 ./sharepoint-deployer/ready/styles.css
 ./sharepoint-deployer/scripts/build.mjs
+./web.config

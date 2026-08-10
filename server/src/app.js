@@ -35,7 +35,7 @@ export function createApp() {
   }));
   app.use(express.json({ limit: '2mb' }));
 
-  app.get('/api/health', (_req, res) => res.json({ ok: true }));
+  app.get('/api/health', (_req, res) => res.json({ ok: true, appVersion: config.appVersion, mongoDbName: config.mongoDbName, publicApiUrl: config.publicApiUrl }));
   app.get('/api/config', (_req, res) => res.json({
     sharePointHosts: config.sharePointHosts,
     sharePointDeployerPath: config.sharePointDeployerPath,

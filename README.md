@@ -328,3 +328,39 @@ The Release Manager production UI now loads its API runtime descriptor from the 
 - `RELEASE_MANAGER_SHAREPOINT_DIST_PATH=/sites/alphateam/site_release_manager/dist`
 
 The real SharePoint Deployer production output remains `sharepoint-deployer/client/dist/`.
+
+## v0.3.3 — closed-Windows SharePoint local test workflow
+
+For the first same-computer SharePoint test, `.env` should contain:
+
+```env
+PUBLIC_API_URL=http://127.0.0.1:4300
+MONGO_URI=mongodb://127.0.0.1:27017
+AUTO_START_MONGO=false
+RELEASE_MANAGER_AUTO_SHAREPOINT_DEPLOY=true
+RELEASE_MANAGER_SHAREPOINT_HOST=portal.army.idf
+RELEASE_MANAGER_SHAREPOINT_DIST_PATH=/sites/alphateam/site_release_manager/dist
+```
+
+The simplest test command on the closed Windows workstation is:
+
+```text
+npm run sharepoint:test
+```
+
+It performs the manager UI build, deploys `client/dist` to the configured SharePoint
+folder, then leaves the local Node API running at `127.0.0.1:4300`. Keep that
+terminal open while using the Release Manager UI from SharePoint.
+
+If the manager UI is already deployed, run only:
+
+```text
+npm run sharepoint:local
+```
+
+The production/server phase later changes only `PUBLIC_API_URL` to the internal
+server HTTPS URL. The same SharePoint UI build/runtime-config model remains valid.
+
+The Release Manager still stores universal Site Builder `dist` releases. Site
+identity is not baked into those releases; the Site Builder runtime overlay is
+created per target site during deployment.

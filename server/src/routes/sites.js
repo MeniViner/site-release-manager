@@ -7,6 +7,7 @@ import { createDeploymentJob } from '../services/jobQueue.js';
 export const sitesRouter = Router();
 
 const validSiteCode = (value) => /^[a-z0-9][a-z0-9-]{1,49}$/.test(String(value || '').trim());
+const validPathSegment = (value) => /^[A-Za-z0-9._-]{1,80}$/.test(String(value || '').trim());
 const toDateOrNull = (value) => (value ? new Date(value) : null);
 
 function publicSite(site) {
@@ -34,12 +35,25 @@ sitesRouter.get('/:id', async (req, res, next) => {
 
 sitesRouter.post('/', async (req, res, next) => {
   try {
-    const { mode = 'existing', unit, name, host, siteCode, managerName, currentVersion, firstPublishedAt, lastPublishedAt, releaseId } = req.body || {};
+    const { mode = 'existing', unit, name, host, siteCode, managerName, currentVersion, firstPublishedAt, lastPublishedAt, releaseId, siteDbFolder = 'siteDB', usersDbFolder = 'siteUsersDb', siteAssetsFolder = 'siteAssets', imagesFolder = 'images', widgetsDbTarget = 'users' } = req.body || {};
     const normalizedHost = String(host || '').trim().toLowerCase();
     const normalizedCode = String(siteCode || '').trim().toLowerCase();
     if (!unit || !name || !managerName) return res.status(400).json({ error: 'יחידה, שם האתר ומנהל האתר הם שדות חובה.' });
     if (!config.sharePointHosts.includes(normalizedHost)) return res.status(400).json({ error: 'Host אינו מופיע ברשימת ה-Hosts המוגדרת.' });
     if (!validSiteCode(normalizedCode)) return res.status(400).json({ error: 'קוד האתר חייב להכיל אותיות אנגליות קטנות, מספרים או מקף.' });
+    const normalizedSiteDbFolder = String(siteDbFolder || 'siteDB').trim();
+    const normalizedUsersDbFolder = String(usersDbFolder || 'siteUsersDb').trim();
+    const normalizedSiteAssetsFolder = String(siteAssetsFolder || 'siteAssets').trim();
+    const normalizedImagesFolder = String(imagesFolder || 'images').trim();
+    const normalizedWidgetsDbTarget = String(widgetsDbTarget || 'users').trim().toLowerCase() === 'site' ? 'site' : 'users';
+    for (const [label, value] of [
+      ['siteDbFolder', normalizedSiteDbFolder],
+      ['usersDbFolder', normalizedUsersDbFolder],
+      ['siteAssetsFolder', normalizedSiteAssetsFolder],
+      ['imagesFolder', normalizedImagesFolder],
+    ]) {
+      if (!validPathSegment(value)) return res.status(400).json({ error: `${label} חייב להיות שם תיקייה/ספרייה יחיד ללא נתיב מלא.` });
+    }
 
     const now = new Date();
     const document = {
@@ -50,12 +64,17 @@ sitesRouter.post('/', async (req, res, next) => {
       siteCode: normalizedCode,
       managerName: String(managerName).trim(),
       storageType: 'txt',
+      siteDbFolder: normalizedSiteDbFolder,
+      usersDbFolder: normalizedUsersDbFolder,
+      siteAssetsFolder: normalizedSiteAssetsFolder,
+      imagesFolder: normalizedImagesFolder,
+      widgetsDbTarget: normalizedWidgetsDbTarget,
       status: mode === 'install' ? 'DRAFT' : 'TRACKED',
       currentVersion: currentVersion ? String(currentVersion).trim() : null,
       currentReleaseId: null,
       firstPublishedAt: toDateOrNull(firstPublishedAt),
       lastPublishedAt: toDateOrNull(lastPublishedAt),
-      finalUrl: `https://${normalizedHost}/sites/${normalizedCode}/siteDB/dist/index.html`,
+      finalUrl: `https://${normalizedHost}/sites/${normalizedCode}/${normalizedSiteDbFolder}/dist/index.html`,
       activeJobId: null,
       createdAt: now,
       updatedAt: now,
@@ -74,7 +93,7 @@ sitesRouter.post('/', async (req, res, next) => {
 
 sitesRouter.patch('/:id', async (req, res, next) => {
   try {
-    const allowed = ['unit', 'name', 'managerName', 'currentVersion', 'firstPublishedAt', 'lastPublishedAt'];
+    const allowed = ['unit', 'name', 'managerName', 'currentVersion', 'firstPublishedAt', 'lastPublishedAt', 'siteDbFolder', 'usersDbFolder', 'siteAssetsFolder', 'imagesFolder', 'widgetsDbTarget'];
     const patch = {};
     for (const key of allowed) {
       if (!(key in (req.body || {}))) continue;

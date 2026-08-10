@@ -270,3 +270,24 @@ textarea { resize: vertical; }
 .run-timeline-section{margin-top:4px}.run-event{grid-template-columns:44px 1fr}.run-event:not(:last-child):before{right:21px}.run-event-marker{width:42px;height:42px;border-radius:13px;display:grid;grid-template-columns:1fr;grid-template-rows:1fr auto;gap:0;padding:4px 0 3px}.run-event-marker>span{font-size:10px;font-weight:900;line-height:1}.run-event-marker>svg{justify-self:center}.run-event-body{min-height:68px}.run-raw-logs{margin-top:22px}
 
 @media(max-width:1180px){.run-stage-map{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:760px){.runs-filter-chips{display:grid;grid-template-columns:1fr 1fr}.run-filter-chip{justify-content:flex-start}.run-filter-chip>strong{margin-right:auto}.run-stage-map{grid-template-columns:1fr}.run-detail-actions{width:100%}.run-action-button{flex:1;justify-content:center}.run-modal-header{flex-wrap:wrap}.run-section-heading{align-items:flex-start}.run-section-heading>span{font-size:10px}.run-event{grid-template-columns:38px 1fr}.run-event-marker{width:36px;height:36px}.run-event:not(:last-child):before{right:18px}}
+
+/* v0.3.3 — optional per-site SharePoint path overrides */
+.advanced-site-settings {
+  margin-top: 14px;
+  border: 1px solid #dbe4f0;
+  border-radius: 14px;
+  background: #f8fafc;
+  padding: 12px 14px;
+}
+.advanced-site-settings summary {
+  cursor: pointer;
+  font-weight: 800;
+  color: #334155;
+  user-select: none;
+}
+.advanced-site-settings[open] summary { margin-bottom: 12px; }
+.advanced-site-settings .help-text {
+  margin: 8px 0 0;
+  color: #64748b;
+  font-size: 12px;
+}

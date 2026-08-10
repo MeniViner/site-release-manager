@@ -35,6 +35,7 @@ const required = [
   'server/src/services/runTelemetry.js',
   'server/src/routes/runs.js',
   'server/src/utils/versioning.js',
+  'server/test/deploymentRuntime.test.js',
   'client/src/App.jsx',
   'client/src/RunsPage.jsx',
   'client/src/api.js',
@@ -80,6 +81,7 @@ for (const rel of [
   'server/src/services/runTelemetry.js',
   'server/src/routes/runs.js',
   'server/src/utils/versioning.js',
+  'server/test/deploymentRuntime.test.js',
   'scripts/dev.mjs',
   'scripts/doctor.mjs',
   'scripts/write-client-runtime-config.mjs',
@@ -87,6 +89,27 @@ for (const rel of [
   'scripts/mongo.mjs',
 ]) {
   run(`Syntax ${rel}`, process.execPath, ['--check', rel]);
+}
+
+
+console.log('\n=== Closed-Windows SharePoint configuration checks ===');
+const rootPackage = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+const clientPackage = JSON.parse(fs.readFileSync(path.join(root, 'client', 'package.json'), 'utf8'));
+const appSource = fs.readFileSync(path.join(root, 'client', 'src', 'App.jsx'), 'utf8');
+const viteSource = fs.readFileSync(path.join(root, 'client', 'vite.config.js'), 'utf8');
+const mainSource = fs.readFileSync(path.join(root, 'client', 'src', 'main.jsx'), 'utf8');
+const deploySource = fs.readFileSync(path.join(root, 'scripts', 'deploy-manager-sharepoint.mjs'), 'utf8');
+for (const [label, ok] of [
+  ['Root/client versions match', rootPackage.version === clientPackage.version],
+  ['Sidebar version is dynamic', appSource.includes('clientPackage.version') && !appSource.includes('Site Release Manager 0.3.0')],
+  ['Vite base is relative', /base:\s*['"]\.\/['"]/.test(viteSource)],
+  ['HashRouter is used', mainSource.includes('HashRouter') && !mainSource.includes('BrowserRouter')],
+  ['SharePoint index copy uses Node retry path', deploySource.includes('copyFileSync') && !deploySource.includes("'index.html last'")],
+  ['sharepoint:local script exists', Boolean(rootPackage.scripts?.['sharepoint:local'])],
+  ['sharepoint:test script exists', Boolean(rootPackage.scripts?.['sharepoint:test'])],
+]) {
+  console.log(`${ok ? 'PASS' : 'FAIL'} ${label}`);
+  if (!ok) failed = true;
 }
 
 console.log('\n=== SUMMARY ===');

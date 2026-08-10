@@ -7,6 +7,7 @@ import { resolveNpmInvocation } from './npm-runner.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const includeDeployer = process.argv.includes('--all');
+const apiOnly = process.argv.includes('--api-only');
 const children = [];
 
 ensureProjectEnv(root);
@@ -63,5 +64,10 @@ process.on('SIGINT', () => stopAll(0));
 process.on('SIGTERM', () => stopAll(0));
 
 start('server', path.join(root, 'server'), ['run', 'dev']);
-start('client', path.join(root, 'client'), ['run', 'dev']);
-if (includeDeployer) start('deployer', path.join(root, 'sharepoint-deployer'), ['run', 'dev']);
+if (apiOnly) {
+  console.log('[dev] SharePoint local-test API mode is active. Keep this terminal open while the UI is running from SharePoint.');
+  console.log('[dev] Expected API: http://127.0.0.1:4300/api/health');
+} else {
+  start('client', path.join(root, 'client'), ['run', 'dev']);
+  if (includeDeployer) start('deployer', path.join(root, 'sharepoint-deployer'), ['run', 'dev']);
+}

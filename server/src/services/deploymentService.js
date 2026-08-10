@@ -18,12 +18,17 @@ function deploymentLog(jobId, message) {
   return line;
 }
 
-function siteRuntime(site, release, jobId, deployedAt) {
+export function buildSiteRuntime(site, release, jobId, deployedAt) {
   const siteRoot = `/sites/${site.siteCode}`;
-  const siteDbRoot = `${siteRoot}/siteDB`;
-  const usersDbRoot = `${siteRoot}/siteUsersDb`;
-  const siteAssetsRoot = `${siteDbRoot}/siteAssets`;
-  const imagesRoot = `${siteDbRoot}/images`;
+  const siteDbFolder = String(site.siteDbFolder || 'siteDB').trim();
+  const usersDbFolder = String(site.usersDbFolder || 'siteUsersDb').trim();
+  const siteAssetsFolder = String(site.siteAssetsFolder || 'siteAssets').trim();
+  const imagesFolder = String(site.imagesFolder || 'images').trim();
+  const widgetsDbTarget = String(site.widgetsDbTarget || 'users').trim().toLowerCase() === 'site' ? 'site' : 'users';
+  const siteDbRoot = `${siteRoot}/${siteDbFolder}`;
+  const usersDbRoot = `${siteRoot}/${usersDbFolder}`;
+  const siteAssetsRoot = `${siteDbRoot}/${siteAssetsFolder}`;
+  const imagesRoot = `${siteDbRoot}/${imagesFolder}`;
   const targetDistPath = `${siteDbRoot}/dist`;
   const sharePointSiteUrl = `https://${site.host}${siteRoot}`;
   return {
@@ -32,11 +37,11 @@ function siteRuntime(site, release, jobId, deployedAt) {
     host: site.host,
     siteCode: site.siteCode,
     siteId: site.siteCode,
-    siteDbFolder: 'siteDB',
-    usersDbFolder: 'siteUsersDb',
-    siteAssetsFolder: 'siteAssets',
-    imagesFolder: 'images',
-    widgetsDbTarget: 'users',
+    siteDbFolder,
+    usersDbFolder,
+    siteAssetsFolder,
+    imagesFolder,
+    widgetsDbTarget,
     bootstrapLibrary: 'SiteAssets',
     bootstrapFolder: 'sitebuilder-bootstrap',
     siteRoot,
@@ -48,7 +53,7 @@ function siteRuntime(site, release, jobId, deployedAt) {
     sharePointSiteUrl,
     allowedSiteRoot: sharePointSiteUrl,
     targetDistPath,
-    finalAppUrl: `${sharePointSiteUrl}/siteDB/dist/index.html`,
+    finalAppUrl: `${sharePointSiteUrl}/${siteDbFolder}/dist/index.html`,
     releaseVersion: release.version,
     releaseId: String(release._id),
     deployedAt,
@@ -104,7 +109,7 @@ export async function prepareDeploymentJob(jobId) {
     { $set: { state: 'PREPARING_RELEASE', progress: 25, buildRoot, overlayDir, updatedAt: now } },
   );
 
-  const runtimeConfig = siteRuntime(site, release, jobId, deployedAt);
+  const runtimeConfig = buildSiteRuntime(site, release, jobId, deployedAt);
   writeJson(path.join(overlayDir, 'sitebuilder-runtime-config.json'), runtimeConfig);
   await appendRunEvent(objectId, {
     stage: RUN_STAGES.RUNTIME_CONFIG,

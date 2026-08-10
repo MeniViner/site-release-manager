@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { ensureProjectEnv, readSimpleEnv } from './project-env.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const packageInfo = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+const appVersion = String(packageInfo.version || 'unknown');
 const distDir = path.join(root, 'client', 'dist');
 if (!fs.existsSync(distDir)) {
   throw new Error(`client/dist does not exist: ${distDir}`);
@@ -25,6 +27,7 @@ const payload = {
   apiBaseUrl,
   generatedAt: new Date().toISOString(),
   generatedBy: 'site-release-manager-build',
+  appVersion,
 };
 const serialized = `${JSON.stringify(payload, null, 2)}\n`;
 
@@ -36,11 +39,13 @@ fs.writeFileSync(txtTarget, serialized, 'utf8');
 const diagnosticTarget = path.join(distDir, 'release-manager-build-diagnostics.txt');
 fs.writeFileSync(diagnosticTarget, [
   `generatedAt=${payload.generatedAt}`,
+  `appVersion=${appVersion}`,
   `apiBaseUrl=${apiBaseUrl}`,
   'viteBase=./',
   'router=HashRouter',
-  'runtimeConfigPrimary=release-manager-runtime-config.json',
-  'runtimeConfigFallback=release-manager-runtime-config.txt',
+  'runtimeConfigPrimary=release-manager-runtime-config.txt',
+  'runtimeConfigFallback=release-manager-runtime-config.json',
+  'localSharePointApiCommand=npm run sharepoint:local',
 ].join('\n') + '\n', 'utf8');
 
 console.log(`[runtime-config] ${jsonTarget}`);

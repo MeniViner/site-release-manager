@@ -8,6 +8,9 @@ import {
 import { api } from './api.js';
 import RunsPage from './RunsPage.jsx';
 import { collectDirectoryHandle, collectDroppedFolder, collectSelectedFolder, folderPickerDiagnostics, formatBytes, summarizeSource, validateDistSource } from './releaseFolder.js';
+import clientPackage from '../package.json';
+
+const APP_VERSION = clientPackage.version;
 
 const STATUS_LABELS = {
   DRAFT: 'טיוטה', TRACKED: 'במעקב', PREPARING_RELEASE: 'מכין ריליס', READY_FOR_SHAREPOINT: 'מוכן לפריסה',
@@ -55,7 +58,7 @@ function Layout() {
             </NavLink>
           ))}
         </nav>
-        <div className="sidebar-footer">{open ? 'Site Release Manager 0.3.0' : '0.3.0'}</div>
+        <div className="sidebar-footer">{open ? `Site Release Manager ${APP_VERSION}` : APP_VERSION}</div>
       </aside>
       <main className="main-content"><Routes><Route path="/" element={<DashboardPage />} /><Route path="/sites" element={<SitesPage />} /><Route path="/releases" element={<ReleasesPage />} /><Route path="/runs" element={<RunsPage />} /></Routes></main>
     </div>
@@ -202,12 +205,24 @@ function SitesPage() {
 }
 
 function AddSiteModal({ hosts, releases, onSave, onClose }) {
-  const [form, setForm] = useState({ mode: 'existing', unit: '', name: '', host: hosts[0] || '', siteCode: '', managerName: '', currentVersion: '', firstPublishedAt: '', lastPublishedAt: '', releaseId: '' });
+  const [form, setForm] = useState({ mode: 'existing', unit: '', name: '', host: hosts[0] || '', siteCode: '', managerName: '', currentVersion: '', firstPublishedAt: '', lastPublishedAt: '', releaseId: '', siteDbFolder: 'siteDB', usersDbFolder: 'siteUsersDb', siteAssetsFolder: 'siteAssets', imagesFolder: 'images', widgetsDbTarget: 'users' });
   const set = (key, value) => setForm((prev) => ({ ...prev, [key]: value }));
   return <Modal title="הוסף אתר" onClose={onClose} wide><div className="mode-switch"><button className={form.mode === 'existing' ? 'active' : ''} onClick={() => set('mode', 'existing')}>הוסף אתר קיים למעקב</button><button className={form.mode === 'install' ? 'active' : ''} onClick={() => set('mode', 'install')}>התקן Site Builder</button></div>
     <div className="form-grid"><Field label="יחידה"><input value={form.unit} onChange={(e) => set('unit', e.target.value)} /></Field><Field label="שם האתר"><input value={form.name} onChange={(e) => set('name', e.target.value)} /></Field><Field label="Host"><select value={form.host} onChange={(e) => set('host', e.target.value)}>{hosts.map((host) => <option key={host}>{host}</option>)}</select></Field><Field label="קוד אתר"><input dir="ltr" value={form.siteCode} onChange={(e) => set('siteCode', e.target.value.toLowerCase())} placeholder="schedule" /></Field><Field label="מנהל אתר"><input value={form.managerName} onChange={(e) => set('managerName', e.target.value)} /></Field>
       {form.mode === 'existing' ? <><Field label="גרסה נוכחית — אופציונלי"><input dir="ltr" value={form.currentVersion} onChange={(e) => set('currentVersion', e.target.value)} /></Field><Field label="תאריך העלאה — אופציונלי"><input type="datetime-local" value={form.firstPublishedAt} onChange={(e) => set('firstPublishedAt', e.target.value)} /></Field><Field label="עדכון אחרון — אופציונלי"><input type="datetime-local" value={form.lastPublishedAt} onChange={(e) => set('lastPublishedAt', e.target.value)} /></Field></> : <Field label="ריליס להתקנה"><select value={form.releaseId} onChange={(e) => set('releaseId', e.target.value)}><option value="">בחר ריליס</option>{releases.map((release) => <option value={release.id} key={release.id}>{release.version}</option>)}</select></Field>}
-    </div><div className="target-preview" dir="ltr">https://{form.host || '<host>'}/sites/{form.siteCode || '<siteCode>'}/siteDB/dist/index.html</div><div className="modal-actions"><button className="secondary-button" onClick={onClose}>ביטול</button><button className="primary-button" onClick={() => onSave(form)}>{form.mode === 'install' ? 'צור והתקן' : 'הוסף למעקב'}</button></div>
+    </div>
+    <details className="advanced-site-settings">
+      <summary>הגדרות SharePoint מתקדמות</summary>
+      <div className="form-grid">
+        <Field label="ספריית האתר"><input dir="ltr" value={form.siteDbFolder} onChange={(e) => set('siteDbFolder', e.target.value)} /></Field>
+        <Field label="ספריית משתמשים"><input dir="ltr" value={form.usersDbFolder} onChange={(e) => set('usersDbFolder', e.target.value)} /></Field>
+        <Field label="תיקיית siteAssets"><input dir="ltr" value={form.siteAssetsFolder} onChange={(e) => set('siteAssetsFolder', e.target.value)} /></Field>
+        <Field label="תיקיית images"><input dir="ltr" value={form.imagesFolder} onChange={(e) => set('imagesFolder', e.target.value)} /></Field>
+        <Field label="יעד widgets_data.txt"><select value={form.widgetsDbTarget} onChange={(e) => set('widgetsDbTarget', e.target.value)}><option value="users">ספריית משתמשים</option><option value="site">ספריית האתר</option></select></Field>
+      </div>
+      <p className="help-text">לאתר רגיל אין צורך לשנות. באתר קיים עם ספרייה שונה, למשל kashrarDB1, שנה רק את "ספריית האתר".</p>
+    </details>
+    <div className="target-preview" dir="ltr">https://{form.host || '<host>'}/sites/{form.siteCode || '<siteCode>'}/{form.siteDbFolder || 'siteDB'}/dist/index.html</div><div className="modal-actions"><button className="secondary-button" onClick={onClose}>ביטול</button><button className="primary-button" onClick={() => onSave(form)}>{form.mode === 'install' ? 'צור והתקן' : 'הוסף למעקב'}</button></div>
   </Modal>;
 }
 function Field({ label, children }) { return <label className="field"><span>{label}</span>{children}</label>; }

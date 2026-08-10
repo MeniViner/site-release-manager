@@ -1,0 +1,31 @@
+Site Release Manager v0.3.3
+
+Fixes discovered during the first closed-Windows SharePoint run:
+
+1. SharePoint-hosted UI now performs an explicit /api/health bootstrap check.
+   If the local/server API is not running, the page shows the exact URL and tells
+   the operator to keep `npm run sharepoint:local` running instead of only showing
+   a generic "Failed to fetch".
+
+2. Added local SharePoint test commands:
+   - npm run sharepoint:local
+     Starts Mongo check + Node API only. Keep this terminal open while the UI is
+     hosted in SharePoint.
+   - npm run sharepoint:test
+     Builds, auto-deploys the manager dist to SharePoint, then starts the local API.
+
+3. The sidebar version is no longer hard-coded. It is taken from client/package.json.
+
+4. Automatic SharePoint dist deployment keeps robocopy /MIR for the payload but
+   no longer uses a second robocopy invocation for index.html. index.html is copied
+   last through Node/WebDAV with retries, then all runtime artifacts are verified.
+
+5. Runtime build metadata now includes the Release Manager app version and the
+   local API command used for SharePoint testing.
+
+6. CREATE_PROJECT_7Z.txt now contains both macOS/zsh and Windows/PowerShell commands.
+   Both include .env files and exclude all node_modules directories.
+
+Universal Site Builder release support is unchanged: uploaded releases remain
+universal dist artifacts and per-site Site Builder runtime overlays are generated
+only at deployment time.
