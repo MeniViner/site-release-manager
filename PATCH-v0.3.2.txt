@@ -1,0 +1,11 @@
+Site Release Manager v0.3.2
+
+- Runtime config bootstrap now prints exact URL, HTTP status, content-type and response preview.
+- Production runtime loader tries release-manager-runtime-config.json and SharePoint-safe .txt fallback.
+- Client build generates both runtime config files plus release-manager-build-diagnostics.txt.
+- base remains './' and main remains HashRouter; verify-system checks the new artifacts.
+- Mongo defaults are 127.0.0.1:27017 with AUTO_START_MONGO=false for the closed Windows workstation.
+- npm run build now has an optional/Windows automatic postbuild deployment of client/dist to:
+  https://portal.army.idf/sites/alphateam/site_release_manager/dist/
+- The automatic deployment uses WebDAV + robocopy /MIR and uploads index.html last.
+- The real SharePoint Deployer build location remains sharepoint-deployer/client/dist/.

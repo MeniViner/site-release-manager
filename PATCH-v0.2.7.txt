@@ -1,0 +1,11 @@
+Site Release Manager v0.2.7
+
+- Added a dedicated "SharePoint Runs" page with recent deployment history.
+- Every new deployment now stores durable structured telemetry by stage.
+- SharePoint Deployer reports start/success/failure for target validation, FormDigest, libraries, folders, TXT seed files, release upload, final verification and completion.
+- Failure diagnostics include current file, HTTP status, method, request URL, operation, duration and response preview when available.
+- Run detail view shows a stage timeline, failure focus panel and raw logs, with one-click copy.
+- Local deep audit is also recorded as a run stage.
+- Added /api/runs and /api/runs/:id.
+- Added run telemetry tests.
+- Version bumped to 0.2.7.

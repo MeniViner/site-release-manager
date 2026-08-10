@@ -1,0 +1,9 @@
+Site Release Manager v0.2.8
+
+- Replaced SharePoint runs status dropdown with ordered, pastel status filter buttons including live counts.
+- Added a fixed 15-step SharePoint deployment map with numbered stages, pastel phase colors and explicit pending/running/success/warning/failure states.
+- Kept the detailed event timeline below the stage map and numbered every telemetry event.
+- Reorganized run actions into clear Refresh / Copy All / Open Target buttons.
+- Improved responsive layout for status filters and stage cards.
+- Cumulative updater now automatically starts `npm run dev` from the actual project directory after update + verification succeeds.
+- Version bumped to 0.2.8.

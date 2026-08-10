@@ -1,0 +1,30 @@
+{
+  "name": "site-release-manager",
+  "version": "0.3.2",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "install:all": "node scripts/install-all.mjs",
+    "mongo:check": "node scripts/mongo.mjs check",
+    "mongo:start": "node scripts/mongo.mjs start",
+    "mongo:stop": "node scripts/mongo.mjs stop",
+    "dev": "node scripts/dev.mjs",
+    "dev:all": "node scripts/dev.mjs --all",
+    "build": "npm --prefix client run build && npm --prefix sharepoint-deployer run build",
+    "build:client": "npm --prefix client run build",
+    "build:deployer": "npm --prefix sharepoint-deployer run build",
+    "start": "npm --prefix server run start",
+    "test": "npm --prefix server run test",
+    "verify:transfer": "node scripts/verify-transfer.mjs",
+    "upgrade:v0.2": "node scripts/upgrade-v0.2.mjs",
+    "doctor": "node scripts/doctor.mjs",
+    "verify:system": "node scripts/verify-system.mjs",
+    "verify-system": "node scripts/verify-system.mjs",
+    "runtime:client": "node scripts/write-client-runtime-config.mjs",
+    "package:iis": "node scripts/create-iis-package.mjs",
+    "verify:iis": "node scripts/verify-iis-package.mjs",
+    "postbuild": "node scripts/deploy-manager-sharepoint.mjs",
+    "deploy:manager-sharepoint": "node scripts/deploy-manager-sharepoint.mjs --force"
+  }
+}

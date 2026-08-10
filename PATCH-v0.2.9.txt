@@ -1,0 +1,9 @@
+Site Release Manager v0.2.9
+
+Windows Node 24 compatibility fix:
+- Never spawn npm.cmd directly from child_process.
+- Uses npm_execpath + process.execPath when available.
+- Safe cmd.exe fallback on Windows.
+- Fixes npm run dev spawn EINVAL after MongoDB is detected.
+- Applies the same fix to install:all and verify-system.
+- Adds clearer child-process startup errors.

@@ -1,0 +1,12 @@
+Site Release Manager v0.3.0
+
+- Client Vite build now uses base: './' for SharePoint nested paths.
+- Client routing is HashRouter only.
+- Production client no longer calls relative /api on the SharePoint origin.
+- client/dist now receives release-manager-runtime-config.json after every build.
+- Runtime apiBaseUrl is generated from PUBLIC_API_URL without baking it into JS.
+- Vite development still uses the local /api proxy.
+- Server supports CLIENT_ORIGINS as a comma-separated list and automatically includes SHAREPOINT_HOSTS.
+- SharePoint Deployer build output is now sharepoint-deployer/client/dist.
+- Doctor/verify/audit/docs references use the real deployer output path.
+- Added CREATE_PROJECT_7Z.txt at repository root. It includes env files and excludes node_modules only.

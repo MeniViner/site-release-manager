@@ -1,0 +1,18 @@
+Site Release Manager v0.2.3
+
+Changes:
+1. Folder release picker repaired:
+   - native folder input is now the default picker
+   - direct dist folder and project-root-with-dist are detected from all selected paths
+   - drag/drop remains supported
+   - Chrome File System Access picker remains as optional advanced picker
+   - embedded browsers that cannot provide folder paths show an explicit warning
+2. Local deployment verification added:
+   - prepare a normal deployment job from Sites
+   - on localhost the app stops at READY_FOR_SHAREPOINT instead of navigating automatically
+   - click "הרץ בדיקת פריסה מקומית"
+   - the server simulates SharePoint structure and verifies seed files, all release files, SHA-256, runtime config, deployment metadata, upload order and index asset references
+   - report is saved to storage/local-simulations/<jobId>/local-verification-report.json
+
+No new npm dependencies.
+Applying this patch does not require npm install.

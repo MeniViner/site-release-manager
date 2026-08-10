@@ -1,0 +1,7 @@
+Site Release Manager v0.2.5
+- Detects legacy local verification reports that do not contain deep-audit logLines.
+- Adds visible "Create full audit log" / "Run audit again" actions next to the log.
+- Shows whether the visible box is a deep audit log or only regular job logs.
+- Syncs the modal report when the job is refreshed.
+- Reuses an already-active deployment job instead of returning HTTP 409 when Update is clicked again.
+No dependency changes. No npm install required.

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>פריסת Site Builder</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div class="logo">SR</div>
+      <div><h1>פריסת Site Builder</h1><p id="subtitle">טוען את פרטי המשימה...</p></div>
+    </header>
+
+    <section class="card status-card">
+      <div class="status-line"><span id="badge" class="badge waiting">ממתין</span><strong id="percent">0%</strong></div>
+      <div class="progress"><span id="bar"></span></div>
+      <h2 id="step">מתחיל...</h2>
+      <p id="currentFile"></p>
+      <div id="target" class="target"></div>
+    </section>
+
+    <section id="errorBox" class="error hidden"></section>
+
+    <section class="actions">
+      <button id="startButton" class="primary" disabled>פרוס עכשיו</button>
+      <button id="retryButton" class="secondary hidden">נסה שוב</button>
+      <a id="openSite" class="success hidden" target="_blank" rel="noreferrer">פתח את האתר</a>
+    </section>
+
+    <section class="card logs-card">
+      <button id="toggleLogs" class="logs-title">פרטים טכניים</button>
+      <pre id="logs" class="hidden"></pre>
+    </section>
+  </main>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+FULL SOURCE REPAIR v0.2.2
+
+This package restores all application source files for client, server,
+SharePoint deployer and root scripts. It intentionally does NOT contain:
+- .env
+- storage/
+- node_modules/
+
+Therefore it can be extracted over an existing installation without deleting
+local Mongo configuration, uploaded releases, or installed dependencies.
+
+macOS/Linux:
+  cd ~/Downloads
+  unzip -o site-release-manager-v0.2.2-full-source-repair.zip
+  cd site-release-manager
+  npm run doctor
+  npm run dev
+
+If doctor reports only missing node_modules, run npm run install:all once.

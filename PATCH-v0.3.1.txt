@@ -1,0 +1,12 @@
+Site Release Manager v0.3.1
+
+IIS deployment packaging:
+- Adds root index.js IISNode entry.
+- Adds web.config using IISNode + URL Rewrite.
+- Uses bundled runtime\node.exe, matching the previously successful closed-server deployment topology.
+- Adds CREATE_IIS_PACKAGE.cmd.
+- Adds scripts/create-iis-package.mjs and scripts/verify-iis-package.mjs.
+- IIS package contains server/src, Windows server/node_modules, client/dist, sharepoint-deployer/client/dist, .env, storage and bundled node.exe.
+- Excludes build-time client/root/deployer node_modules from the IIS runtime package.
+- Adds .env.iis.example and IIS-DEPLOY-README.txt.
+- No new npm dependencies.

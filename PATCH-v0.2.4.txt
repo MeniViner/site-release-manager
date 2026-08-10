@@ -1,0 +1,16 @@
+Site Release Manager v0.2.4 — Local Deep Audit
+
+Changes:
+- The existing local deployment verification is now a deep audit.
+- It prints a detailed PASS/WARN/FAIL log to the server terminal and stores the same log on the deployment job.
+- The job modal shows PASS/WARN/FAIL totals and a copyable diagnostic log.
+- The audit verifies MongoDB, writable storage, SharePoint host configuration, local SharePoint Deployer build, PUBLIC_API_URL readiness, universal dist immutability, release hashes and file counts, absence of .env and runtime overlays in raw dist, no target-site identity baked into the raw dist, relative index.html asset references, artifact/manifest/upload-order consistency, index.html last upload, seed paths, non-empty TXT preservation on existing-site updates, runtime config canonical values, deployment metadata, SharePoint release manifest and final simulated dist hashes.
+- WARN items identify the only checks that cannot be proven locally: live SharePoint REST/session/FormDigest/permissions/network and actual installation of the deployer on the SharePoint host.
+
+Install over an existing v0.2.3 folder:
+1. Stop npm run dev.
+2. Extract this patch over the project directory.
+3. Run npm run dev.
+4. Create/open a READY_FOR_SHAREPOINT job and click "הרץ Audit מקומי מלא".
+
+No npm install is required.

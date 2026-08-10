@@ -1,0 +1,29 @@
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; font-family: Arial, sans-serif; color: #0f172a; background: #f1f5f9; }
+.shell { width: min(880px, calc(100% - 32px)); margin: 0 auto; padding: 36px 0 60px; }
+header { display: flex; align-items: center; gap: 14px; margin-bottom: 20px; }
+.logo { width: 48px; height: 48px; display: grid; place-items: center; border-radius: 13px; background: #1e3a5f; color: #fff; font-weight: 800; }
+h1 { margin: 0; font-size: 26px; } header p { margin: 5px 0 0; color: #64748b; }
+.card { background: #fff; border: 1px solid #e2e8f0; border-radius: 15px; padding: 22px; box-shadow: 0 8px 24px rgba(15,23,42,.05); }
+.status-line { display: flex; justify-content: space-between; align-items: center; }
+.badge { padding: 6px 11px; border-radius: 999px; border: 1px solid; font-size: 13px; font-weight: 700; }
+.badge.waiting { color: #475569; background: #f8fafc; border-color: #cbd5e1; }
+.badge.running { color: #1d4ed8; background: #eff6ff; border-color: #bfdbfe; }
+.badge.done { color: #166534; background: #f0fdf4; border-color: #bbf7d0; }
+.badge.failed { color: #b91c1c; background: #fef2f2; border-color: #fecaca; }
+.progress { height: 11px; margin: 16px 0 20px; overflow: hidden; background: #e2e8f0; border-radius: 999px; }
+.progress span { display: block; width: 0; height: 100%; background: #1e3a5f; transition: width .2s ease; }
+h2 { margin: 0 0 7px; font-size: 20px; }
+#currentFile { direction: ltr; text-align: left; color: #64748b; min-height: 20px; overflow-wrap: anywhere; }
+.target { direction: ltr; text-align: left; margin-top: 15px; padding: 12px; background: #f8fafc; border: 1px dashed #cbd5e1; border-radius: 9px; color: #475569; overflow: auto; }
+.actions { display: flex; gap: 10px; margin: 16px 0; }
+button, .actions a { min-height: 42px; padding: 0 17px; border-radius: 9px; display: inline-flex; align-items: center; justify-content: center; font: inherit; font-weight: 700; text-decoration: none; cursor: pointer; }
+button:disabled { opacity: .5; cursor: not-allowed; }
+.primary { border: 0; background: #1e3a5f; color: #fff; }
+.secondary { border: 1px solid #cbd5e1; background: #fff; color: #334155; }
+.success { background: #15803d; color: #fff; }
+.error { margin: 16px 0; padding: 14px; border: 1px solid #fecaca; border-radius: 10px; color: #b91c1c; background: #fef2f2; white-space: pre-wrap; }
+.logs-card { padding: 0; overflow: hidden; }
+.logs-title { width: 100%; border: 0; background: #fff; justify-content: flex-start; color: #334155; }
+pre { margin: 0; max-height: 320px; overflow: auto; padding: 16px; direction: ltr; text-align: left; background: #0f172a; color: #cbd5e1; font-size: 12px; line-height: 1.55; }
+.hidden { display: none !important; }

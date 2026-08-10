@@ -1,0 +1,19 @@
+Run this in PowerShell from the ROOT of the site-release-manager project.
+
+It creates the archive in the parent folder, uses the current project folder name,
+adds the current date and time, excludes every node_modules folder, and DOES NOT
+exclude .env / .env.example / other env files.
+---------
+mac
+---------
+project="$(basename "$PWD")"; stamp="$(date '+%Y-%m-%d_%H-%M-%S')"; 7zz a -t7z "../${project}_${stamp}.7z" . -xr'!node_modules' -xr'!node_modules/*' -xr'!*/node_modules' -xr'!*/node_modules/*'
+
+---------
+win:
+---------
+$project = Split-Path -Leaf (Get-Location); $stamp = Get-Date -Format 'yyyy-MM-dd_HH-mm-ss'; & 'C:\Program Files\7-Zip\7z.exe' a -t7z "..\${project}_${stamp}.7z" ".\*" '-xr!node_modules' '-xr!node_modules\*' '-xr!*\node_modules' '-xr!*\node_modules\*'
+
+----------
+
+Example output name:
+site-release-manager_2026-08-10_13-28-00.7z

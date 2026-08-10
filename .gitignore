@@ -1,0 +1,15 @@
+.env
+*.log
+.DS_Store
+storage/releases/*
+storage/deployments/*
+storage/local-simulations/*
+storage/temp/*
+!storage/releases/.gitkeep
+!storage/deployments/.gitkeep
+!storage/local-simulations/.gitkeep
+!storage/temp/.gitkeep
+client/dist/
+sharepoint-deployer/client/dist/
+**/node_modules/*
+!**/node_modules/.gitkeep

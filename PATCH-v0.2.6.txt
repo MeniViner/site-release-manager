@@ -1,0 +1,16 @@
+Site Release Manager v0.2.6
+
+Changes:
+- Re-running a release is now supported even when an active deployment job exists.
+- The UI warns before replacing an active job or re-deploying the same current release.
+- Confirmed reruns mark the old job INTERRUPTED and prepare a brand-new deployment job.
+- Superseded jobs cannot report progress/complete later and overwrite the new run.
+- Release version and notes are editable from the Releases page.
+- Changing a release number updates sites currently pointing to that release and interrupts stale active jobs so they can be regenerated safely.
+- New release form remembers the latest release and proposes SemVer next versions:
+  Hotfix/Patch, Minor, Major.
+- The Sites page defaults each release selector to the latest release.
+- Added npm run verify:system to run doctor, server tests, client build, deployer build, and syntax checks.
+- Added versioning unit tests.
+
+No dependency changes. Existing .env, MongoDB data, storage, releases and node_modules are preserved by the patch.

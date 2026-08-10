@@ -1,0 +1,13 @@
+{
+  "name": "site-release-manager-sharepoint-deployer",
+  "version": "0.3.2",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite ready --port 5190",
+    "build": "node scripts/build.mjs"
+  },
+  "devDependencies": {
+    "vite": "^7.3.1"
+  }
+}
