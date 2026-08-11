@@ -1,6 +1,12 @@
 const params = new URLSearchParams(location.search);
 const jobId = params.get('jobId') || '';
 const apiBase = (params.get('apiBase') || '').replace(/\/+$/, '');
+const embedded = params.get('embedded') === '1';
+if (embedded) document.documentElement.classList.add('embedded');
+
+function notifyParent(type, payload = {}) {
+  try { if (window.parent && window.parent !== window) window.parent.postMessage({ source: 'site-release-deployer', type, jobId, ...payload }, '*'); } catch {}
+}
 
 const ui = {
   subtitle: document.getElementById('subtitle'), badge: document.getElementById('badge'), percent: document.getElementById('percent'),
@@ -401,12 +407,14 @@ async function run() {
     ui.openSite.href = descriptor.site.finalUrl;
     ui.openSite.classList.remove('hidden');
     log('Deployment completed successfully.');
+    notifyParent('deployment-complete', { finalUrl: descriptor.site.finalUrl });
   } catch (error) {
     setBadge('failed', 'נכשל');
     ui.errorBox.textContent = error.message;
     ui.errorBox.classList.remove('hidden');
     ui.retryButton.classList.remove('hidden');
     log(`ERROR: ${error.message}`);
+    notifyParent('deployment-failed', { error: error.message, stage: error.stage || activeStage });
     const request = error.request || lastSharePointRequest || null;
     try {
       await api(`/api/deployments/${encodeURIComponent(jobId)}/fail`, {
@@ -442,12 +450,14 @@ async function init() {
     const durationMs = Math.round(performance.now() - started);
     await reportEvent('DEPLOYER_INIT', 'success', `פרטי המשימה נטענו עבור ${descriptor.site.host}/sites/${descriptor.site.siteCode}.`, { durationMs, details: { apiBase, jobId } });
     log(`Loaded deployment ${jobId} for ${descriptor.site.host}/sites/${descriptor.site.siteCode}`);
-    setTimeout(run, 500);
+    notifyParent('deployer-ready', { target: descriptor.site.finalUrl, embedded });
+    setTimeout(run, embedded ? 100 : 500);
   } catch (error) {
     setBadge('failed', 'לא ניתן להתחיל');
     ui.errorBox.textContent = error.message;
     ui.errorBox.classList.remove('hidden');
     log(`Initialization failed: ${error.message}`);
+    notifyParent('deployer-init-failed', { error: error.message });
     await reportEvent('DEPLOYER_INIT', 'failed', error.message, { method: error.method || '', url: error.url || '', httpStatus: error.httpStatus ?? null });
   }
 }

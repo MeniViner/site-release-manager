@@ -291,3 +291,26 @@ textarea { resize: vertical; }
   color: #64748b;
   font-size: 12px;
 }
+
+/* v0.3.4 — site management + background SharePoint deployment */
+.site-row:hover td { background: #fbfdff; }
+.site-name-button { border: 0; background: transparent; color: #1e3a5f; font: inherit; font-weight: 800; display: inline-flex; align-items: center; gap: 6px; padding: 0; cursor: pointer; }
+.site-name-button:hover { text-decoration: underline; }
+.site-actions { display: grid; gap: 7px; min-width: 315px; }
+.site-action-icons { display: flex; gap: 5px; justify-content: flex-start; }
+.icon-button.compact, .danger-icon.compact { width: 32px; height: 32px; }
+.background-deploy-banner { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; padding: 11px 14px; border: 1px solid #a7f3d0; background: #ecfdf5; color: #166534; border-radius: 12px; }
+.background-deploy-banner div { display: grid; gap: 2px; }
+.background-deploy-banner span { font-size: 12px; color: #15803d; }
+.sharepoint-background-deployer { position: fixed; width: 2px; height: 2px; left: -10000px; top: -10000px; border: 0; opacity: 0; pointer-events: none; }
+.site-details-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.site-details-grid > div, .site-final-url { border: 1px solid #e2e8f0; background: #f8fafc; border-radius: 10px; padding: 12px; display: grid; gap: 5px; }
+.site-details-grid span, .site-final-url span { color: #64748b; font-size: 12px; }
+.site-details-grid strong { font-size: 14px; overflow-wrap: anywhere; }
+.site-final-url { margin-top: 10px; }
+.site-final-url a { color: #1d4ed8; display: inline-flex; align-items: center; gap: 5px; overflow-wrap: anywhere; }
+.site-detail-actions { justify-content: flex-start; }
+.danger-button { min-height: 42px; padding: 0 15px; background: #fff1f2; border: 1px solid #fecdd3; color: #be123c; border-radius: 9px; display: inline-flex; align-items: center; gap: 7px; font: inherit; font-weight: 800; cursor: pointer; }
+.dark .background-deploy-banner { background:#123128; border-color:#166534; color:#a7f3d0; }
+.dark .site-details-grid > div, .dark .site-final-url { background:#252a35; border-color:rgba(255,255,255,.09); }
+@media(max-width:900px){.site-details-grid{grid-template-columns:1fr}.site-actions{min-width:260px}}

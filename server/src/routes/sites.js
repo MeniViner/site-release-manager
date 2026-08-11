@@ -93,33 +93,61 @@ sitesRouter.post('/', async (req, res, next) => {
 
 sitesRouter.patch('/:id', async (req, res, next) => {
   try {
-    const allowed = ['unit', 'name', 'managerName', 'currentVersion', 'firstPublishedAt', 'lastPublishedAt', 'siteDbFolder', 'usersDbFolder', 'siteAssetsFolder', 'imagesFolder', 'widgetsDbTarget'];
+    const db = getDb();
+    const objectId = new ObjectId(req.params.id);
+    const existing = await db.collection('sites').findOne({ _id: objectId });
+    if (!existing) return res.status(404).json({ error: 'האתר לא נמצא.' });
+    if (existing.activeJobId) return res.status(409).json({ error: 'לא ניתן לערוך אתר בזמן שריצת פריסה פעילה. סיים או הפסק את הריצה קודם.' });
+
+    const body = req.body || {};
+    const nextHost = 'host' in body ? String(body.host || '').trim().toLowerCase() : existing.host;
+    const nextCode = 'siteCode' in body ? String(body.siteCode || '').trim().toLowerCase() : existing.siteCode;
+    if (!config.sharePointHosts.includes(nextHost)) return res.status(400).json({ error: 'Host אינו מופיע ברשימת ה-Hosts המוגדרת.' });
+    if (!validSiteCode(nextCode)) return res.status(400).json({ error: 'קוד האתר חייב להכיל אותיות אנגליות קטנות, מספרים או מקף.' });
+
     const patch = {};
-    for (const key of allowed) {
-      if (!(key in (req.body || {}))) continue;
-      patch[key] = key.endsWith('At') ? toDateOrNull(req.body[key]) : req.body[key];
+    for (const key of ['unit', 'name', 'managerName', 'currentVersion']) {
+      if (key in body) patch[key] = String(body[key] ?? '').trim() || (key === 'currentVersion' ? null : '');
     }
+    if ('host' in body) patch.host = nextHost;
+    if ('siteCode' in body) patch.siteCode = nextCode;
+    for (const key of ['firstPublishedAt', 'lastPublishedAt']) if (key in body) patch[key] = toDateOrNull(body[key]);
+
+    const folders = {
+      siteDbFolder: 'siteDB', usersDbFolder: 'siteUsersDb', siteAssetsFolder: 'siteAssets', imagesFolder: 'images',
+    };
+    for (const [key, fallback] of Object.entries(folders)) {
+      if (!(key in body)) continue;
+      const value = String(body[key] || fallback).trim();
+      if (!validPathSegment(value)) return res.status(400).json({ error: `${key} חייב להיות שם תיקייה/ספרייה יחיד ללא נתיב מלא.` });
+      patch[key] = value;
+    }
+    if ('widgetsDbTarget' in body) patch.widgetsDbTarget = String(body.widgetsDbTarget || 'users').trim().toLowerCase() === 'site' ? 'site' : 'users';
+
+    const finalHost = patch.host || existing.host;
+    const finalCode = patch.siteCode || existing.siteCode;
+    const finalSiteDb = patch.siteDbFolder || existing.siteDbFolder || 'siteDB';
+    patch.finalUrl = `https://${finalHost}/sites/${finalCode}/${finalSiteDb}/dist/index.html`;
     patch.updatedAt = new Date();
-    const result = await getDb().collection('sites').findOneAndUpdate(
-      { _id: new ObjectId(req.params.id) },
-      { $set: patch },
-      { returnDocument: 'after' },
+
+    const result = await db.collection('sites').findOneAndUpdate(
+      { _id: objectId }, { $set: patch }, { returnDocument: 'after' },
     );
-    if (!result) return res.status(404).json({ error: 'האתר לא נמצא.' });
     return res.json(publicSite(result));
-  } catch (error) {
-    return next(error);
-  }
+  } catch (error) { return next(error); }
 });
 
 sitesRouter.delete('/:id', async (req, res, next) => {
   try {
-    const result = await getDb().collection('sites').deleteOne({ _id: new ObjectId(req.params.id) });
-    if (!result.deletedCount) return res.status(404).json({ error: 'האתר לא נמצא.' });
+    const db = getDb();
+    const objectId = new ObjectId(req.params.id);
+    const site = await db.collection('sites').findOne({ _id: objectId });
+    if (!site) return res.status(404).json({ error: 'האתר לא נמצא.' });
+    if (site.activeJobId) return res.status(409).json({ error: 'לא ניתן למחוק אתר בזמן שריצת פריסה פעילה.' });
+    await db.collection('deployment_jobs').deleteMany({ siteId: objectId });
+    await db.collection('sites').deleteOne({ _id: objectId });
     return res.status(204).end();
-  } catch (error) {
-    return next(error);
-  }
+  } catch (error) { return next(error); }
 });
 
 sitesRouter.post('/:id/deploy', async (req, res, next) => {

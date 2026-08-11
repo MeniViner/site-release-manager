@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { NavLink, Route, Routes, useNavigate } from 'react-router-dom';
 import {
   Activity, Box, Building2, CheckCircle2, ChevronLeft, CircleAlert, CloudUpload,
-  ClipboardCopy, ExternalLink, EyeOff, FileArchive, FileCode2, Folder, Gauge, LayoutDashboard, LoaderCircle, Menu, Plus,
+  ClipboardCopy, ExternalLink, Eye, EyeOff, FileArchive, FileCode2, Folder, Gauge, LayoutDashboard, LoaderCircle, Menu, Plus,
   PencilLine, RefreshCw, Rocket, Trash2, X, ListChecks,
 } from 'lucide-react';
 import { api } from './api.js';
@@ -101,7 +101,11 @@ function SitesPage() {
   const [showAdd, setShowAdd] = useState(false);
   const [selectedRelease, setSelectedRelease] = useState({});
   const [job, setJob] = useState(null);
+  const [selectedSite, setSelectedSite] = useState(null);
+  const [editingSite, setEditingSite] = useState(null);
+  const [backgroundDeployer, setBackgroundDeployer] = useState(null);
   const [error, setError] = useState('');
+
   const load = async () => {
     try {
       const [s, r, c] = await Promise.all([api.sites(), api.releases(), api.config()]);
@@ -120,25 +124,45 @@ function SitesPage() {
   };
   useEffect(() => { load(); }, []);
 
-  const monitorJob = async (createdJob, popup) => {
-    const localManager = ['localhost', '127.0.0.1'].includes(window.location.hostname);
+  const launchSharePointDeployer = (current) => {
+    if (!current?.deployerUrl) return false;
+    let url;
+    try { url = new URL(current.deployerUrl); } catch { setError('כתובת SharePoint Deployer אינה תקינה.'); return false; }
+
+    const managerIsLocal = ['localhost', '127.0.0.1'].includes(window.location.hostname);
+    if (managerIsLocal) {
+      setError('המשימה מוכנה ל-SharePoint. בבדיקה מתוך localhost יש לפתוח את חלון האבחון ידנית; פריסה ברקע מופעלת כאשר Release Manager עצמו פתוח מתוך SharePoint.');
+      return false;
+    }
+
+    if (url.origin !== window.location.origin) {
+      setError(`אתר היעד נמצא ב-${url.host}, בעוד Release Manager פתוח מ-${window.location.host}. בגלל מגבלות iframe של SharePoint הפריסה תיפתח בחלון נפרד רק במקרה הזה.`);
+      window.open(current.deployerUrl, '_blank', 'noopener,noreferrer');
+      return true;
+    }
+
+    url.searchParams.set('embedded', '1');
+    url.searchParams.set('_run', String(Date.now()));
+    setBackgroundDeployer({ jobId: jobIdOf(current), url: url.toString() });
+    return true;
+  };
+
+  const monitorJob = async (createdJob) => {
     const id = jobIdOf(createdJob);
     if (!id) return;
-    let opened = false;
+    let deployerStarted = false;
     for (;;) {
       const current = await api.job(id);
       setJob(current);
-      if (current.state === 'READY_FOR_SHAREPOINT' && current.deployerUrl && !opened) {
-        opened = true;
-        if (localManager) {
-          if (popup && !popup.closed) popup.close();
-          break;
-        } else if (popup && !popup.closed) {
-          popup.location.href = current.deployerUrl;
-        }
+      if (current.state === 'READY_FOR_SHAREPOINT' && current.deployerUrl && !deployerStarted) {
+        deployerStarted = launchSharePointDeployer(current);
       }
-      if (['SUCCEEDED', 'FAILED', 'INTERRUPTED'].includes(current.state)) { await load(); break; }
-      await new Promise((resolve) => setTimeout(resolve, 1800));
+      if (['SUCCEEDED', 'FAILED', 'INTERRUPTED'].includes(current.state)) {
+        setBackgroundDeployer((active) => active?.jobId === id ? null : active);
+        await load();
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1500));
     }
   };
 
@@ -157,13 +181,10 @@ function SitesPage() {
       force = true;
     }
 
-    const popup = window.open('', '_blank');
-    if (popup) popup.document.write('<!doctype html><html dir="rtl"><meta charset="utf-8"><title>מכין פריסה</title><body style="font-family:Arial;padding:40px"><h2>מכין את הריליס...</h2><p>החלון יעבור אוטומטית ל-SharePoint.</p></body></html>');
-
     const start = async (forceRun) => {
       const created = await api.deploy(site.id, releaseId, { force: forceRun });
       setJob(created);
-      monitorJob(created, popup).catch((error) => setError(error.message));
+      monitorJob(created).catch((monitorError) => setError(monitorError.message));
     };
 
     try {
@@ -175,33 +196,101 @@ function SitesPage() {
           try { await start(true); return; }
           catch (retryError) { setError(retryError.message); }
         }
-      } else {
-        setError(e.message);
-      }
-      if (popup) popup.close();
+      } else setError(e.message);
     }
   };
 
   const createSite = async (form) => {
-    const popup = form.mode === 'install' && form.releaseId ? window.open('', '_blank') : null;
-    if (popup) popup.document.write('<!doctype html><html dir="rtl"><meta charset="utf-8"><body style="font-family:Arial;padding:40px"><h2>מכין פריסה...</h2></body></html>');
     try {
       const result = await api.createSite(form);
-      setShowAdd(false); await load();
-      if (result.job) { setJob(result.job); monitorJob(result.job, popup).catch((e) => setError(e.message)); }
-      else if (popup) popup.close();
-    } catch (e) { if (popup) popup.close(); setError(e.message); }
+      setShowAdd(false);
+      await load();
+      if (result.job) {
+        setJob(result.job);
+        monitorJob(result.job).catch((monitorError) => setError(monitorError.message));
+      }
+    } catch (e) { setError(e.message); }
   };
 
-  return <div className="page"><PageHeader title="אתרים" subtitle="מעקב, התקנה ועדכון ריליסים" actions={<><button className="secondary-button" onClick={load}><RefreshCw size={17} />רענן</button><button className="primary-button" onClick={() => setShowAdd(true)}><Plus size={18} />הוסף אתר</button></>} />
+  const saveSite = async (site, values) => {
+    try {
+      const updated = await api.updateSite(site.id, values);
+      setEditingSite(null);
+      setSelectedSite(updated);
+      await load();
+      return true;
+    } catch (e) {
+      setError(e.message);
+      return false;
+    }
+  };
+
+  const deleteSite = async (site) => {
+    const approved = window.confirm(`למחוק את ${site.name} מרשימת המעקב?\n\nהפעולה מוחקת רק את הרשומה והיסטוריית הריצות שלה ב-Release Manager. היא לא מוחקת דבר מ-SharePoint.`);
+    if (!approved) return;
+    try {
+      await api.deleteSite(site.id);
+      setSelectedSite(null);
+      setEditingSite(null);
+      await load();
+    } catch (e) { setError(e.message); }
+  };
+
+  return <div className="page">
+    <PageHeader title="אתרים" subtitle="מעקב, התקנה ועדכון ריליסים" actions={<><button className="secondary-button" onClick={load}><RefreshCw size={17} />רענן</button><button className="primary-button" onClick={() => setShowAdd(true)}><Plus size={18} />הוסף אתר</button></>} />
+    {backgroundDeployer && <div className="background-deploy-banner"><LoaderCircle className="spin" size={17} /><div><strong>פריסת SharePoint רצה ברקע</strong><span>אין צורך לפתוח חלון נוסף. מצב המשימה מתעדכן אוטומטית.</span></div></div>}
     {error && <div className="alert"><CircleAlert size={18} />{error}<button onClick={() => setError('')}><X size={16} /></button></div>}
     <div className="table-card"><table><thead><tr><th>יחידה</th><th>שם האתר</th><th>Host</th><th>תאריך העלאה</th><th>עדכון אחרון</th><th>גרסה</th><th>מנהל אתר</th><th>מצב</th><th>פעולה</th></tr></thead><tbody>
-      {sites.map((site) => <tr key={site.id}><td>{site.unit}</td><td><a href={site.finalUrl} target="_blank" rel="noreferrer">{site.name}<ExternalLink size={13} /></a></td><td dir="ltr">{site.host}</td><td>{formatDate(site.firstPublishedAt)}</td><td>{formatDate(site.lastPublishedAt)}</td><td>{site.currentVersion || '—'}</td><td>{site.managerName}</td><td><StatusBadge status={site.status} /></td><td><div className="inline-actions"><select value={selectedRelease[site.id] || ''} onChange={(e) => setSelectedRelease((p) => ({ ...p, [site.id]: e.target.value }))}><option value="">בחר ריליס</option>{releases.map((release) => <option key={release.id} value={release.id}>{release.version}</option>)}</select><button className="small-primary" onClick={() => beginDeploy(site, selectedRelease[site.id])}><Rocket size={15} />עדכן</button></div></td></tr>)}
+      {sites.map((site) => <tr key={site.id} className="site-row">
+        <td>{site.unit}</td>
+        <td><button className="site-name-button" onClick={() => setSelectedSite(site)}>{site.name}<Eye size={14} /></button></td>
+        <td dir="ltr">{site.host}</td><td>{formatDate(site.firstPublishedAt)}</td><td>{formatDate(site.lastPublishedAt)}</td><td>{site.currentVersion || '—'}</td><td>{site.managerName}</td><td><StatusBadge status={site.status} /></td>
+        <td><div className="site-actions"><div className="inline-actions"><select value={selectedRelease[site.id] || ''} onChange={(e) => setSelectedRelease((p) => ({ ...p, [site.id]: e.target.value }))}><option value="">בחר ריליס</option>{releases.map((release) => <option key={release.id} value={release.id}>{release.version}</option>)}</select><button className="small-primary" onClick={() => beginDeploy(site, selectedRelease[site.id])}><Rocket size={15} />עדכן</button></div><div className="site-action-icons"><button className="icon-button compact" title="פרטי אתר" onClick={() => setSelectedSite(site)}><Eye size={17} /></button><button className="icon-button compact" title="ערוך אתר" onClick={() => setEditingSite(site)}><PencilLine size={17} /></button><button className="danger-icon compact" title="מחק אתר" onClick={() => deleteSite(site)}><Trash2 size={17} /></button></div></div></td>
+      </tr>)}
       {!sites.length && <tr><td colSpan="9"><Empty /></td></tr>}
     </tbody></table></div>
     {showAdd && <AddSiteModal hosts={config?.sharePointHosts || []} releases={releases} onSave={createSite} onClose={() => setShowAdd(false)} />}
+    {selectedSite && <SiteDetailsModal site={selectedSite} onClose={() => setSelectedSite(null)} onEdit={() => { setEditingSite(selectedSite); setSelectedSite(null); }} onDelete={() => deleteSite(selectedSite)} />}
+    {editingSite && <EditSiteModal site={editingSite} hosts={config?.sharePointHosts || []} onClose={() => setEditingSite(null)} onSave={(values) => saveSite(editingSite, values)} />}
     {job && <JobModal job={job} onClose={() => setJob(null)} onLocalVerify={async (currentJob) => { const report = await api.verifyLocalDeployment(jobIdOf(currentJob)); const refreshed = await api.job(jobIdOf(currentJob)); setJob(refreshed); return report; }} />}
+    {backgroundDeployer && <iframe className="sharepoint-background-deployer" title="SharePoint background deployer" src={backgroundDeployer.url} aria-hidden="true" />}
   </div>;
+}
+
+function SiteDetailsModal({ site, onClose, onEdit, onDelete }) {
+  const rows = [
+    ['יחידה', site.unit], ['שם האתר', site.name], ['Host', site.host], ['קוד אתר', site.siteCode], ['מנהל', site.managerName],
+    ['גרסה נוכחית', site.currentVersion || '—'], ['מצב', STATUS_LABELS[site.status] || site.status], ['תאריך העלאה', formatDate(site.firstPublishedAt)],
+    ['עדכון אחרון', formatDate(site.lastPublishedAt)], ['ספריית אתר', site.siteDbFolder || 'siteDB'], ['ספריית משתמשים', site.usersDbFolder || 'siteUsersDb'],
+    ['siteAssets', site.siteAssetsFolder || 'siteAssets'], ['images', site.imagesFolder || 'images'], ['widgets_data.txt', site.widgetsDbTarget === 'site' ? 'ספריית האתר' : 'ספריית המשתמשים'],
+  ];
+  return <Modal title={site.name} onClose={onClose} wide>
+    <div className="site-details-grid">{rows.map(([label, value]) => <div key={label}><span>{label}</span><strong dir={['Host','קוד אתר','ספריית אתר','ספריית משתמשים','siteAssets','images'].includes(label) ? 'ltr' : undefined}>{value || '—'}</strong></div>)}</div>
+    <div className="site-final-url"><span>כתובת אתר סופית</span><a href={site.finalUrl} target="_blank" rel="noreferrer" dir="ltr">{site.finalUrl}<ExternalLink size={14} /></a></div>
+    <div className="modal-actions site-detail-actions"><button className="secondary-button" onClick={onClose}>סגור</button><button className="secondary-button" onClick={onEdit}><PencilLine size={17} />ערוך</button><button className="danger-button" onClick={onDelete}><Trash2 size={17} />מחק מהמעקב</button></div>
+  </Modal>;
+}
+
+function EditSiteModal({ site, hosts, onClose, onSave }) {
+  const [form, setForm] = useState({
+    unit: site.unit || '', name: site.name || '', host: site.host || hosts[0] || '', siteCode: site.siteCode || '', managerName: site.managerName || '',
+    currentVersion: site.currentVersion || '', firstPublishedAt: site.firstPublishedAt ? new Date(site.firstPublishedAt).toISOString().slice(0, 16) : '',
+    lastPublishedAt: site.lastPublishedAt ? new Date(site.lastPublishedAt).toISOString().slice(0, 16) : '', siteDbFolder: site.siteDbFolder || 'siteDB',
+    usersDbFolder: site.usersDbFolder || 'siteUsersDb', siteAssetsFolder: site.siteAssetsFolder || 'siteAssets', imagesFolder: site.imagesFolder || 'images', widgetsDbTarget: site.widgetsDbTarget || 'users',
+  });
+  const [saving, setSaving] = useState(false);
+  const set = (key, value) => setForm((prev) => ({ ...prev, [key]: value }));
+  const submit = async () => {
+    setSaving(true);
+    const ok = await onSave(form);
+    if (!ok) setSaving(false);
+  };
+  return <Modal title={`עריכת ${site.name}`} onClose={onClose} wide>
+    <div className="form-grid"><Field label="יחידה"><input value={form.unit} onChange={(e) => set('unit', e.target.value)} /></Field><Field label="שם האתר"><input value={form.name} onChange={(e) => set('name', e.target.value)} /></Field><Field label="Host"><select value={form.host} onChange={(e) => set('host', e.target.value)}>{hosts.map((host) => <option key={host}>{host}</option>)}</select></Field><Field label="קוד אתר"><input dir="ltr" value={form.siteCode} onChange={(e) => set('siteCode', e.target.value.toLowerCase())} /></Field><Field label="מנהל אתר"><input value={form.managerName} onChange={(e) => set('managerName', e.target.value)} /></Field><Field label="גרסה נוכחית"><input dir="ltr" value={form.currentVersion} onChange={(e) => set('currentVersion', e.target.value)} /></Field><Field label="תאריך העלאה"><input type="datetime-local" value={form.firstPublishedAt} onChange={(e) => set('firstPublishedAt', e.target.value)} /></Field><Field label="עדכון אחרון"><input type="datetime-local" value={form.lastPublishedAt} onChange={(e) => set('lastPublishedAt', e.target.value)} /></Field></div>
+    <details className="advanced-site-settings" open><summary>הגדרות SharePoint</summary><div className="form-grid"><Field label="ספריית האתר"><input dir="ltr" value={form.siteDbFolder} onChange={(e) => set('siteDbFolder', e.target.value)} /></Field><Field label="ספריית משתמשים"><input dir="ltr" value={form.usersDbFolder} onChange={(e) => set('usersDbFolder', e.target.value)} /></Field><Field label="תיקיית siteAssets"><input dir="ltr" value={form.siteAssetsFolder} onChange={(e) => set('siteAssetsFolder', e.target.value)} /></Field><Field label="תיקיית images"><input dir="ltr" value={form.imagesFolder} onChange={(e) => set('imagesFolder', e.target.value)} /></Field><Field label="יעד widgets_data.txt"><select value={form.widgetsDbTarget} onChange={(e) => set('widgetsDbTarget', e.target.value)}><option value="users">ספריית משתמשים</option><option value="site">ספריית האתר</option></select></Field></div></details>
+    <div className="target-preview" dir="ltr">https://{form.host}/sites/{form.siteCode}/{form.siteDbFolder}/dist/index.html</div>
+    <div className="modal-actions"><button className="secondary-button" disabled={saving} onClick={onClose}>ביטול</button><button className="primary-button" disabled={saving} onClick={submit}>{saving ? 'שומר...' : 'שמור שינויים'}</button></div>
+  </Modal>;
 }
 
 function AddSiteModal({ hosts, releases, onSave, onClose }) {
@@ -287,7 +376,7 @@ function JobModal({ job, onClose, onLocalVerify }) {
       <small>{localReport.limitation}</small>
     </div>}
     <div className="audit-log-section"><div className="audit-log-toolbar"><strong>{hasDeepAuditLog ? `לוג Audit מלא (${visibleLogs.length} שורות)` : `לוג משימה (${visibleLogs.length} שורות)`}</strong><div className="audit-log-actions">{canVerifyLocally && <button className="ghost-button" type="button" disabled={verifying} onClick={verify}><Gauge size={15} />{verifying ? 'מריץ...' : hasDeepAuditLog ? 'הרץ Audit מחדש' : 'צור לוג Audit מלא'}</button>}<button className="ghost-button" type="button" disabled={!visibleLogs.length} onClick={copyAuditLog}><ClipboardCopy size={15} />{copied ? 'הועתק' : 'העתק לוג'}</button></div></div>{visibleLogs.length ? <div className="log-box audit-log-box">{visibleLogs.map((line, index) => <div key={`${index}-${line}`}>{line}</div>)}</div> : <div className="empty-audit-log">עדיין אין לוג Audit עמוק. לחץ "צור לוג Audit מלא".</div>}</div>
-    {job.deployerUrl && job.state === 'READY_FOR_SHAREPOINT' && <a className="primary-button link-button" target="_blank" rel="noreferrer" href={job.deployerUrl}><ExternalLink size={17} />פתח פריסה ב-SharePoint</a>}
+    {job.deployerUrl && job.state === 'READY_FOR_SHAREPOINT' && <a className="primary-button link-button" target="_blank" rel="noreferrer" href={job.deployerUrl}><ExternalLink size={17} />פתח חלון אבחון SharePoint</a>}
   </Modal>;
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "site-release-manager",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "private": true,
   "type": "module",
   "scripts": {
@@ -27,6 +27,7 @@
     "postbuild": "node scripts/deploy-manager-sharepoint.mjs",
     "deploy:manager-sharepoint": "node scripts/deploy-manager-sharepoint.mjs --force",
     "sharepoint:local": "node scripts/dev.mjs --api-only",
-    "sharepoint:test": "npm run build && npm run sharepoint:local"
+    "sharepoint:test": "npm run build && npm run deploy:deployer-sharepoint && npm run sharepoint:local",
+    "deploy:deployer-sharepoint": "node scripts/deploy-deployer-sharepoint.mjs"
   }
 }

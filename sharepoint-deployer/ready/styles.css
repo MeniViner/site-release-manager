@@ -27,3 +27,8 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .logs-title { width: 100%; border: 0; background: #fff; justify-content: flex-start; color: #334155; }
 pre { margin: 0; max-height: 320px; overflow: auto; padding: 16px; direction: ltr; text-align: left; background: #0f172a; color: #cbd5e1; font-size: 12px; line-height: 1.55; }
 .hidden { display: none !important; }
+
+/* v0.3.4 background iframe mode */
+html.embedded, html.embedded body { background: transparent !important; }
+html.embedded body { margin: 0; }
+html.embedded .shell { display: none !important; }

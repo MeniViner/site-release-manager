@@ -364,3 +364,9 @@ server HTTPS URL. The same SharePoint UI build/runtime-config model remains vali
 The Release Manager still stores universal Site Builder `dist` releases. Site
 identity is not baked into those releases; the Site Builder runtime overlay is
 created per target site during deployment.
+
+## v0.3.4 — SharePoint deployment behavior
+
+When the Release Manager UI itself is opened from the same SharePoint host as the target site, deployment runs automatically in a hidden SharePoint Deployer iframe. The user stays in the Release Manager and follows progress through the job/run telemetry. "Open SharePoint diagnostics" remains only as a troubleshooting fallback.
+
+Before `npm run sharepoint:test`, the deployer tool is built from `sharepoint-deployer/ready` into `sharepoint-deployer/client/dist` and published to `SHAREPOINT_DEPLOYER_PUBLISH_PATH` (default `/sites/tools/SiteAssets/site-release-deployer`).

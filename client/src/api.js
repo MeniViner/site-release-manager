@@ -282,6 +282,7 @@ export const api = {
   config: () => request('/api/config'),
   dashboard: () => request('/api/dashboard'),
   sites: () => request('/api/sites'),
+  site: (id) => request(`/api/sites/${id}`),
   createSite: (body) => request('/api/sites', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
   updateSite: (id, body) => request(`/api/sites/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
   deleteSite: (id) => request(`/api/sites/${id}`, { method: 'DELETE' }),

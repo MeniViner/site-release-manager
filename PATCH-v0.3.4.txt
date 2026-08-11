@@ -1,0 +1,8 @@
+Site Release Manager v0.3.4
+- Site details modal on click.
+- Edit and delete tracked sites. Delete does not touch SharePoint.
+- Same-host SharePoint deployment now runs automatically in a hidden iframe instead of opening a new page.
+- Cross-host deployment falls back to a visible window because SharePoint iframe policies may block it.
+- SharePoint Deployer remains auto-run and now reports ready/success/failure to the parent page.
+- Added deploy:deployer-sharepoint and sharepoint:test now publishes the deployer tool before starting the local API.
+- Local audit now respects custom siteDb/usersDb/siteAssets/images/widgets paths.

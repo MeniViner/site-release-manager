@@ -110,32 +110,23 @@ function formatBytes(bytes) {
 
 function canonicalRuntime(site) {
   const siteRoot = `/sites/${site.siteCode}`;
-  const siteDbRoot = `${siteRoot}/siteDB`;
-  const usersDbRoot = `${siteRoot}/siteUsersDb`;
-  const siteAssetsRoot = `${siteDbRoot}/siteAssets`;
-  const imagesRoot = `${siteDbRoot}/images`;
+  const siteDbFolder = String(site.siteDbFolder || 'siteDB').trim();
+  const usersDbFolder = String(site.usersDbFolder || 'siteUsersDb').trim();
+  const siteAssetsFolder = String(site.siteAssetsFolder || 'siteAssets').trim();
+  const imagesFolder = String(site.imagesFolder || 'images').trim();
+  const widgetsDbTarget = String(site.widgetsDbTarget || 'users').trim().toLowerCase() === 'site' ? 'site' : 'users';
+  const siteDbRoot = `${siteRoot}/${siteDbFolder}`;
+  const usersDbRoot = `${siteRoot}/${usersDbFolder}`;
+  const siteAssetsRoot = `${siteDbRoot}/${siteAssetsFolder}`;
+  const imagesRoot = `${siteDbRoot}/${imagesFolder}`;
   const targetDistPath = `${siteDbRoot}/dist`;
   const sharePointSiteUrl = `https://${site.host}${siteRoot}`;
   return {
-    schemaVersion: 2,
-    storageBackend: 'txt',
-    host: site.host,
-    siteCode: site.siteCode,
-    siteRoot,
-    siteApiRoot: siteRoot,
-    siteDbFolder: 'siteDB',
-    siteDbRoot,
-    usersDbFolder: 'siteUsersDb',
-    usersDbRoot,
-    siteAssetsFolder: 'siteAssets',
-    siteAssetsRoot,
-    imagesFolder: 'images',
-    imagesRoot,
-    widgetsDbTarget: 'users',
-    sharePointSiteUrl,
-    allowedSiteRoot: sharePointSiteUrl,
-    targetDistPath,
-    finalAppUrl: `${sharePointSiteUrl}/siteDB/dist/index.html`,
+    schemaVersion: 2, storageBackend: 'txt', host: site.host, siteCode: site.siteCode,
+    siteRoot, siteApiRoot: siteRoot, siteDbFolder, siteDbRoot, usersDbFolder, usersDbRoot,
+    siteAssetsFolder, siteAssetsRoot, imagesFolder, imagesRoot, widgetsDbTarget,
+    sharePointSiteUrl, allowedSiteRoot: sharePointSiteUrl, targetDistPath,
+    finalAppUrl: `${sharePointSiteUrl}/${siteDbFolder}/dist/index.html`,
   };
 }
 
