@@ -1,8 +1,13 @@
 export function buildSeedFiles(site) {
   const siteRoot = `/sites/${site.siteCode}`;
-  const siteDbRoot = `${siteRoot}/siteDB`;
-  const usersDbRoot = `${siteRoot}/siteUsersDb`;
-  const assetsRoot = `${siteDbRoot}/siteAssets`;
+  const siteDbFolder = String(site.siteDbFolder || 'siteDB').trim();
+  const usersDbFolder = String(site.usersDbFolder || 'siteUsersDb').trim();
+  const siteAssetsFolder = String(site.siteAssetsFolder || 'siteAssets').trim();
+  const widgetsDbTarget = String(site.widgetsDbTarget || 'users').trim().toLowerCase() === 'site' ? 'site' : 'users';
+  const siteDbRoot = `${siteRoot}/${siteDbFolder}`;
+  const usersDbRoot = `${siteRoot}/${usersDbFolder}`;
+  const assetsRoot = `${siteDbRoot}/${siteAssetsFolder}`;
+  const widgetsRoot = widgetsDbTarget === 'site' ? assetsRoot : usersDbRoot;
   const json = (value) => `${JSON.stringify(value, null, 2)}\n`;
 
   return [
@@ -17,6 +22,6 @@ export function buildSeedFiles(site) {
       path: `${assetsRoot}/gantt_data.txt`,
       content: json({ enabled: false, buttonLabel: 'גאנט עבודה', pageTitle: 'גאנט עבודה', description: '', groupBy: 'category', defaultView: 'month', showLegend: true, showToday: true, categories: [], items: [] }),
     },
-    { path: `${usersDbRoot}/widgets_data.txt`, content: json({}) },
+    { path: `${widgetsRoot}/widgets_data.txt`, content: json({}) },
   ];
 }

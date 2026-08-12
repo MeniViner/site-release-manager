@@ -163,6 +163,14 @@ export function getApiRuntime() {
   return runtimeDescriptor;
 }
 
+export function getResolvedApiBaseUrl() {
+  return apiBaseUrl;
+}
+
+export function resolveApiUrl(path) {
+  return resolveRequestUrl(path);
+}
+
 export function getApiBootstrapDiagnostics() {
   return bootstrapDiagnostics;
 }

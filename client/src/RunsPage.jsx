@@ -30,9 +30,9 @@ const STAGE_ORDER = [
   { key: 'RELEASE_VALIDATED', label: 'בדיקת הריליס', tone: 'blue', hint: 'המערכת מוודאת שה-dist והקבצים קיימים.' },
   { key: 'RUNTIME_CONFIG', label: 'Runtime Config', tone: 'indigo', hint: 'נבנים host, siteCode וכל נתיבי SharePoint של האתר.' },
   { key: 'MANIFEST', label: 'Manifest וסדר העלאה', tone: 'violet', hint: 'נבנה manifest ו-index.html נשמר לסוף.' },
-  { key: 'LOCAL_AUDIT', label: 'Audit מקומי', tone: 'purple', hint: 'בדיקת hashes, overlays, TXT וסימולציית פריסה מקומית.' },
+  { key: 'LOCAL_AUDIT', label: 'Audit מקומי (אופציונלי)', tone: 'purple', hint: 'בדיקת hashes, overlays, TXT וסימולציית פריסה מקומית. אינו חוסם פריסה אם לא הורץ.' },
   { key: 'READY_FOR_SHAREPOINT', label: 'מוכן ל-SharePoint', tone: 'amber', hint: 'כל צד השרת הסתיים ונדרש מעבר לדפדפן SharePoint.' },
-  { key: 'DEPLOYER_INIT', label: 'טעינת Deployer', tone: 'yellow', hint: 'דף הפריסה קיבל jobId והצליח לטעון את פרטי המשימה.' },
+  { key: 'DEPLOYER_INIT', label: 'טעינת Deployer', tone: 'yellow', hint: 'Release Manager טען את פרטי המשימה ומפעיל את מנוע SharePoint באותו דף.' },
   { key: 'TARGET_VALIDATION', label: 'אימות אתר היעד', tone: 'cyan', hint: 'נבדק שה-Deployer רץ על ה-Host הנכון.' },
   { key: 'FORM_DIGEST', label: 'חיבור ו-FormDigest', tone: 'sky', hint: 'SharePoint מחזיר FormDigest לכתיבה דרך REST.' },
   { key: 'LIBRARIES', label: 'ספריות מסמכים', tone: 'teal', hint: 'בדיקה/יצירה של siteDB ו-siteUsersDb.' },
@@ -246,12 +246,13 @@ function RunDetailModal({ run, loading, onClose, onRefresh }) {
           </div>
         </section>
 
-        <section className="run-timeline-section"><div className="run-section-heading"><div><h3>אירועים מפורטים</h3><p>כל בקשה, Retry, אזהרה או כשל שנאספו במהלך הריצה.</p></div><span>{events.length} אירועים</span></div><div className="run-timeline">
+        <section className="run-timeline-section"><div className="run-section-heading"><div><h3>אירועים מפורטים</h3><p>אירועי טלמטריה בתוך כל שלב. המספר הוא מספר השלב הקבוע — לא מספר אירוע חדש.</p></div><span>{events.length} אירועים</span></div><div className="run-timeline">
           {events.map((event, index) => {
             const meta = EVENT_STATUS[event.status] || EVENT_STATUS.info;
             const Icon = meta.icon;
+            const stageNumber = STAGE_ORDER.findIndex((stage) => stage.key === event.stage) + 1;
             return <div className={`run-event run-event-${event.status}`} key={event.eventId || `${index}-${event.at}`}>
-              <div className="run-event-marker"><span>{index + 1}</span><Icon size={15} /></div>
+              <div className="run-event-marker"><span>{stageNumber > 0 ? stageNumber : '•'}</span><Icon size={15} /></div>
               <div className="run-event-body"><div className="run-event-head"><strong>{event.stageLabel || event.stage}</strong><span>{meta.label}</span><time>{formatDate(event.at)}</time>{event.durationMs != null && <small>{duration(event.durationMs)}</small>}</div>
                 {event.message && <p>{event.message}</p>}
                 <div className="run-event-meta">

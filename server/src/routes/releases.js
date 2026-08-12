@@ -54,6 +54,29 @@ const folderUpload = multer({
 
 export const releasesRouter = Router();
 
+const UNIVERSAL_TEXT_EXTENSIONS = new Set(['.html', '.js', '.css', '.json', '.txt', '.svg', '.xml', '.webmanifest']);
+
+function findCompiledSiteIdentity(distDir) {
+  const hits = [];
+  const patterns = [
+    /\/(?:sites|teams)\/[a-z0-9][a-z0-9-]{1,80}\/[A-Za-z0-9._-]{1,80}\/dist/ig,
+    /https?:\/\/[a-z0-9.-]+\/(?:sites|teams)\/[a-z0-9][a-z0-9-]{1,80}\/[A-Za-z0-9._-]{1,80}\/dist/ig,
+  ];
+  for (const file of collectFiles(distDir)) {
+    if (!UNIVERSAL_TEXT_EXTENSIONS.has(path.extname(file.path).toLowerCase())) continue;
+    const filePath = path.join(distDir, ...file.path.split('/'));
+    let text = '';
+    try { text = fs.readFileSync(filePath, 'utf8'); } catch { continue; }
+    for (const regex of patterns) {
+      regex.lastIndex = 0;
+      const match = regex.exec(text);
+      if (match) hits.push({ file: file.path, match: match[0] });
+      if (hits.length >= 8) return hits;
+    }
+  }
+  return hits;
+}
+
 const publicRelease = (release) => ({
   ...release,
   id: String(release._id),
@@ -75,6 +98,10 @@ function validateUniversalDist(distDir) {
   }
   if (files.some((file) => file.path === 'sitebuilder-runtime-config.json')) {
     throw new ReleaseValidationError('ה-dist מכיל sitebuilder-runtime-config.json. ריליס אוניברסלי חייב להגיע ללא Runtime Config פר-אתר.');
+  }
+  const identityHits = findCompiledSiteIdentity(distDir);
+  if (identityHits.length) {
+    throw new ReleaseValidationError(`ה-dist אינו אוניברסלי: נמצאה זהות SharePoint צרובה (${identityHits.map((hit) => `${hit.file} -> ${hit.match}`).join(' | ')}). הרץ npm run build:universal מחדש והעלה את ה-dist החדש.`);
   }
   return files;
 }

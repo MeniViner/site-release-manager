@@ -290,8 +290,8 @@ export async function runLocalDeploymentVerification(jobId) {
 
   const targetSpecificNeedles = [
     `https://${site.host}/sites/${site.siteCode}`,
-    `/sites/${site.siteCode}/siteDB`,
-    `/sites/${site.siteCode}/siteUsersDb`,
+    `/sites/${site.siteCode}/${site.siteDbFolder || 'siteDB'}`,
+    `/sites/${site.siteCode}/${site.usersDbFolder || 'siteUsersDb'}`, 
     `VITE_SP_SITE_CODE=${site.siteCode}`,
   ];
   const targetHits = scanTextFiles(release.distDir, targetSpecificNeedles);
@@ -299,12 +299,12 @@ export async function runLocalDeploymentVerification(jobId) {
   else fail('לא נמצאה זהות אתר היעד צרובה ב-dist', targetHits.slice(0, 8).map((hit) => `${hit.file} -> ${hit.needle}`).join(' | '));
 
   const literalIdentityHits = scanTextPatterns(release.distDir, [
-    { name: 'literal-sharepoint-site-db-path', regex: /\/(?:sites|teams)\/[a-z0-9][a-z0-9-]{1,80}\/siteDB(?:\/dist)?/ig },
-    { name: 'literal-sharepoint-users-db-path', regex: /\/(?:sites|teams)\/[a-z0-9][a-z0-9-]{1,80}\/siteUsersDb/ig },
-    { name: 'literal-absolute-sharepoint-site', regex: /https?:\/\/[a-z0-9.-]+\/(?:sites|teams)\/[a-z0-9][a-z0-9-]{1,80}\/siteDB(?:\/dist)?/ig },
+    { name: 'literal-sharepoint-final-dist-path', regex: /\/(?:sites|teams)\/[a-z0-9][a-z0-9-]{1,80}\/[A-Za-z0-9._-]{1,80}\/dist/ig },
+    { name: 'literal-sharepoint-users-library-path', regex: /\/(?:sites|teams)\/[a-z0-9][a-z0-9-]{1,80}\/[A-Za-z0-9._-]{1,80}\/widgets_data\.txt/ig },
+    { name: 'literal-absolute-sharepoint-final-dist', regex: /https?:\/\/[a-z0-9.-]+\/(?:sites|teams)\/[a-z0-9][a-z0-9-]{1,80}\/[A-Za-z0-9._-]{1,80}\/dist/ig },
   ]);
   if (!literalIdentityHits.length) pass('לא נמצאו נתיבי SharePoint פר-אתר ליטרליים ב-dist', 'סריקה כללית לכל siteCode, לא רק לאתר הנבדק');
-  else warn('נמצאו מחרוזות שנראות כמו נתיבי SharePoint פר-אתר', literalIdentityHits.slice(0, 8).map((hit) => `${hit.file} -> ${hit.match}`).join(' | '));
+  else fail('נמצאו נתיבי SharePoint פר-אתר בתוך Universal dist', literalIdentityHits.slice(0, 8).map((hit) => `${hit.file} -> ${hit.match}`).join(' | '));
 
   const rawIndexCheck = verifyIndexReferences(release.distDir);
   if (!rawIndexCheck.absoluteRootRefs.length) pass('index.html משתמש בנתיבי assets יחסיים', `${rawIndexCheck.refs.length} הפניות מקומיות`);
@@ -346,8 +346,9 @@ export async function runLocalDeploymentVerification(jobId) {
   pass('מבנה TXT ראשוני', `${seeds.length} קובצי seed נוצרו`);
   auditLog.info(`seedFiles=${seeds.map((seed) => seed.path).join(', ')}`);
 
-  const seedWrongRoot = seeds.filter((seed) => !seed.path.startsWith(`/sites/${site.siteCode}/siteDB/siteAssets/`) && seed.path !== `/sites/${site.siteCode}/siteUsersDb/widgets_data.txt`);
-  if (!seedWrongRoot.length) pass('כל קובצי ה-TXT מכוונים לנתיבים הצפויים', 'siteDB/siteAssets + siteUsersDb/widgets_data.txt');
+  const expectedRuntimeForSeeds = canonicalRuntime(site);
+  const seedWrongRoot = seeds.filter((seed) => !seed.path.startsWith(`${expectedRuntimeForSeeds.siteAssetsRoot}/`) && seed.path !== `${expectedRuntimeForSeeds.usersDbRoot}/widgets_data.txt` && seed.path !== `${expectedRuntimeForSeeds.siteAssetsRoot}/widgets_data.txt`);
+  if (!seedWrongRoot.length) pass('כל קובצי ה-TXT מכוונים לנתיבים הצפויים', `${expectedRuntimeForSeeds.siteAssetsRoot} + ${expectedRuntimeForSeeds.usersDbRoot}`);
   else fail('כל קובצי ה-TXT מכוונים לנתיבים הצפויים', seedWrongRoot.map((seed) => seed.path).join(', '));
 
   const seedOverwriteFailures = simulateSeedPreservation(existingSiteRoot, seeds);
@@ -408,7 +409,7 @@ export async function runLocalDeploymentVerification(jobId) {
       && metadata.siteCode === site.siteCode
       && metadata.host === site.host
       && metadata.storageBackend === 'txt'
-      && metadata.targetDistPath === `/sites/${site.siteCode}/siteDB/dist`;
+      && metadata.targetDistPath === canonicalRuntime(site).targetDistPath;
     if (metadataOk) pass('Deployment metadata תואם לריליס ולאתר', `${release.version} · ${release.sha256.slice(0, 12)}…`);
     else fail('Deployment metadata תואם לריליס ולאתר', JSON.stringify(metadata));
     auditLog.info(`deploymentMetadata=${JSON.stringify(metadata)}`);

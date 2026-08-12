@@ -1,0 +1,16 @@
+Site Release Manager v0.3.5
+
+Main fixes:
+- Removed the separate SharePoint Deployer page/iframe as the primary deployment path for same-host sites.
+- The Release Manager page itself now runs SharePoint REST deployment in the background when it is hosted on the same SharePoint host as the target site.
+- Added a global deployment coordinator that resumes READY_FOR_SHAREPOINT/DEPLOYING jobs after page navigation/reload.
+- Removed duplicate monitorJob start on site creation.
+- Fixed deployment descriptors and seed paths to respect siteDbFolder, usersDbFolder, siteAssetsFolder, imagesFolder and widgetsDbTarget.
+- LOCAL_AUDIT is now an optional telemetry stage and no longer moves the canonical currentStage backwards.
+- Progress after server preparation is 40%, then browser SharePoint stages advance it to 100%.
+- Runs UI uses fixed stage numbers instead of numbering every telemetry event as if it were a new stage.
+- Universal dist upload/preparation now rejects compiled SharePoint site identity leaks.
+- index.html is uploaded last by the in-page engine, and every uploaded file is verified by size/SHA-256 before completion.
+- Final index references are parsed and verified from SharePoint before the job can complete.
+
+The old external SharePoint Deployer URL remains only as a diagnostic/cross-host fallback, not the normal same-host workflow.

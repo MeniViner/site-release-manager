@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { api } from './api.js';
 import RunsPage from './RunsPage.jsx';
+import SharePointDeploymentCoordinator from './SharePointDeploymentCoordinator.jsx';
 import { collectDirectoryHandle, collectDroppedFolder, collectSelectedFolder, folderPickerDiagnostics, formatBytes, summarizeSource, validateDistSource } from './releaseFolder.js';
 import clientPackage from '../package.json';
 
@@ -60,6 +61,7 @@ function Layout() {
         </nav>
         <div className="sidebar-footer">{open ? `Site Release Manager ${APP_VERSION}` : APP_VERSION}</div>
       </aside>
+      <SharePointDeploymentCoordinator />
       <main className="main-content"><Routes><Route path="/" element={<DashboardPage />} /><Route path="/sites" element={<SitesPage />} /><Route path="/releases" element={<ReleasesPage />} /><Route path="/runs" element={<RunsPage />} /></Routes></main>
     </div>
   );
@@ -103,7 +105,6 @@ function SitesPage() {
   const [job, setJob] = useState(null);
   const [selectedSite, setSelectedSite] = useState(null);
   const [editingSite, setEditingSite] = useState(null);
-  const [backgroundDeployer, setBackgroundDeployer] = useState(null);
   const [error, setError] = useState('');
 
   const load = async () => {
@@ -124,41 +125,13 @@ function SitesPage() {
   };
   useEffect(() => { load(); }, []);
 
-  const launchSharePointDeployer = (current) => {
-    if (!current?.deployerUrl) return false;
-    let url;
-    try { url = new URL(current.deployerUrl); } catch { setError('כתובת SharePoint Deployer אינה תקינה.'); return false; }
-
-    const managerIsLocal = ['localhost', '127.0.0.1'].includes(window.location.hostname);
-    if (managerIsLocal) {
-      setError('המשימה מוכנה ל-SharePoint. בבדיקה מתוך localhost יש לפתוח את חלון האבחון ידנית; פריסה ברקע מופעלת כאשר Release Manager עצמו פתוח מתוך SharePoint.');
-      return false;
-    }
-
-    if (url.origin !== window.location.origin) {
-      setError(`אתר היעד נמצא ב-${url.host}, בעוד Release Manager פתוח מ-${window.location.host}. בגלל מגבלות iframe של SharePoint הפריסה תיפתח בחלון נפרד רק במקרה הזה.`);
-      window.open(current.deployerUrl, '_blank', 'noopener,noreferrer');
-      return true;
-    }
-
-    url.searchParams.set('embedded', '1');
-    url.searchParams.set('_run', String(Date.now()));
-    setBackgroundDeployer({ jobId: jobIdOf(current), url: url.toString() });
-    return true;
-  };
-
   const monitorJob = async (createdJob) => {
     const id = jobIdOf(createdJob);
     if (!id) return;
-    let deployerStarted = false;
     for (;;) {
       const current = await api.job(id);
       setJob(current);
-      if (current.state === 'READY_FOR_SHAREPOINT' && current.deployerUrl && !deployerStarted) {
-        deployerStarted = launchSharePointDeployer(current);
-      }
       if (['SUCCEEDED', 'FAILED', 'INTERRUPTED'].includes(current.state)) {
-        setBackgroundDeployer((active) => active?.jobId === id ? null : active);
         await load();
         break;
       }
@@ -238,7 +211,6 @@ function SitesPage() {
 
   return <div className="page">
     <PageHeader title="אתרים" subtitle="מעקב, התקנה ועדכון ריליסים" actions={<><button className="secondary-button" onClick={load}><RefreshCw size={17} />רענן</button><button className="primary-button" onClick={() => setShowAdd(true)}><Plus size={18} />הוסף אתר</button></>} />
-    {backgroundDeployer && <div className="background-deploy-banner"><LoaderCircle className="spin" size={17} /><div><strong>פריסת SharePoint רצה ברקע</strong><span>אין צורך לפתוח חלון נוסף. מצב המשימה מתעדכן אוטומטית.</span></div></div>}
     {error && <div className="alert"><CircleAlert size={18} />{error}<button onClick={() => setError('')}><X size={16} /></button></div>}
     <div className="table-card"><table><thead><tr><th>יחידה</th><th>שם האתר</th><th>Host</th><th>תאריך העלאה</th><th>עדכון אחרון</th><th>גרסה</th><th>מנהל אתר</th><th>מצב</th><th>פעולה</th></tr></thead><tbody>
       {sites.map((site) => <tr key={site.id} className="site-row">
@@ -253,7 +225,6 @@ function SitesPage() {
     {selectedSite && <SiteDetailsModal site={selectedSite} onClose={() => setSelectedSite(null)} onEdit={() => { setEditingSite(selectedSite); setSelectedSite(null); }} onDelete={() => deleteSite(selectedSite)} />}
     {editingSite && <EditSiteModal site={editingSite} hosts={config?.sharePointHosts || []} onClose={() => setEditingSite(null)} onSave={(values) => saveSite(editingSite, values)} />}
     {job && <JobModal job={job} onClose={() => setJob(null)} onLocalVerify={async (currentJob) => { const report = await api.verifyLocalDeployment(jobIdOf(currentJob)); const refreshed = await api.job(jobIdOf(currentJob)); setJob(refreshed); return report; }} />}
-    {backgroundDeployer && <iframe className="sharepoint-background-deployer" title="SharePoint background deployer" src={backgroundDeployer.url} aria-hidden="true" />}
   </div>;
 }
 
@@ -376,7 +347,8 @@ function JobModal({ job, onClose, onLocalVerify }) {
       <small>{localReport.limitation}</small>
     </div>}
     <div className="audit-log-section"><div className="audit-log-toolbar"><strong>{hasDeepAuditLog ? `לוג Audit מלא (${visibleLogs.length} שורות)` : `לוג משימה (${visibleLogs.length} שורות)`}</strong><div className="audit-log-actions">{canVerifyLocally && <button className="ghost-button" type="button" disabled={verifying} onClick={verify}><Gauge size={15} />{verifying ? 'מריץ...' : hasDeepAuditLog ? 'הרץ Audit מחדש' : 'צור לוג Audit מלא'}</button>}<button className="ghost-button" type="button" disabled={!visibleLogs.length} onClick={copyAuditLog}><ClipboardCopy size={15} />{copied ? 'הועתק' : 'העתק לוג'}</button></div></div>{visibleLogs.length ? <div className="log-box audit-log-box">{visibleLogs.map((line, index) => <div key={`${index}-${line}`}>{line}</div>)}</div> : <div className="empty-audit-log">עדיין אין לוג Audit עמוק. לחץ "צור לוג Audit מלא".</div>}</div>
-    {job.deployerUrl && job.state === 'READY_FOR_SHAREPOINT' && <a className="primary-button link-button" target="_blank" rel="noreferrer" href={job.deployerUrl}><ExternalLink size={17} />פתח חלון אבחון SharePoint</a>}
+    {job.state === 'READY_FOR_SHAREPOINT' && <div className="sharepoint-ready-note"><CheckCircle2 size={17} /><div><strong>מנוע הפריסה בדפדפן ממתין/רץ אוטומטית</strong><span>כאשר Release Manager פתוח מתוך אותו SharePoint Host, אין צורך לפתוח דף נוסף. חלון האבחון החיצוני נשאר רק למקרי תקלה.</span></div></div>}
+    {job.deployerUrl && <a className="secondary-button link-button" target="_blank" rel="noreferrer" href={job.deployerUrl}><ExternalLink size={17} />פתח אבחון חיצוני בלבד</a>}
   </Modal>;
 }
 

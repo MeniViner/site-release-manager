@@ -38,28 +38,32 @@ deploymentsRouter.get('/:jobId', async (req, res, next) => {
       return res.status(409).json({ error: 'הריליס עדיין אינו מוכן לפריסה.' });
     }
     const manifest = JSON.parse(fs.readFileSync(job.manifestPath, 'utf8'));
+    const siteRoot = `/sites/${site.siteCode}`;
+    const siteDbFolder = String(site.siteDbFolder || 'siteDB').trim();
+    const usersDbFolder = String(site.usersDbFolder || 'siteUsersDb').trim();
+    const siteAssetsFolder = String(site.siteAssetsFolder || 'siteAssets').trim();
+    const imagesFolder = String(site.imagesFolder || 'images').trim();
+    const siteDbRoot = `${siteRoot}/${siteDbFolder}`;
+    const usersDbRoot = `${siteRoot}/${usersDbFolder}`;
+    const finalDistRoot = `${siteDbRoot}/dist`;
     return res.json({
       job: { id: String(job._id), state: job.state, progress: job.progress, type: job.type, currentStage: job.currentStage, currentStageLabel: job.currentStageLabel },
       site: {
-        id: String(site._id),
-        name: site.name,
-        host: site.host,
-        siteCode: site.siteCode,
-        siteRoot: `/sites/${site.siteCode}`,
-        siteDbRoot: `/sites/${site.siteCode}/siteDB`,
-        usersDbRoot: `/sites/${site.siteCode}/siteUsersDb`,
-        finalDistRoot: `/sites/${site.siteCode}/siteDB/dist`,
-        finalUrl: site.finalUrl,
+        id: String(site._id), name: site.name, host: site.host, siteCode: site.siteCode,
+        siteRoot, siteDbFolder, usersDbFolder, siteAssetsFolder, imagesFolder,
+        widgetsDbTarget: site.widgetsDbTarget || 'users',
+        siteDbRoot, usersDbRoot, finalDistRoot,
+        finalUrl: site.finalUrl || `https://${site.host}${finalDistRoot}/index.html`,
       },
       release: { id: String(release._id), version: release.version, notes: release.notes },
       libraries: [
-        { title: 'siteDB', root: `/sites/${site.siteCode}/siteDB` },
-        { title: 'siteUsersDb', root: `/sites/${site.siteCode}/siteUsersDb` },
+        { title: siteDbFolder, root: siteDbRoot },
+        { title: usersDbFolder, root: usersDbRoot },
       ],
       folders: [
-        `/sites/${site.siteCode}/siteDB/dist`,
-        `/sites/${site.siteCode}/siteDB/siteAssets`,
-        `/sites/${site.siteCode}/siteDB/images`,
+        finalDistRoot,
+        `${siteDbRoot}/${siteAssetsFolder}`,
+        `${siteDbRoot}/${imagesFolder}`,
       ],
       seedFiles: buildSeedFiles(site),
       manifest,

@@ -8,6 +8,7 @@ export const RUN_STAGES = Object.freeze({
   RELEASE_VALIDATED: 'RELEASE_VALIDATED',
   RUNTIME_CONFIG: 'RUNTIME_CONFIG',
   MANIFEST: 'MANIFEST',
+  LOCAL_AUDIT: 'LOCAL_AUDIT',
   READY_FOR_SHAREPOINT: 'READY_FOR_SHAREPOINT',
   DEPLOYER_INIT: 'DEPLOYER_INIT',
   TARGET_VALIDATION: 'TARGET_VALIDATION',
@@ -25,8 +26,9 @@ export const STAGE_LABELS = Object.freeze({
   RELEASE_VALIDATED: 'בדיקת הריליס',
   RUNTIME_CONFIG: 'יצירת Runtime Config',
   MANIFEST: 'יצירת Manifest וסדר העלאה',
-  READY_FOR_SHAREPOINT: 'מוכן למעבר ל-SharePoint',
-  DEPLOYER_INIT: 'טעינת SharePoint Deployer',
+  LOCAL_AUDIT: 'Audit מקומי',
+  READY_FOR_SHAREPOINT: 'מוכן לפריסה ב-SharePoint',
+  DEPLOYER_INIT: 'אתחול מנוע הפריסה בדפדפן',
   TARGET_VALIDATION: 'אימות אתר היעד',
   FORM_DIGEST: 'חיבור ל-SharePoint וקבלת FormDigest',
   LIBRARIES: 'בדיקת/יצירת ספריות מסמכים',
@@ -81,12 +83,15 @@ export async function appendRunEvent(jobId, input, defaults = {}) {
   const event = normalizeRunEvent(input, defaults);
   const update = {
     $push: { runEvents: { $each: [event], $slice: -MAX_EVENTS } },
-    $set: {
-      currentStage: event.stage,
-      currentStageLabel: event.stageLabel,
-      updatedAt: new Date(),
-    },
+    $set: { updatedAt: new Date() },
   };
+  // LOCAL_AUDIT is an optional side-check that may run after server preparation.
+  // It must not move the canonical deployment state machine backwards from
+  // READY_FOR_SHAREPOINT to LOCAL_AUDIT.
+  if (event.stage !== RUN_STAGES.LOCAL_AUDIT) {
+    update.$set.currentStage = event.stage;
+    update.$set.currentStageLabel = event.stageLabel;
+  }
   if (event.status === 'failed') {
     update.$set.failureStage = event.stage;
     update.$set.failureInfo = {

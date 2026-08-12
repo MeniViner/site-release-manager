@@ -370,3 +370,11 @@ created per target site during deployment.
 When the Release Manager UI itself is opened from the same SharePoint host as the target site, deployment runs automatically in a hidden SharePoint Deployer iframe. The user stays in the Release Manager and follows progress through the job/run telemetry. "Open SharePoint diagnostics" remains only as a troubleshooting fallback.
 
 Before `npm run sharepoint:test`, the deployer tool is built from `sharepoint-deployer/ready` into `sharepoint-deployer/client/dist` and published to `SHAREPOINT_DEPLOYER_PUBLISH_PATH` (default `/sites/tools/SiteAssets/site-release-deployer`).
+
+## v0.3.5 — SharePoint deployment execution model
+
+For same-host deployment (for example the Release Manager and target site are both on `portal.army.idf`), the Release Manager UI itself executes the SharePoint REST deployment. No separate SharePoint Deployer page is required for normal operation.
+
+The global deployment coordinator automatically picks up jobs in `READY_FOR_SHAREPOINT` or `DEPLOYING`, runs the SharePoint stages in the current SharePoint page, and can resume an idempotent deployment after navigation/reload.
+
+The external deployer URL remains only as a diagnostic/cross-host fallback.

@@ -12,6 +12,29 @@ const OVERLAY_NAMES = [
   'sharepoint-deploy-manifest.json',
 ];
 
+const UNIVERSAL_SCAN_EXTENSIONS = new Set(['.html', '.js', '.css', '.json', '.txt', '.svg', '.xml', '.webmanifest']);
+
+function findUniversalIdentityLeaks(distDir) {
+  const hits = [];
+  const patterns = [
+    /\/(?:sites|teams)\/[a-z0-9][a-z0-9-]{1,80}\/[A-Za-z0-9._-]{1,80}\/dist/ig,
+    /https?:\/\/[a-z0-9.-]+\/(?:sites|teams)\/[a-z0-9][a-z0-9-]{1,80}\/[A-Za-z0-9._-]{1,80}\/dist/ig,
+  ];
+  for (const file of collectFiles(distDir)) {
+    if (!UNIVERSAL_SCAN_EXTENSIONS.has(path.extname(file.path).toLowerCase())) continue;
+    const filePath = path.join(distDir, ...file.path.split('/'));
+    let text = '';
+    try { text = fs.readFileSync(filePath, 'utf8'); } catch { continue; }
+    for (const regex of patterns) {
+      regex.lastIndex = 0;
+      const match = regex.exec(text);
+      if (match) hits.push({ file: file.path, match: match[0] });
+      if (hits.length >= 8) return hits;
+    }
+  }
+  return hits;
+}
+
 function deploymentLog(jobId, message) {
   const line = `[${new Date().toISOString()}] [prepare] ${message}`;
   console.log(`[job ${jobId}] ${line}`);
@@ -83,6 +106,10 @@ export async function prepareDeploymentJob(jobId) {
   if (!site || !release) throw new Error('Site or release not found.');
   if (release.artifactType !== 'universal-dist' || !release.distDir || !fs.existsSync(release.distDir)) {
     throw new Error('הריליס אינו Universal dist תקין. העלה מחדש את תיקיית dist שנבנתה לאחר מעבר Site Builder ל-Runtime Config.');
+  }
+  const identityLeaks = findUniversalIdentityLeaks(release.distDir);
+  if (identityLeaks.length) {
+    throw new Error(`הריליס אינו Universal dist נקי: נמצאו נתיבי SharePoint צרובים (${identityLeaks.map((hit) => `${hit.file} -> ${hit.match}`).join(' | ')}). צור npm run build:universal חדש והעלה אותו כריליס חדש.`);
   }
   await appendRunEvent(objectId, {
     stage: RUN_STAGES.RELEASE_VALIDATED,
@@ -213,10 +240,10 @@ export async function prepareDeploymentJob(jobId) {
     {
       $set: {
         state: 'READY_FOR_SHAREPOINT',
-        progress: 85,
+        progress: 40,
         manifestPath,
         deployerUrl,
-        message: 'הריליס מוכן. פותח את SharePoint לפריסה.',
+        message: 'צד השרת מוכן. ממתין למנוע הפריסה בדפדפן SharePoint.',
         updatedAt: new Date(),
       },
       $push: { logs: { $each: prepareLogs, $slice: -500 } },
