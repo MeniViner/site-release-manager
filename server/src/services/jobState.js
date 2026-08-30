@@ -238,8 +238,14 @@ export function completedStages(events = []) {
 }
 
 /**
- * First stage that still needs work. Resuming starts here rather than at
- * stage 1, so verified SharePoint state is never redone.
+ * First stage that still needs work.
+ *
+ * The browser worker uses this to report what it is resuming, and to seed the
+ * already-verified asset set so verified uploads are not repeated. It does NOT
+ * jump straight to this stage: browser activation, contextinfo, library
+ * discovery and folder/seed provisioning are re-run because they are cheap,
+ * idempotent, and the FormDigest is session-scoped and must be re-acquired.
+ * Discovery finds the existing libraries, folders and TXT files and reuses them.
  */
 export function resumeStage(events = [], pipeline = null) {
   const order = pipeline || [
