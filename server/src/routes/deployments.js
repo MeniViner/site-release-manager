@@ -83,7 +83,8 @@ deploymentsRouter.get('/:jobId', async (req, res, next) => {
     const artifact = JSON.parse(fs.readFileSync(job.manifestPath, 'utf8'));
     const descriptor = buildDeploymentDescriptor({
       job, site, release,
-      manifest: artifact.manifest,
+      // The deployable list, which includes sharepoint-deploy-manifest.json.
+      manifest: { ...artifact.manifest, files: artifact.files || artifact.manifest.files },
       uploadOrder: artifact.uploadOrder,
     });
     const events = job.runEvents || [];

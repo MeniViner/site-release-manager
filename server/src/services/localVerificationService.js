@@ -6,6 +6,7 @@ import { getDb } from '../db.js';
 import { config, paths, rootDir } from '../config.js';
 import { buildSeedFiles } from './seedData.js';
 import { resolveDeploymentFile } from './deploymentService.js';
+import { MANIFEST_KIND, SUPPORTED_MANIFEST_SCHEMA_VERSIONS } from '../../../shared/universalManifest.js';
 import {
   collectFiles,
   DEPLOYMENT_OVERLAY_FILES,
@@ -240,12 +241,30 @@ export async function runLocalDeploymentVerification(jobId) {
   if (!missingDeployer.length) pass('SharePoint Deployer בנוי מקומית', deployerRequired.join(', '));
   else fail('SharePoint Deployer בנוי מקומית', `חסרים: ${missingDeployer.join(', ')}`);
 
-  if (!missingDeployer.includes('app.js')) {
-    const deployerJs = fs.readFileSync(path.join(deployerDist, 'app.js'), 'utf8');
-    const requiredTokens = ['/_api/contextinfo', 'Files/add', 'uploadOrder', 'ensureSeedFile', "'index.html'"];
-    const missingTokens = requiredTokens.filter((token) => !deployerJs.includes(token));
-    if (!missingTokens.length) pass('Deployer מכיל את זרימת SharePoint הנדרשת', 'contextinfo · Files/add · seed preservation · uploadOrder · index last');
-    else fail('Deployer מכיל את זרימת SharePoint הנדרשת', `חסרים tokens: ${missingTokens.join(', ')}`);
+  // The deployer no longer carries its own copy of the provisioning sequence:
+  // it imports the same shared pipeline the in-page worker runs. Check that the
+  // shared modules actually shipped alongside it, and that the pipeline still
+  // contains the behaviour this project depends on.
+  const deployerShared = path.join(deployerDist, 'shared');
+  const requiredSharedModules = ['deploymentPipeline.js', 'sharepointProvisioning.js', 'sharepointClient.js', 'sharepointErrors.js', 'retry.js'];
+  const missingShared = requiredSharedModules.filter((name) => !fs.existsSync(path.join(deployerShared, name)));
+  if (!missingShared.length) pass('Deployer נבנה עם מודולי הפריסה המשותפים', requiredSharedModules.join(', '));
+  else fail('Deployer נבנה עם מודולי הפריסה המשותפים', `חסרים: ${missingShared.join(', ')}`);
+
+  if (!missingShared.length) {
+    const pipelineJs = fs.readFileSync(path.join(deployerShared, 'deploymentPipeline.js'), 'utf8');
+    const provisioningJs = fs.readFileSync(path.join(deployerShared, 'sharepointProvisioning.js'), 'utf8');
+    const requiredBehaviour = [
+      ['contextinfo', pipelineJs.includes('getContextInfo')],
+      ['exact library provisioning', pipelineJs.includes('ensureExactLibrary')],
+      ['folder stabilization', pipelineJs.includes('ensureFolderTree')],
+      ['TXT seed preservation', provisioningJs.includes("action: 'preserved'")],
+      ['index committed last', provisioningJs.includes('commitFile')],
+      ['verify after mutation', provisioningJs.includes('verifyRemoteFile')],
+    ];
+    const missingBehaviour = requiredBehaviour.filter(([, present]) => !present).map(([name]) => name);
+    if (!missingBehaviour.length) pass('Deployer מכיל את זרימת SharePoint הנדרשת', requiredBehaviour.map(([name]) => name).join(' · '));
+    else fail('Deployer מכיל את זרימת SharePoint הנדרשת', `חסר: ${missingBehaviour.join(', ')}`);
   }
 
   let publicApi;
@@ -424,15 +443,23 @@ export async function runLocalDeploymentVerification(jobId) {
     const releaseManifest = JSON.parse(fs.readFileSync(releaseManifestPath, 'utf8'));
     const expectedListedFiles = artifactFiles.filter((file) => file.path !== 'sharepoint-deploy-manifest.json').map((file) => file.path).sort();
     const listedFiles = (releaseManifest.files || []).map((file) => file.path).sort();
-    const manifestMetaOk = releaseManifest.kind === 'sitebuilder-release-manifest'
-      && Number(releaseManifest.schemaVersion) === 2
-      && releaseManifest.releaseId === String(release._id)
-      && releaseManifest.releaseVersion === release.version
-      && releaseManifest.releaseSha256 === release.sha256
-      && releaseManifest.site?.host === site.host
-      && releaseManifest.site?.siteCode === site.siteCode;
-    if (manifestMetaOk) pass('SharePoint release manifest metadata תקין', `${listedFiles.length} קבצים רשומים`);
-    else fail('SharePoint release manifest metadata תקין', JSON.stringify({ kind: releaseManifest.kind, schemaVersion: releaseManifest.schemaVersion, releaseId: releaseManifest.releaseId, releaseVersion: releaseManifest.releaseVersion, releaseSha256: releaseManifest.releaseSha256, site: releaseManifest.site }));
+    // The regenerated manifest follows the Site Builder contract: identity lives
+    // under `release` and `target`, not as flat top-level fields.
+    const manifestChecks = {
+      kind: releaseManifest.kind === MANIFEST_KIND,
+      schemaVersion: SUPPORTED_MANIFEST_SCHEMA_VERSIONS.includes(Number(releaseManifest.schemaVersion)),
+      buildMode: String(releaseManifest.buildMode || '').toLowerCase() === 'universal',
+      requiresRuntimeConfig: releaseManifest.requiresRuntimeConfig === true,
+      commitFile: releaseManifest.commitFile === 'index.html',
+      releaseId: releaseManifest.release?.id === String(release._id),
+      releaseVersion: releaseManifest.release?.version === release.version,
+      releaseSha256: releaseManifest.release?.sha256 === release.sha256,
+      host: releaseManifest.target?.host === site.host,
+      siteCode: releaseManifest.target?.siteCode === site.siteCode,
+    };
+    const manifestProblems = Object.entries(manifestChecks).filter(([, ok]) => !ok).map(([name]) => name);
+    if (!manifestProblems.length) pass('SharePoint release manifest metadata תקין', `${listedFiles.length} קבצים רשומים`);
+    else fail('SharePoint release manifest metadata תקין', `שדות לא תקינים: ${manifestProblems.join(', ')}`);
     if (JSON.stringify(listedFiles) === JSON.stringify(expectedListedFiles)) pass('SharePoint manifest מכסה את קבצי הפריסה הצפויים', `${listedFiles.length} entries`);
     else fail('SharePoint manifest מכסה את קבצי הפריסה הצפויים', `listed=${listedFiles.length} expected=${expectedListedFiles.length}`);
   }

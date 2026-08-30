@@ -17,7 +17,7 @@ import { buildSiteIdentity, buildTxtSeedPlan, requiredLibraries, requiredFolders
 import { verifyStoredReleaseIntegrity } from './releaseValidation.js';
 import {
   createStaging, writeTargetOverlay, regenerateManifest, verifyStaging,
-  buildUploadOrder, resolveStagedFile, destroyStaging,
+  buildDeploymentFiles, buildUploadOrder, resolveStagedFile, destroyStaging,
 } from './stagingService.js';
 import { appendRunEvent } from './runTelemetry.js';
 import { JOB_STATE } from './jobState.js';
@@ -158,7 +158,10 @@ export async function prepareDeploymentJob(jobId) {
     sourceProof: integrity.proof.info,
   });
   verifyStaging({ distDir: staging.distDir, manifest });
-  const uploadOrder = buildUploadOrder(manifest);
+  // The manifest itself is deployed too, even though it cannot appear inside
+  // its own file list.
+  const deploymentFiles = buildDeploymentFiles(staging.distDir, manifest);
+  const uploadOrder = buildUploadOrder(deploymentFiles);
   const manifestPath = path.join(stagingRoot, 'artifact-manifest.json');
   fs.writeFileSync(manifestPath, `${JSON.stringify({
     kind: 'site-release-manager-artifact',
@@ -178,6 +181,9 @@ export async function prepareDeploymentJob(jobId) {
       finalUrl: identity.finalAppUrl,
     },
     manifest,
+    // The deployable file list, which includes the manifest file itself; the
+    // nested `manifest` above remains the full Site Builder-shaped document.
+    files: deploymentFiles,
     uploadOrder,
   }, null, 2)}\n`, 'utf8');
 
@@ -185,9 +191,9 @@ export async function prepareDeploymentJob(jobId) {
     stage: STAGE.MANIFEST_CREATE,
     status: 'success',
     source: 'server',
-    message: `Manifest אומת מחדש עבור ${manifest.files.length} קבצים; ${manifest.commitFile} יעלה אחרון.`,
+    message: `Manifest אומת מחדש עבור ${deploymentFiles.length} קבצים; ${manifest.commitFile} יעלה אחרון.`,
     details: {
-      fileCount: manifest.files.length,
+      fileCount: deploymentFiles.length,
       indexReferences: manifest.indexReferences.length,
       firstUpload: uploadOrder[0] || '',
       lastUpload: uploadOrder.at(-1) || '',

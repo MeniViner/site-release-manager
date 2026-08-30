@@ -219,9 +219,26 @@ export function verifyStaging({ distDir, manifest }) {
   return { verifiedFiles: declared.size };
 }
 
+/**
+ * The complete set of files to deploy.
+ *
+ * A manifest can never list itself (its own hash would be unstable), but Site
+ * Builder DOES expect `sharepoint-deploy-manifest.json` to be present next to
+ * index.html at the target — its deployment-overlay assertion requires all
+ * three of runtime config, deployment metadata and the manifest. So the
+ * deployment plan carries one more entry than the manifest does.
+ */
+export function buildDeploymentFiles(distDir, manifest) {
+  const manifestPath = path.join(distDir, MANIFEST_FILE);
+  return [
+    ...manifest.files,
+    { path: MANIFEST_FILE, size: fs.statSync(manifestPath).size, sha256: hashFile(manifestPath) },
+  ];
+}
+
 /** Upload order: every asset first, the commit file last. */
-export function buildUploadOrder(manifest) {
-  const paths = manifest.files.map((file) => file.path);
+export function buildUploadOrder(files) {
+  const paths = (Array.isArray(files) ? files : files.files).map((file) => file.path);
   return [...paths.filter((filePath) => filePath !== COMMIT_FILE).sort(), COMMIT_FILE];
 }
 

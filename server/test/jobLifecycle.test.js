@@ -84,9 +84,11 @@ async function makeRelease(version) {
   };
   fs.writeFileSync(path.join(distDir, 'sharepoint-deploy-manifest.json'), JSON.stringify(manifest, null, 2));
 
+  // fileCount and sha256 are computed AFTER the manifest is written, exactly as
+  // the ingestion route does — the manifest is itself part of the artifact.
   const document = {
     _id: new ObjectId(), version, notes: '', status: 'READY', artifactType: 'universal-dist',
-    releaseRoot, distDir, sha256: hashDirectory(distDir), fileCount: files.length, totalBytes: 0,
+    releaseRoot, distDir, sha256: hashDirectory(distDir), fileCount: collectFiles(distDir).length, totalBytes: 0,
     createdAt: new Date(), updatedAt: new Date(),
   };
   await db.collection('releases').insertOne(document);
@@ -308,6 +310,28 @@ test('one SharePoint Web can hold several tracked targets despite the legacy uni
   const indexes = await db.collection('sites').indexes();
   assert.equal(indexes.some((index) => index.name === 'legacy_host_sitecode'), false, 'the legacy unique index must be dropped');
   assert.ok(indexes.some((index) => index.unique && index.key.targetKey === 1), 'uniqueness must move to targetKey');
+});
+
+test('the local deployment audit passes for a freshly prepared job', async (t) => {
+  if (!available) return skipAll(t);
+  // The audit is the offline pre-flight the operator runs before touching
+  // SharePoint. It inspects the real staging, the regenerated manifest and a
+  // simulated deployment, so it is also the best guard against the staging and
+  // manifest contracts drifting apart.
+  await reset();
+  const release = await makeRelease('3.0.0');
+  const site = await makeSite();
+  const job = await createDeploymentJob({ siteId: site._id, releaseId: release._id });
+
+  const { runLocalDeploymentVerification } = await import('../src/services/localVerificationService.js');
+  const report = await runLocalDeploymentVerification(String(job._id));
+  const failures = (report.checks || []).filter((check) => check.status === 'fail');
+  assert.deepEqual(
+    failures.map((check) => `${check.name}: ${check.detail || ''}`),
+    [],
+    'the local audit must not report any failure for a correctly prepared job',
+  );
+  assert.equal(report.ok, true);
 });
 
 test.after(async () => {
