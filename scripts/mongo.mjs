@@ -94,7 +94,15 @@ async function startMongo() {
   }
 
   if (!autoStart) {
-    console.error(`[mongo] MongoDB is not reachable at ${target.host}:${target.port}. AUTO_START_MONGO=false.`);
+    // AUTO_START_MONGO=false is the correct setting on the closed Windows
+    // workstation, where MongoDB runs as a service. Never imply that the
+    // mongod executable is missing: that is a different problem entirely.
+    console.error(`[mongo] MongoDB is not reachable at ${target.host}:${target.port}.`);
+    console.error('[mongo] AUTO_START_MONGO=false, so this project will not start a mongod of its own.');
+    console.error('[mongo] If MongoDB is installed as a Windows service:');
+    console.error('[mongo]   sc query MongoDB      (check the service)');
+    console.error('[mongo]   net start MongoDB     (start it)');
+    console.error('[mongo] Otherwise set AUTO_START_MONGO=true to let this project run a project-local mongod.');
     return false;
   }
 

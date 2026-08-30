@@ -19,7 +19,7 @@ import { appendRunEvent } from '../services/runTelemetry.js';
 import { settleJob } from '../services/jobQueue.js';
 import { heartbeatTargetLock } from '../services/targetLock.js';
 import { STAGE } from '../../../shared/deploymentStages.js';
-import { JOB_STATE, canonicalState, isTerminal, resumeStage, completedStages } from '../services/jobState.js';
+import { JOB_STATE, canonicalState, isTerminal, resumeStage, completedStages, assertTransition } from '../services/jobState.js';
 
 export const deploymentsRouter = Router();
 
@@ -126,6 +126,14 @@ deploymentsRouter.post('/:jobId/claim', async (req, res, next) => {
         holder: job.browserLease.clientId,
         expiresInMs: Math.max(0, LEASE_TTL_MS - (now.getTime() - new Date(job.browserLease.heartbeatAt).getTime())),
       });
+    }
+
+    // A claim moves the run into browser ownership; reject a transition the
+    // state machine does not allow instead of forcing it with a raw $set.
+    try {
+      assertTransition(job.state, JOB_STATE.WAITING_FOR_BROWSER);
+    } catch (error) {
+      return res.status(409).json({ error: error.message, code: error.code, state: canonicalState(job.state) });
     }
 
     const lease = { leaseId: crypto.randomUUID(), clientId, acquiredAt: now, heartbeatAt: now };
@@ -330,13 +338,13 @@ deploymentsRouter.post('/:jobId/complete', async (req, res, next) => {
       message: 'מנוע הפריסה דיווח שהפריסה הושלמה ואומתה במלואה.',
       details: req.body || {},
     });
+    // Record the run's own result, but leave the STATE transition to settleJob.
+    // Writing SUCCEEDED here first would make settleJob's isTerminal guard fire,
+    // and the target lock and the staging directory would never be released.
     await db.collection('deployment_jobs').updateOne(
       { _id: job._id },
       {
-        $set: {
-          state: JOB_STATE.SUCCEEDED, progress: 100, message: 'הפריסה הושלמה בהצלחה.',
-          deploymentSummary: req.body || {}, finishedAt: now, updatedAt: now, error: null, browserLease: null,
-        },
+        $set: { deploymentSummary: req.body || {}, browserLease: null, updatedAt: now },
         $push: { logs: `[${now.toISOString()}] SharePoint deployment completed and verified.` },
       },
     );
@@ -354,8 +362,9 @@ deploymentsRouter.post('/:jobId/complete', async (req, res, next) => {
         },
       },
     );
-    await settleJob(job._id, JOB_STATE.SUCCEEDED, { message: 'הפריסה הושלמה בהצלחה.', stage: STAGE.COMPLETE })
-      .catch(() => {});
+    // settleJob performs the terminal transition and releases the target lock
+    // and the staging directory.
+    await settleJob(job._id, JOB_STATE.SUCCEEDED, { message: 'הפריסה הושלמה בהצלחה.', stage: STAGE.COMPLETE });
     return res.json({ ok: true, finalUrl: site.finalUrl });
   } catch (error) {
     return next(error);
@@ -368,7 +377,9 @@ deploymentsRouter.post('/:jobId/fail', async (req, res, next) => {
     if (!context) return res.status(404).json({ error: 'המשימה לא נמצאה.' });
     const { job } = context;
     if (isTerminal(job.state)) return res.json({ ok: true, alreadySettled: true });
-    assertLease(job, req);
+    // A worker that lost its lease must still be able to report WHY it stopped.
+    // Refusing that would strand the job in an active state holding the target.
+    if (leaseIsLive(job.browserLease)) assertLease(job, req);
 
     const message = String(req.body?.error || 'SharePoint deployment failed.').slice(0, 2000);
     const alreadyCaptured = req.body?.eventAlreadyReported === true;

@@ -1,3 +1,21 @@
+/**
+ * Standalone SharePoint Deployer.
+ *
+ * This page is a DIAGNOSTIC and CROSS-HOST FALLBACK, not the normal path. The
+ * normal experience runs inside the Release Manager Runs UI on the SharePoint
+ * host that owns the target.
+ *
+ * It deliberately runs the SAME pipeline as the in-page worker
+ * (shared/deploymentPipeline.js) rather than its own copy: the previous
+ * standalone implementation duplicated the provisioning sequence, which is how
+ * the fallback path drifted away from the eventual-consistency handling.
+ *
+ * `shared/` is copied next to this file by sharepoint-deployer/scripts/build.mjs.
+ */
+
+import { runDeploymentPipeline } from './shared/deploymentPipeline.js';
+import { stageLabel } from './shared/deploymentStages.js';
+
 const params = new URLSearchParams(location.search);
 const jobId = params.get('jobId') || '';
 const apiBase = (params.get('apiBase') || '').replace(/\/+$/, '');
@@ -5,7 +23,11 @@ const embedded = params.get('embedded') === '1';
 if (embedded) document.documentElement.classList.add('embedded');
 
 function notifyParent(type, payload = {}) {
-  try { if (window.parent && window.parent !== window) window.parent.postMessage({ source: 'site-release-deployer', type, jobId, ...payload }, '*'); } catch {}
+  try {
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage({ source: 'site-release-deployer', type, jobId, ...payload }, '*');
+    }
+  } catch { /* the parent frame may be cross-origin */ }
 }
 
 const ui = {
@@ -16,41 +38,10 @@ const ui = {
   logs: document.getElementById('logs'),
 };
 
-let descriptor = null;
-let running = false;
-let activeStage = 'DEPLOYER_INIT';
-let activeStageLabel = 'טעינת SharePoint Deployer';
-let activeFile = '';
-let lastSharePointRequest = null;
-const logLines = [];
-const ODATA = 'application/json;odata=verbose';
-
-const STAGES = Object.freeze({
-  DEPLOYER_INIT: 'טעינת SharePoint Deployer',
-  TARGET_VALIDATION: 'אימות אתר היעד',
-  FORM_DIGEST: 'חיבור ל-SharePoint וקבלת FormDigest',
-  LIBRARIES: 'בדיקת/יצירת ספריות מסמכים',
-  FOLDERS: 'בדיקת/יצירת תיקיות',
-  SEED_FILES: 'בדיקת/יצירת קובצי TXT',
-  RELEASE_FILES: 'העלאת קובצי הריליס',
-  FINAL_VERIFY: 'אימות האתר הסופי',
-  COMPLETE: 'סיום הפריסה',
-});
-
-function log(message) {
-  const line = `[${new Date().toISOString()}] ${message}`;
-  logLines.push(line);
-  ui.logs.textContent = logLines.join('\n');
-  console.log(line);
-}
-
-function setProgress(percent, step, currentFile = '') {
-  const value = Math.max(0, Math.min(100, Math.round(percent)));
-  ui.percent.textContent = `${value}%`;
-  ui.bar.style.width = `${value}%`;
-  ui.step.textContent = step;
-  ui.currentFile.textContent = currentFile;
-  activeFile = currentFile || activeFile;
+function log(line) {
+  const stamped = `[${new Date().toISOString()}] ${line}`;
+  ui.logs.textContent += `${stamped}\n`;
+  ui.logs.scrollTop = ui.logs.scrollHeight;
 }
 
 function setBadge(type, text) {
@@ -58,398 +49,190 @@ function setBadge(type, text) {
   ui.badge.textContent = text;
 }
 
-async function api(path, options = {}) {
-  const response = await fetch(`${apiBase}${path}`, options);
-  const contentType = response.headers.get('content-type') || '';
-  const body = contentType.includes('json') ? await response.json() : await response.text();
+function setProgress(percent, step, currentFile = '') {
+  const value = Math.max(0, Math.min(100, Math.round(percent || 0)));
+  ui.percent.textContent = `${value}%`;
+  ui.bar.style.width = `${value}%`;
+  if (step) ui.step.textContent = step;
+  ui.currentFile.textContent = currentFile || '';
+}
+
+/** Local Release Manager API call. The lease header marks the exclusive owner. */
+async function apiCall(path, options = {}, leaseId = '') {
+  const headers = { ...(options.headers || {}) };
+  if (leaseId) headers['X-SRM-Lease'] = leaseId;
+  const response = await fetch(`${apiBase}${path}`, { ...options, headers });
+  const text = await response.text();
+  let body = null;
+  if (text) { try { body = JSON.parse(text); } catch { body = text; } }
   if (!response.ok) {
     const error = new Error(typeof body === 'string' ? body : body?.error || `HTTP ${response.status}`);
     error.httpStatus = response.status;
+    error.apiCode = body?.code || '';
     error.url = `${apiBase}${path}`;
-    error.method = options.method || 'GET';
     throw error;
   }
   return body;
 }
 
-async function reportEvent(stage, status, message, extra = {}) {
-  if (!jobId || !apiBase) return;
-  try {
-    await api(`/api/deployments/${encodeURIComponent(jobId)}/event`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        stage,
-        stageLabel: STAGES[stage] || stage,
-        status,
-        source: 'sharepoint-deployer',
-        message,
-        currentFile: extra.currentFile || activeFile || '',
-        operation: extra.operation || '',
-        method: extra.method || '',
-        url: extra.url || '',
-        httpStatus: extra.httpStatus ?? null,
-        durationMs: extra.durationMs ?? null,
-        details: extra.details || null,
-      }),
-    });
-  } catch (error) {
-    log(`Telemetry callback failed: ${error.message}`);
-  }
+async function sha256Hex(bytes) {
+  const source = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  const digest = await crypto.subtle.digest('SHA-256', source);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-async function withStage(stage, fn, { startMessage = '', successMessage = '' } = {}) {
-  const label = STAGES[stage] || stage;
-  activeStage = stage;
-  activeStageLabel = label;
-  activeFile = '';
-  const started = performance.now();
-  await reportEvent(stage, 'started', startMessage || `${label} התחיל.`);
-  log(`[stage:${stage}] START ${label}`);
-  try {
-    const result = await fn();
-    const durationMs = Math.round(performance.now() - started);
-    await reportEvent(stage, 'success', successMessage || `${label} הושלם.`, { durationMs });
-    log(`[stage:${stage}] PASS ${label} (${durationMs}ms)`);
-    return result;
-  } catch (error) {
-    const durationMs = Math.round(performance.now() - started);
-    const request = error.request || ((lastSharePointRequest?.httpStatus || 0) >= 400 ? lastSharePointRequest : null);
-    error.stage = stage;
-    error.stageLabel = label;
-    error.currentFile = error.currentFile || activeFile || '';
-    error.durationMs = durationMs;
-    if (request) error.request = request;
-    await reportEvent(stage, 'failed', error.message, {
-      currentFile: error.currentFile,
-      operation: request?.operation || '',
-      method: request?.method || error.method || '',
-      url: request?.url || error.url || '',
-      httpStatus: request?.httpStatus ?? error.httpStatus ?? null,
-      durationMs,
-      details: { responsePreview: request?.responsePreview || '', contentType: request?.contentType || '' },
-    });
-    log(`[stage:${stage}] FAIL ${label}: ${error.message}`);
-    throw error;
-  }
-}
+const JSOM_SCRIPTS = ['init.js', 'MicrosoftAjax.js', 'SP.Runtime.js', 'SP.js'];
 
-function esc(value) { return String(value || '').replace(/'/g, "''"); }
-function targetWeb() { return `https://${descriptor.site.host}/sites/${descriptor.site.siteCode}`; }
-
-async function spFetch(url, options = {}, operation = '') {
-  const method = String(options.method || 'GET').toUpperCase();
-  const started = performance.now();
-  let response;
-  try {
-    response = await fetch(url, { credentials: 'include', ...options });
-  } catch (error) {
-    lastSharePointRequest = { operation, method, url, httpStatus: 0, durationMs: Math.round(performance.now() - started), contentType: '', responsePreview: '', networkError: error.message };
-    error.request = lastSharePointRequest;
-    throw error;
-  }
-  const contentType = response.headers.get('content-type') || '';
-  lastSharePointRequest = { operation, method, url, httpStatus: response.status, durationMs: Math.round(performance.now() - started), contentType, responsePreview: '' };
-  if (response.ok && contentType.includes('text/html')) {
-    const error = new Error('SharePoint returned an HTML page. Verify that you are signed in and have permission to the target site.');
-    error.request = lastSharePointRequest;
-    throw error;
-  }
-  return response;
-}
-
-async function responseFailure(response, message) {
-  let preview = '';
-  try { preview = (await response.clone().text()).slice(0, 500); } catch {}
-  lastSharePointRequest = { ...(lastSharePointRequest || {}), responsePreview: preview };
-  const error = new Error(`${message}: HTTP ${response.status}${preview ? ` | ${preview}` : ''}`);
-  error.httpStatus = response.status;
-  error.request = lastSharePointRequest;
-  return error;
-}
-
-async function getDigest(webUrl) {
-  log('Requesting SharePoint form digest.');
-  const url = `${webUrl}/_api/contextinfo`;
-  const response = await spFetch(url, {
-    method: 'POST', headers: { Accept: ODATA, 'Content-Type': ODATA },
-  }, 'contextinfo');
-  if (!response.ok) throw await responseFailure(response, 'contextinfo failed');
-  const data = await response.json();
-  const digest = data?.d?.GetContextWebInformation?.FormDigestValue;
-  if (!digest) throw new Error('SharePoint returned an empty form digest.');
-  return digest;
-}
-
-async function getLibrary(webUrl, title) {
-  const url = `${webUrl}/_api/web/lists/GetByTitle('${esc(title)}')?$select=Id,Title,BaseTemplate,RootFolder/ServerRelativeUrl&$expand=RootFolder`;
-  const response = await spFetch(url, { headers: { Accept: ODATA } }, `check-library:${title}`);
-  if (response.status === 404) return null;
-  if (!response.ok) throw await responseFailure(response, `Library check failed for ${title}`);
-  return (await response.json())?.d || null;
-}
-
-async function ensureLibrary(webUrl, title, digest) {
-  const existing = await getLibrary(webUrl, title);
-  if (existing) {
-    if (Number(existing.BaseTemplate) !== 101) throw new Error(`${title} exists but is not a Document Library.`);
-    log(`Library exists: ${title}`);
-    return existing;
-  }
-  log(`Creating Document Library: ${title}`);
-  const url = `${webUrl}/_api/web/lists`;
-  const response = await spFetch(url, {
-    method: 'POST',
-    headers: { Accept: ODATA, 'Content-Type': ODATA, 'X-RequestDigest': digest },
-    body: JSON.stringify({ __metadata: { type: 'SP.List' }, BaseTemplate: 101, Title: title, Description: 'Site Release Manager data library', OnQuickLaunch: true }),
-  }, `create-library:${title}`);
-  if (!response.ok) {
-    const recheck = await getLibrary(webUrl, title);
-    if (recheck) return recheck;
-    throw await responseFailure(response, `Creating ${title} failed`);
-  }
-  const created = await getLibrary(webUrl, title);
-  if (!created) throw new Error(`SharePoint did not expose ${title} after creation.`);
-  return created;
-}
-
-async function folderExists(webUrl, relativePath) {
-  const url = `${webUrl}/_api/web/GetFolderByServerRelativeUrl('${esc(relativePath)}')?$select=ServerRelativeUrl`;
-  const response = await spFetch(url, { headers: { Accept: ODATA } }, `check-folder:${relativePath}`);
-  if (response.status === 404) return false;
-  if (!response.ok) throw await responseFailure(response, `Folder check failed: ${relativePath}`);
-  return true;
-}
-
-async function ensureFolder(webUrl, relativePath, digest) {
-  if (await folderExists(webUrl, relativePath)) return;
-  log(`Creating folder: ${relativePath}`);
-  const url = `${webUrl}/_api/web/folders`;
-  const response = await spFetch(url, {
-    method: 'POST', headers: { Accept: ODATA, 'Content-Type': ODATA, 'X-RequestDigest': digest },
-    body: JSON.stringify({ __metadata: { type: 'SP.Folder' }, ServerRelativeUrl: relativePath }),
-  }, `create-folder:${relativePath}`);
-  if (!response.ok && response.status !== 409) {
-    const preview = await response.clone().text().catch(() => '');
-    if (!/already exists/i.test(preview)) throw await responseFailure(response, `Folder creation failed: ${relativePath}`);
-  }
-}
-
-async function fileValue(webUrl, relativePath) {
-  const url = `${webUrl}/_api/web/GetFileByServerRelativeUrl('${esc(relativePath)}')/$value`;
-  return spFetch(url, { headers: { Accept: '*/*' } }, `read-file:${relativePath}`);
-}
-
-async function uploadBytes(webUrl, relativePath, bytes, digest) {
-  const slash = relativePath.lastIndexOf('/');
-  const folder = relativePath.slice(0, slash);
-  const fileName = relativePath.slice(slash + 1);
-  await ensureFolder(webUrl, folder, digest);
-  const url = `${webUrl}/_api/web/GetFolderByServerRelativeUrl('${esc(folder)}')/Files/add(url='${encodeURIComponent(fileName)}',overwrite=true)`;
-  const response = await spFetch(url, {
-    method: 'POST', headers: { Accept: ODATA, 'X-RequestDigest': digest }, body: bytes,
-  }, `upload-file:${relativePath}`);
-  if (!response.ok) throw await responseFailure(response, `Upload failed for ${relativePath}`);
-}
-
-async function ensureSeedFile(webUrl, item, digest) {
-  const existing = await fileValue(webUrl, item.path);
-  if (existing.ok) {
-    const text = await existing.text();
-    if (text.trim()) { log(`Keeping existing TXT: ${item.path}`); return 'kept'; }
-  } else if (existing.status !== 404) {
-    throw await responseFailure(existing, `Unable to check ${item.path}`);
-  }
-  log(`Creating TXT: ${item.path}`);
-  await uploadBytes(webUrl, item.path, new TextEncoder().encode(item.content), digest);
-  return 'created';
-}
-
-async function reportProgress(progress, message, currentFile = '', stage = activeStage) {
-  setProgress(progress, message, currentFile);
-  activeStage = stage || activeStage;
-  activeStageLabel = STAGES[activeStage] || activeStageLabel;
-  try {
-    await api(`/api/deployments/${encodeURIComponent(jobId)}/progress`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ progress, message, currentFile, stage: activeStage }),
-    });
-  } catch (error) { log(`Progress callback failed: ${error.message}`); }
-}
-
-function requiredFolders() {
-  const set = new Set(descriptor.folders);
-  for (const file of descriptor.manifest.files) {
-    const relativeFolder = file.path.split('/').slice(0, -1).join('/');
-    if (relativeFolder) set.add(`${descriptor.site.finalDistRoot}/${relativeFolder}`);
-  }
-  return [...set].sort((a, b) => a.split('/').length - b.split('/').length || a.localeCompare(b));
-}
-
-async function uploadReleaseFiles(webUrl, digest) {
-  const filesByPath = new Map(descriptor.manifest.files.map((file) => [file.path, file]));
-  const order = descriptor.manifest.uploadOrder;
-  let completed = 0;
-  const total = order.length;
-
-  const uploadOne = async (relativePath) => {
-    activeFile = relativePath;
-    const file = filesByPath.get(relativePath);
-    if (!file) {
-      const error = new Error(`Manifest entry is missing: ${relativePath}`);
-      error.currentFile = relativePath;
-      throw error;
-    }
-    const progress = 30 + ((completed / total) * 60);
-    await reportProgress(progress, `מעלה קבצים (${completed + 1}/${total})`, relativePath, 'RELEASE_FILES');
-    const sourceUrl = `${apiBase}/api/deployments/${encodeURIComponent(jobId)}/file?path=${encodeURIComponent(relativePath)}`;
-    const source = await fetch(sourceUrl);
-    if (!source.ok) {
-      const error = new Error(`Unable to download release file ${relativePath}: HTTP ${source.status}`);
-      error.httpStatus = source.status;
-      error.url = sourceUrl;
-      error.method = 'GET';
-      error.currentFile = relativePath;
-      throw error;
-    }
-    const bytes = await source.arrayBuffer();
-    if (bytes.byteLength !== file.size) {
-      const error = new Error(`Size mismatch for ${relativePath}. Expected ${file.size}, got ${bytes.byteLength}.`);
-      error.currentFile = relativePath;
-      throw error;
-    }
-    await uploadBytes(webUrl, `${descriptor.site.finalDistRoot}/${relativePath}`, bytes, digest);
-    completed += 1;
-  };
-
-  const normalFiles = order.filter((path) => path !== 'index.html');
-  const queue = [...normalFiles];
-  const workers = Array.from({ length: Math.min(4, queue.length || 1) }, async () => {
-    while (queue.length) await uploadOne(queue.shift());
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const element = document.createElement('script');
+    element.src = src;
+    element.async = false;
+    element.addEventListener('load', () => resolve());
+    element.addEventListener('error', () => reject(new Error(`Failed to load ${src}`)));
+    document.head.appendChild(element);
   });
-  await Promise.all(workers);
-  if (order.includes('index.html')) await uploadOne('index.html');
-  activeFile = '';
-  return { uploaded: completed, total };
 }
 
-async function verify(webUrl) {
-  await reportProgress(94, 'מאמת את האתר הסופי', '', 'FINAL_VERIFY');
-  const index = await fileValue(webUrl, `${descriptor.site.finalDistRoot}/index.html`);
-  if (!index.ok) throw await responseFailure(index, 'Final index.html is missing after deployment');
-  const jsPath = descriptor.manifest.files.find((file) => /^assets\/.*\.js$/i.test(file.path))?.path;
-  if (!jsPath) throw new Error('The artifact contains no JavaScript asset.');
-  const js = await fileValue(webUrl, `${descriptor.site.finalDistRoot}/${jsPath}`);
-  if (!js.ok) throw await responseFailure(js, `Final JavaScript asset is missing: ${jsPath}`);
-  return { index: true, jsPath };
+/**
+ * Exact-URL Document Library creation.
+ * REST list creation derives the root folder from the title and silently
+ * auto-suffixes on collision, so JSOM's explicit URL is required.
+ */
+function createExactLibraryViaJsom(webUrl) {
+  return async function createLibraryExact({ title, urlSegment, description = 'Site Builder data library' }) {
+    if (!window.SP?.ClientContext || !window.SP?.ListCreationInformation) {
+      const web = new URL(webUrl);
+      const layouts = `${web.origin}${web.pathname.replace(/\/+$/, '')}/_layouts/15/`;
+      for (const script of JSOM_SCRIPTS) {
+        // Sequential: SP.js depends on SP.Runtime.js.
+        // eslint-disable-next-line no-await-in-loop
+        await loadScript(`${layouts}${script}`).catch(() => {});
+      }
+    }
+    if (!window.SP?.ClientContext || !window.SP?.ListCreationInformation) {
+      const error = new Error('SharePoint JSOM is unavailable on this page, so an exact-URL Document Library cannot be created.');
+      error.code = 'SHAREPOINT_JSOM_UNAVAILABLE';
+      error.errorClass = 'PERMANENT_FAILURE';
+      throw error;
+    }
+
+    const SP = window.SP;
+    const context = new SP.ClientContext(webUrl);
+    const creation = new SP.ListCreationInformation();
+    creation.set_title(title);
+    creation.set_templateType(101);
+    creation.set_url(urlSegment);
+    const list = context.get_web().get_lists().add(creation);
+    if (typeof list.set_description === 'function') list.set_description(description);
+    if (typeof list.set_onQuickLaunch === 'function') list.set_onQuickLaunch(true);
+    if (typeof list.update === 'function') list.update();
+    const rootFolder = list.get_rootFolder();
+    context.load(list, 'Id', 'Title', 'BaseTemplate');
+    context.load(rootFolder, 'ServerRelativeUrl');
+
+    return new Promise((resolve, reject) => {
+      context.executeQueryAsync(
+        () => resolve({ title, rootFolder: rootFolder.get_serverRelativeUrl?.() || '' }),
+        (_sender, args) => {
+          const error = new Error(args?.get_message?.() || 'JSOM list creation failed.');
+          error.code = 'JSOM_QUERY_FAILED';
+          error.operation = `create-library:${title}`;
+          reject(error);
+        },
+      );
+    });
+  };
 }
+
+async function downloadStagedFile(file) {
+  const url = `${apiBase}/api/deployments/${encodeURIComponent(jobId)}/file?path=${encodeURIComponent(file.path)}`;
+  const response = await fetch(url, { cache: 'no-store' });
+  if (!response.ok) {
+    const error = new Error(`Unable to download ${file.path}: HTTP ${response.status}`);
+    error.httpStatus = response.status;
+    error.url = url;
+    error.currentFile = file.path;
+    throw error;
+  }
+  const buffer = await response.arrayBuffer();
+  if (Number(buffer.byteLength) !== Number(file.size)) {
+    throw new Error(`Size mismatch for ${file.path}. Expected ${file.size}, got ${buffer.byteLength}.`);
+  }
+  const bytes = new Uint8Array(buffer);
+  if (file.sha256) {
+    const actual = await sha256Hex(bytes);
+    if (actual !== file.sha256) throw new Error(`SHA-256 mismatch for ${file.path} before upload.`);
+  }
+  return bytes;
+}
+
+let running = false;
 
 async function run() {
-  if (running || !descriptor) return;
+  if (running) return;
   running = true;
   ui.startButton.disabled = true;
   ui.retryButton.classList.add('hidden');
   ui.errorBox.classList.add('hidden');
-  setBadge('running', 'מבצע פריסה');
+  setBadge('running', 'בפריסה');
 
   try {
-    await withStage('TARGET_VALIDATION', async () => {
-      if (location.hostname.toLowerCase() !== descriptor.site.host.toLowerCase()) {
-        throw new Error(`This deployer is running on ${location.hostname}, but the target host is ${descriptor.site.host}.`);
-      }
-    }, { successMessage: `Host ה-Deployer תואם ליעד ${descriptor.site.host}.` });
-
-    const webUrl = targetWeb();
-    const digest = await withStage('FORM_DIGEST', async () => {
-      await reportProgress(3, 'מתחבר ל-SharePoint', '', 'FORM_DIGEST');
-      return getDigest(webUrl);
-    }, { successMessage: 'SharePoint החזיר FormDigest תקין.' });
-
-    await withStage('LIBRARIES', async () => {
-      await reportProgress(8, 'בודק ספריות מסמכים', '', 'LIBRARIES');
-      for (const library of descriptor.libraries) await ensureLibrary(webUrl, library.title, digest);
-    });
-
-    await withStage('FOLDERS', async () => {
-      await reportProgress(14, 'יוצר תיקיות חסרות', '', 'FOLDERS');
-      for (const folder of requiredFolders()) await ensureFolder(webUrl, folder, digest);
-    });
-
-    await withStage('SEED_FILES', async () => {
-      await reportProgress(20, 'יוצר קובצי TXT חסרים', '', 'SEED_FILES');
-      let created = 0;
-      let kept = 0;
-      for (const seed of descriptor.seedFiles) {
-        activeFile = seed.path;
-        const result = await ensureSeedFile(webUrl, seed, digest);
-        if (result === 'created') created += 1; else kept += 1;
-      }
-      activeFile = '';
-      return { created, kept };
-    });
-
-    const uploadSummary = await withStage('RELEASE_FILES', async () => {
-      await reportProgress(30, 'מתחיל העלאת ריליס', '', 'RELEASE_FILES');
-      return uploadReleaseFiles(webUrl, digest);
-    }, { successMessage: `כל ${descriptor.manifest.files.length} קובצי הריליס הועלו.` });
-
-    const verifySummary = await withStage('FINAL_VERIFY', async () => verify(webUrl));
-
-    activeStage = 'COMPLETE';
-    activeStageLabel = STAGES.COMPLETE;
-    await reportEvent('COMPLETE', 'started', 'מסיים את הריצה ומעדכן את גרסת האתר.');
-    await api(`/api/deployments/${encodeURIComponent(jobId)}/complete`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ uploadedFiles: uploadSummary.uploaded, finalUrl: descriptor.site.finalUrl, completedAt: new Date().toISOString(), verification: verifySummary }),
+    const result = await runDeploymentPipeline({
+      jobId,
+      apiCall,
+      fetchImpl: fetch.bind(window),
+      sha256: sha256Hex,
+      createLibraryExact: createExactLibraryViaJsom,
+      hostname: window.location.hostname,
+      clientId: `standalone-deployer-${window.location.hostname}`,
+      downloadFile: downloadStagedFile,
+      setTimer: (fn, ms) => window.setInterval(fn, ms),
+      clearTimer: (handle) => window.clearInterval(handle),
+      onProgress: ({ progress, message, currentFile, stage }) => {
+        setProgress(progress, message || stageLabel(stage), currentFile);
+        if (message) log(`${stageLabel(stage) || stage}: ${message}${currentFile ? ` | ${currentFile}` : ''}`);
+      },
     });
 
     setProgress(100, 'הפריסה הושלמה בהצלחה');
     setBadge('done', 'הושלם');
-    ui.openSite.href = descriptor.site.finalUrl;
+    ui.openSite.href = result.finalUrl;
     ui.openSite.classList.remove('hidden');
-    log('Deployment completed successfully.');
-    notifyParent('deployment-complete', { finalUrl: descriptor.site.finalUrl });
+    log(`Deployment complete: ${result.finalUrl}`);
+    notifyParent('deployment-complete', { finalUrl: result.finalUrl });
   } catch (error) {
     setBadge('failed', 'נכשל');
-    ui.errorBox.textContent = error.message;
+    const failure = error.failureInfo || {};
+    const detail = [
+      failure.stage ? `שלב: ${stageLabel(failure.stage)}` : '',
+      failure.errorClass ? `סיווג: ${failure.errorClass}` : '',
+      failure.httpStatus != null ? `HTTP ${failure.httpStatus}` : '',
+      failure.sharePointCode ? `SP ${failure.sharePointCode}` : '',
+    ].filter(Boolean).join(' · ');
+    ui.errorBox.textContent = [error.message, detail, failure.nextAction].filter(Boolean).join('\n');
     ui.errorBox.classList.remove('hidden');
     ui.retryButton.classList.remove('hidden');
-    log(`ERROR: ${error.message}`);
-    notifyParent('deployment-failed', { error: error.message, stage: error.stage || activeStage });
-    const request = error.request || lastSharePointRequest || null;
-    try {
-      await api(`/api/deployments/${encodeURIComponent(jobId)}/fail`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
-          error: error.message,
-          stage: error.stage || activeStage,
-          stageLabel: error.stageLabel || activeStageLabel,
-          currentFile: error.currentFile || activeFile || '',
-          operation: request?.operation || '',
-          method: request?.method || error.method || '',
-          url: request?.url || error.url || '',
-          httpStatus: request?.httpStatus ?? error.httpStatus ?? null,
-          durationMs: error.durationMs ?? request?.durationMs ?? null,
-          details: { responsePreview: request?.responsePreview || '', contentType: request?.contentType || '', networkError: request?.networkError || '' },
-          eventAlreadyReported: true,
-        }),
-      });
-    } catch (callbackError) { log(`Failure callback failed: ${callbackError.message}`); }
+    log(`Deployment failed: ${error.message}`);
+    notifyParent('deployment-failed', { error: error.message, stage: failure.stage || '' });
   } finally {
     running = false;
+    ui.startButton.disabled = false;
   }
 }
 
 async function init() {
   try {
     if (!jobId || !apiBase) throw new Error('Missing jobId or apiBase in the URL.');
-    const started = performance.now();
-    descriptor = await api(`/api/deployments/${encodeURIComponent(jobId)}`);
+    const descriptor = await apiCall(`/api/deployments/${encodeURIComponent(jobId)}`, {});
     ui.subtitle.textContent = `${descriptor.site.name} · ריליס ${descriptor.release.version}`;
     ui.target.textContent = descriptor.site.finalUrl;
     ui.startButton.disabled = false;
     setProgress(0, 'מוכן לפריסה');
-    const durationMs = Math.round(performance.now() - started);
-    await reportEvent('DEPLOYER_INIT', 'success', `פרטי המשימה נטענו עבור ${descriptor.site.host}/sites/${descriptor.site.siteCode}.`, { durationMs, details: { apiBase, jobId } });
-    log(`Loaded deployment ${jobId} for ${descriptor.site.host}/sites/${descriptor.site.siteCode}`);
+    log(`Loaded deployment ${jobId} for ${descriptor.site.host}${descriptor.site.siteRoot}`);
+    if (descriptor.resume?.completedStages?.length) {
+      log(`Resuming: ${descriptor.resume.completedStages.length} stage(s) already verified; continuing at ${stageLabel(descriptor.resume.resumeFrom)}.`);
+    }
     notifyParent('deployer-ready', { target: descriptor.site.finalUrl, embedded });
     setTimeout(run, embedded ? 100 : 500);
   } catch (error) {
@@ -458,11 +241,11 @@ async function init() {
     ui.errorBox.classList.remove('hidden');
     log(`Initialization failed: ${error.message}`);
     notifyParent('deployer-init-failed', { error: error.message });
-    await reportEvent('DEPLOYER_INIT', 'failed', error.message, { method: error.method || '', url: error.url || '', httpStatus: error.httpStatus ?? null });
   }
 }
 
 ui.startButton.addEventListener('click', run);
 ui.retryButton.addEventListener('click', run);
 ui.toggleLogs.addEventListener('click', () => ui.logs.classList.toggle('hidden'));
+
 init();

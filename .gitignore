@@ -13,3 +13,4 @@ client/dist/
 sharepoint-deployer/client/dist/
 **/node_modules/*
 !**/node_modules/.gitkeep
+sharepoint-deployer/ready/shared/

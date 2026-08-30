@@ -80,23 +80,32 @@ export const RESUMABLE_STATES = Object.freeze([
 
 export const isResumable = (state) => RESUMABLE_STATES.includes(canonicalState(state));
 
+/**
+ * The transitions the product actually performs.
+ *
+ * Two entries are load-bearing and were wrong when this table was first written:
+ *  - FAILED -> READY_FOR_SHAREPOINT is how an explicit user retry works;
+ *    retryDeploymentJob re-prepares the job in place rather than creating a new
+ *    one, so the already-verified target state is not thrown away.
+ *  - WAITING_FOR_BROWSER -> SUCCEEDED happens whenever a deployment finishes
+ *    without ever emitting a progress update (a very small release).
+ */
 const ALLOWED_TRANSITIONS = Object.freeze({
   QUEUED: [JOB_STATE.PREPARING_RELEASE, JOB_STATE.CANCELLED, JOB_STATE.SUPERSEDED, JOB_STATE.FAILED],
   PREPARING_RELEASE: [JOB_STATE.READY_FOR_SHAREPOINT, JOB_STATE.FAILED, JOB_STATE.CANCELLED, JOB_STATE.SUPERSEDED],
-  READY_FOR_SHAREPOINT: [JOB_STATE.WAITING_FOR_BROWSER, JOB_STATE.DEPLOYING, JOB_STATE.PAUSED, JOB_STATE.FAILED, JOB_STATE.CANCELLED, JOB_STATE.SUPERSEDED],
-  WAITING_FOR_BROWSER: [JOB_STATE.DEPLOYING, JOB_STATE.READY_FOR_SHAREPOINT, JOB_STATE.PAUSED, JOB_STATE.FAILED, JOB_STATE.CANCELLED, JOB_STATE.SUPERSEDED],
-  DEPLOYING: [JOB_STATE.SUCCEEDED, JOB_STATE.FAILED, JOB_STATE.PAUSED, JOB_STATE.CANCELLED, JOB_STATE.SUPERSEDED, JOB_STATE.DEPLOYING],
+  READY_FOR_SHAREPOINT: [JOB_STATE.WAITING_FOR_BROWSER, JOB_STATE.DEPLOYING, JOB_STATE.PAUSED, JOB_STATE.SUCCEEDED, JOB_STATE.FAILED, JOB_STATE.CANCELLED, JOB_STATE.SUPERSEDED],
+  WAITING_FOR_BROWSER: [JOB_STATE.DEPLOYING, JOB_STATE.READY_FOR_SHAREPOINT, JOB_STATE.PAUSED, JOB_STATE.SUCCEEDED, JOB_STATE.FAILED, JOB_STATE.CANCELLED, JOB_STATE.SUPERSEDED],
+  DEPLOYING: [JOB_STATE.SUCCEEDED, JOB_STATE.FAILED, JOB_STATE.PAUSED, JOB_STATE.CANCELLED, JOB_STATE.SUPERSEDED, JOB_STATE.WAITING_FOR_BROWSER, JOB_STATE.DEPLOYING],
   PAUSED: [JOB_STATE.DEPLOYING, JOB_STATE.READY_FOR_SHAREPOINT, JOB_STATE.WAITING_FOR_BROWSER, JOB_STATE.CANCELLED, JOB_STATE.SUPERSEDED, JOB_STATE.FAILED],
   SUCCEEDED: [],
-  FAILED: [JOB_STATE.DEPLOYING, JOB_STATE.WAITING_FOR_BROWSER],
+  FAILED: [JOB_STATE.READY_FOR_SHAREPOINT, JOB_STATE.WAITING_FOR_BROWSER, JOB_STATE.DEPLOYING],
   CANCELLED: [],
   SUPERSEDED: [],
 });
 
 /**
- * A terminal state is final. FAILED is the one exception: an explicit user
- * retry re-enters browser work on the same job rather than losing the
- * already-verified target state.
+ * A terminal state is final, except that an explicit user retry may re-enter a
+ * FAILED job. SUCCEEDED, CANCELLED and SUPERSEDED can never be left.
  */
 export function canTransition(from, to) {
   const source = canonicalState(from);

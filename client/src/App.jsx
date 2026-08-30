@@ -14,10 +14,16 @@ import clientPackage from '../package.json';
 const APP_VERSION = clientPackage.version;
 
 const STATUS_LABELS = {
-  DRAFT: 'טיוטה', TRACKED: 'במעקב', PREPARING_RELEASE: 'מכין ריליס', READY_FOR_SHAREPOINT: 'מוכן לפריסה',
-  DEPLOYING: 'מעלה ל-SharePoint', ACTIVE: 'פעיל', FAILED: 'נכשל', QUEUED: 'ממתין',
-  SUCCEEDED: 'הושלם', INTERRUPTED: 'הופסק',
+  DRAFT: 'טיוטה', TRACKED: 'במעקב', QUEUED: 'ממתין בתור', PREPARING_RELEASE: 'מכין ריליס',
+  READY_FOR_SHAREPOINT: 'מוכן לפריסה', WAITING_FOR_BROWSER: 'ממתין לדפדפן', DEPLOYING: 'בפריסה',
+  PAUSED: 'מושהה', ACTIVE: 'פעיל', FAILED: 'נכשל', SUCCEEDED: 'הושלם',
+  CANCELLED: 'בוטל', SUPERSEDED: 'הוחלף',
+  // Runs stored before the state-machine upgrade used INTERRUPTED.
+  INTERRUPTED: 'הוחלף',
 };
+
+/** Every terminal job state, including the legacy INTERRUPTED spelling. */
+const TERMINAL_JOB_STATES = ['SUCCEEDED', 'FAILED', 'CANCELLED', 'SUPERSEDED', 'INTERRUPTED'];
 
 const formatDate = (value) => value ? new Intl.DateTimeFormat('he-IL', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value)) : '—';
 const jobIdOf = (job) => String(job?.id || job?._id || '');
@@ -126,12 +132,13 @@ function SitesPage() {
   useEffect(() => { load(); }, []);
 
   const monitorJob = async (createdJob) => {
+    // Every state the job can settle into. A missing value here would poll forever.
     const id = jobIdOf(createdJob);
     if (!id) return;
     for (;;) {
       const current = await api.job(id);
       setJob(current);
-      if (['SUCCEEDED', 'FAILED', 'INTERRUPTED'].includes(current.state)) {
+      if (TERMINAL_JOB_STATES.includes(current.state)) {
         await load();
         break;
       }
@@ -142,17 +149,13 @@ function SitesPage() {
   const beginDeploy = async (site, releaseId) => {
     if (!releaseId) return setError('יש לבחור ריליס לעדכון.');
     const release = releases.find((item) => item.id === releaseId);
-    const warnings = [];
-    if (site.activeJobId) warnings.push('כבר קיימת משימת פריסה פעילה לאתר. הרצה חדשה תחליף ותפסיק את המשימה הקודמת.');
+    // Re-deploying the SAME release is a normal operation and must never imply
+    // superseding a live run. Only an active run justifies asking to force.
     if (release && (String(site.currentReleaseId || '') === String(release.id) || site.currentVersion === release.version)) {
-      warnings.push(`האתר כבר מסומן על ריליס ${release.version}. אפשר להריץ אותו שוב כדי לבצע פריסה חוזרת.`);
-    }
-    let force = false;
-    if (warnings.length) {
-      const approved = window.confirm(`${warnings.join('\n\n')}\n\nלהמשיך ולהריץ את הריליס מחדש?`);
+      const approved = window.confirm(`האתר כבר מסומן על ריליס ${release.version}. לבצע פריסה חוזרת של אותה גרסה?`);
       if (!approved) return;
-      force = true;
     }
+    const force = false;
 
     const start = async (forceRun) => {
       const created = await api.deploy(site.id, releaseId, { force: forceRun });
@@ -164,10 +167,19 @@ function SitesPage() {
       await start(force);
     } catch (e) {
       if (e.status === 409 && e.payload?.canForce) {
-        const approved = window.confirm('השרת זיהה משימה פעילה שלא הופיעה עדיין במסך. להפסיק אותה ולהתחיל את הריליס מחדש?');
+        const details = e.payload;
+        const description = details.stale
+          ? 'קיימת ריצה תקועה על היעד הזה (ללא סימני חיים).'
+          : `קיימת ריצה פעילה על היעד הזה (מצב: ${STATUS_LABELS[details.activeJobState] || details.activeJobState || 'לא ידוע'}).`;
+        const guidance = details.resumable
+          ? 'אפשר לפתוח אותה ולהמשיך אותה, או להחליף אותה בריצה חדשה.'
+          : 'אפשר להחליף אותה בריצה חדשה.';
+        const approved = window.confirm(`${description}\n${guidance}\n\nלהחליף אותה ולהתחיל ריצה חדשה?\n(ביטול ישאיר את הריצה הקיימת ויפתח אותה במסך הריצות.)`);
         if (approved) {
           try { await start(true); return; }
           catch (retryError) { setError(retryError.message); }
+        } else if (details.activeJobId) {
+          window.location.hash = '#/runs';
         }
       } else setError(e.message);
     }

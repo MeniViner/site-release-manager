@@ -48,6 +48,26 @@ export class ProvisioningError extends Error {
 const noopLog = () => {};
 
 /**
+ * Conditions that can never be resolved by waiting or by re-reading target
+ * state. Swallowing one of these turns a clear, actionable message ("you do
+ * not have permission") into a misleading one ("SharePoint is not consistent
+ * yet"), and burns the whole retry budget on something that will never pass.
+ */
+const FATAL_ERROR_CLASSES = new Set([
+  SP_ERROR.PERMISSION_DENIED,
+  SP_ERROR.AUTH_FAILURE,
+  SP_ERROR.INVALID_PATH,
+  SP_ERROR.PATH_COLLISION,
+  SP_ERROR.NON_DOCUMENT_LIBRARY,
+]);
+
+export function isFatalProvisioningError(error) {
+  if (error?.cancelled || error?.name === 'CancelledError') return true;
+  const errorClass = error?.sharePoint?.errorClass || error?.errorClass;
+  return FATAL_ERROR_CLASSES.has(errorClass);
+}
+
+/**
  * Ensure ONE Document Library exists with the exact configured title and the
  * exact configured physical root folder.
  *
@@ -126,8 +146,10 @@ export async function ensureExactLibrary(client, spec, options = {}) {
   try {
     await createLibraryExact({ title: spec.title, urlSegment: spec.urlSegment, description, expectedRoot });
   } catch (error) {
-    // Do not fail yet. On this farm a create can report an error and still have
-    // committed. Verified state decides.
+    // On this farm a create can report an error and still have committed, so
+    // verified state normally decides -- but a permanent condition surfaces
+    // immediately rather than after a pointless stabilization wait.
+    if (isFatalProvisioningError(error)) throw error;
     createError = error;
     await log({
       stage: 'CREATE_LIBRARIES',
@@ -234,8 +256,11 @@ export async function ensureFolderTree(client, folderPaths, options = {}) {
         },
       });
     } catch (error) {
-      // The create failed, but the folder may still have appeared. Verified
-      // state decides, so fall through to the stabilization barrier.
+      // A create failure may still have committed, so verified state normally
+      // decides. But a PERMANENT condition -- no permission, expired session,
+      // an illegal path, a cancellation -- can never be resolved by waiting and
+      // must surface as itself instead of as "not stable yet".
+      if (isFatalProvisioningError(error)) throw error;
       await log({ stage: 'CREATE_FOLDERS', status: 'warning', message: `יצירת ${folderPath} החזירה שגיאה; בודק אם התיקייה קיימת בכל זאת.`, details: { error: error?.message || String(error) } });
     }
 
@@ -404,6 +429,10 @@ export async function uploadReleaseAssets(client, plan, options = {}) {
     log = noopLog, retry = {}, signal, sha256, downloadFile,
     onProgress = noopLog, distRoot, commitFile = 'index.html',
     alreadyVerified = new Set(),
+    // Called ONLY after a file has been uploaded AND verified at the target.
+    // Reporting a file as verified any earlier would let a later resume skip
+    // a file that was never actually written.
+    onVerified = noopLog,
   } = options;
   if (typeof sha256 !== 'function') throw new Error('uploadReleaseAssets requires a sha256 implementation.');
   if (typeof downloadFile !== 'function') throw new Error('uploadReleaseAssets requires downloadFile.');
@@ -437,6 +466,7 @@ export async function uploadReleaseAssets(client, plan, options = {}) {
       ...DEFAULT_RETRY, ...retry, signal, describe: `upload-asset:${filePath}`,
     });
     await verifyRemoteFile(client, targetPath, file, { sha256, retry, signal, describe: `verify-asset:${filePath}` });
+    await onVerified(filePath);
     uploaded.push({ path: filePath, action: 'uploaded', size: file.size });
   }
 

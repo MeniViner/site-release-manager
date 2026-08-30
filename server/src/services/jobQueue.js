@@ -22,16 +22,30 @@ import {
 const JOBS = 'deployment_jobs';
 const SITES = 'sites';
 
+/** Mirrors the browser lease TTL enforced by the deployments routes. */
+export const BROWSER_LEASE_TTL_MS = 90 * 1000;
+
+export const isBrowserLeaseLive = (lease, now = Date.now()) =>
+  Boolean(lease?.leaseId) && (now - new Date(lease.heartbeatAt || lease.acquiredAt || 0).getTime()) < BROWSER_LEASE_TTL_MS;
+
 /** Roll a job into a terminal state and release everything it holds. */
 export async function settleJob(jobId, state, { message = '', error = null, stage = null } = {}) {
   const db = getDb();
   const objectId = jobId instanceof ObjectId ? jobId : new ObjectId(jobId);
   const job = await db.collection(JOBS).findOne({ _id: objectId });
   if (!job) return null;
-  if (isTerminal(job.state)) return job;
+  if (isTerminal(job.state)) {
+    // The job is already settled, but the resources it held may not be. Cleanup
+    // is idempotent and must run regardless of who settled the state first,
+    // otherwise a target lock or a staging directory outlives its run.
+    await releaseResources(db, job, objectId);
+    return job;
+  }
 
   const now = new Date();
-  const target = canonicalState(state);
+  // Validate the transition rather than trusting the caller. This is what keeps
+  // a settled run from being silently resurrected by a late report.
+  const target = assertTransition(job.state, state);
   await appendRunEvent(objectId, {
     stage: stage || job.currentStage || STAGE.RELEASE_VALIDATE,
     status: target === JOB_STATE.SUCCEEDED ? 'success' : target === JOB_STATE.FAILED ? 'failed' : 'warning',
@@ -56,6 +70,20 @@ export async function settleJob(jobId, state, { message = '', error = null, stag
     },
   );
 
+  await releaseResources(db, job, objectId, { targetState: target, now });
+  return db.collection(JOBS).findOne({ _id: objectId });
+}
+
+/**
+ * Release everything a settled run was holding: the target lock, the site's
+ * active-run pointer, and the staging directory.
+ *
+ * Idempotent on purpose. A run can reach its terminal state from more than one
+ * writer, and whichever call arrives second must still be able to clean up.
+ * Staging is kept for a FAILED run so an explicit retry can resume from it.
+ */
+async function releaseResources(db, job, objectId, { targetState = null, now = new Date() } = {}) {
+  const target = targetState || canonicalState(job.state);
   await releaseTargetLock(objectId);
   if (job.siteId) {
     const site = await db.collection(SITES).findOne({ _id: job.siteId });
@@ -66,11 +94,9 @@ export async function settleJob(jobId, state, { message = '', error = null, stag
       );
     }
   }
-  // Staging is disposable and is only kept while a run can still resume.
   if (target !== JOB_STATE.FAILED) {
     try { destroyStaging(job.stagingRoot || stagingRootForJob(objectId)); } catch { /* best effort */ }
   }
-  return db.collection(JOBS).findOne({ _id: objectId });
 }
 
 function defaultSettleMessage(state) {
@@ -251,11 +277,28 @@ export async function retryDeploymentJob(jobId) {
   if (active && String(active.job._id) !== String(objectId)) {
     throw new TargetLockedError(active.lock, active.stale);
   }
+
+  // Rebuilding staging deletes the directory the browser worker is reading from.
+  // If a worker still holds a live lease, refuse: the user must cancel or
+  // supersede the run explicitly rather than silently pulling it apart.
+  if (isBrowserLeaseLive(job.browserLease)) {
+    throw Object.assign(
+      new Error('הריצה מבוצעת כרגע על ידי worker פעיל. בטל אותה או המתן לסיומה לפני הרצה מחדש.'),
+      { statusCode: 409, code: 'WORKER_ACTIVE' },
+    );
+  }
+
   await acquireTargetLock({ targetKey, jobId: objectId, siteId: job.siteId, takeOver: true });
 
   // Staging is disposable; rebuild it so a retry always deploys freshly
-  // generated, freshly verified bytes.
-  await prepareDeploymentJob(String(objectId));
+  // generated, freshly verified bytes. A failure here must not leave the target
+  // locked by a job that is not running.
+  try {
+    await prepareDeploymentJob(String(objectId));
+  } catch (error) {
+    await settleJob(objectId, JOB_STATE.FAILED, { message: error.message, error: error.message });
+    throw error;
+  }
   const now = new Date();
   await db.collection(JOBS).updateOne(
     { _id: objectId },

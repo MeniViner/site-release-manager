@@ -12,9 +12,20 @@ async function start() {
   try {
     await connectDb();
   } catch (error) {
-    console.error(`[server] MongoDB connection failed: ${error.message}`);
-    console.error(`[server] Expected MongoDB at: ${config.mongoUri}`);
-    console.error('[server] From the project root run: npm run mongo:start');
+    // Be precise about WHICH thing is wrong. On the closed Windows workstation
+    // MongoDB runs as a service, so "mongod is not in PATH" is not the problem
+    // and telling the operator to install MongoDB would be actively misleading.
+    console.error('[server] Could not connect to the Release Manager tracking database.');
+    console.error(`[server]   URI:      ${config.mongoUri}`);
+    console.error(`[server]   Database: ${config.mongoDbName}`);
+    console.error(`[server]   Reason:   ${error.message}`);
+    console.error('[server]');
+    console.error('[server] This database is used ONLY by Release Manager. It is not Site Builder application data.');
+    console.error('[server] Windows, MongoDB installed as a service:');
+    console.error('[server]   1. Check the service is running:  sc query MongoDB');
+    console.error('[server]   2. Start it if needed:            net start MongoDB');
+    console.error('[server]   3. Keep AUTO_START_MONGO=false in .env so this project never starts a second mongod.');
+    console.error('[server] Development machine without a service:  npm run mongo:start');
     process.exit(1);
   }
 
