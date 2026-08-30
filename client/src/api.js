@@ -293,7 +293,10 @@ export const api = {
   site: (id) => request(`/api/sites/${id}`),
   createSite: (body) => request('/api/sites', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
   updateSite: (id, body) => request(`/api/sites/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
-  deleteSite: (id) => request(`/api/sites/${id}`, { method: 'DELETE' }),
+  // Deleting a Site removes the Release Manager tracking record only; the
+  // explicit confirm token makes that intent unambiguous at the API boundary.
+  deleteSite: (id) => request(`/api/sites/${id}?confirm=delete-tracking-record`, { method: 'DELETE' }),
+  siteProvisioningBoundary: () => request('/api/sites/provisioning-boundary'),
   deploy: (siteId, releaseId, { force = false } = {}) => request(`/api/sites/${siteId}/deploy`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ releaseId, force }) }),
   releases: () => request('/api/releases'),
   releaseVersionSuggestions: () => request('/api/releases/version-suggestions'),
@@ -305,4 +308,8 @@ export const api = {
   verifyLocalDeployment: (id) => request(`/api/deployments/${id}/verify-local`, { method: 'POST' }),
   runs: () => request('/api/runs?limit=100'),
   run: (id) => request(`/api/runs/${id}`),
+  runStages: () => request('/api/runs/stages'),
+  cancelRun: (id, reason = '') => request(`/api/runs/${id}/cancel`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason }) }),
+  retryRun: (id) => request(`/api/runs/${id}/retry`, { method: 'POST' }),
+  activeRunForTarget: (targetKey) => request(`/api/runs/target/${encodeURIComponent(targetKey)}/active`),
 };

@@ -28,6 +28,7 @@
     "deploy:manager-sharepoint": "node scripts/deploy-manager-sharepoint.mjs --force",
     "sharepoint:local": "node scripts/dev.mjs --api-only",
     "sharepoint:test": "npm run build && npm run deploy:deployer-sharepoint && npm run sharepoint:local",
-    "deploy:deployer-sharepoint": "node scripts/deploy-deployer-sharepoint.mjs"
+    "deploy:deployer-sharepoint": "node scripts/deploy-deployer-sharepoint.mjs",
+    "test:full": "node scripts/test-with-mongo.mjs"
   }
 }

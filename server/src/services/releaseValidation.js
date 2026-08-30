@@ -160,6 +160,9 @@ export function verifyStoredReleaseIntegrity(release) {
   }
   const mismatches = [];
   for (const entry of proof.manifest.files) {
+    // The manifest cannot contain its own hash, so it is never integrity-checked
+    // against itself.
+    if (entry.path === MANIFEST_FILE) continue;
     const full = path.join(release.distDir, ...entry.path.split('/'));
     if (!fs.existsSync(full)) { mismatches.push(`missing ${entry.path}`); continue; }
     if (fs.statSync(full).size !== entry.size) { mismatches.push(`size ${entry.path}`); continue; }

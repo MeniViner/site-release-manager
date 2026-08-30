@@ -42,7 +42,13 @@ const asString = (value) => String(value ?? '').trim();
  * @returns {{ok:boolean, errors:string[], warnings:string[], info:object}}
  */
 export function validateUniversalManifest(manifest, options = {}) {
-  const { requireUniversal = true } = options;
+  const {
+    requireUniversal = true,
+    // A SOURCE artifact must never carry a per-target overlay. The DEPLOYMENT
+    // manifest that Release Manager regenerates for one target legitimately
+    // does, because the browser has to upload those two files.
+    allowTargetOverlay = false,
+  } = options;
   const errors = [];
   const warnings = [];
 
@@ -98,8 +104,17 @@ export function validateUniversalManifest(manifest, options = {}) {
       if (!SHA256_PATTERN.test(sha256)) errors.push(`invalid sha256 for ${filePath}`);
     }
     if (!seen.has(ENTRY_POINT)) errors.push(`manifest does not list ${ENTRY_POINT}`);
-    for (const overlay of TARGET_OVERLAY_FILES) {
-      if (seen.has(overlay)) errors.push(`manifest lists ${overlay}; a universal source artifact must not carry a target overlay`);
+    // Site Builder's builder refuses to list the manifest inside itself, because
+    // its own hash cannot be stable. Mirror that guard.
+    if (seen.has(MANIFEST_FILE)) errors.push(`manifest lists ${MANIFEST_FILE}; a manifest can never contain its own hash`);
+    if (!allowTargetOverlay) {
+      for (const overlay of TARGET_OVERLAY_FILES) {
+        if (seen.has(overlay)) errors.push(`manifest lists ${overlay}; a universal source artifact must not carry a target overlay`);
+      }
+    } else {
+      for (const overlay of TARGET_OVERLAY_FILES) {
+        if (!seen.has(overlay)) errors.push(`deployment manifest is missing the generated overlay ${overlay}`);
+      }
     }
     const declaredCount = Number(manifest.fileCount);
     if (Number.isInteger(declaredCount) && declaredCount !== files.length) {

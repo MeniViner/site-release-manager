@@ -1,18 +1,26 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Activity, CheckCircle2, CircleAlert, ClipboardCopy, Clock3, ExternalLink,
-  FileWarning, LoaderCircle, RefreshCw, Search, X, XCircle,
+  FileWarning, LoaderCircle, Ban, RotateCw, RefreshCw, Search, X, XCircle,
 } from 'lucide-react';
 import { api } from './api.js';
+import { STAGE_ORDER as CANONICAL_STAGE_ORDER, stageLabel } from '../../shared/deploymentStages.js';
 
 const STATE_LABELS = {
-  PREPARING_RELEASE: 'מכין ריליס', READY_FOR_SHAREPOINT: 'מוכן ל-SharePoint', DEPLOYING: 'בפריסה',
-  SUCCEEDED: 'הושלם', FAILED: 'נכשל', INTERRUPTED: 'הופסק', QUEUED: 'ממתין',
+  QUEUED: 'ממתין בתור', PREPARING_RELEASE: 'מכין ריליס', READY_FOR_SHAREPOINT: 'מוכן ל-SharePoint',
+  WAITING_FOR_BROWSER: 'ממתין לדפדפן', DEPLOYING: 'בפריסה', PAUSED: 'מושהה',
+  SUCCEEDED: 'הושלם', FAILED: 'נכשל', CANCELLED: 'בוטל', SUPERSEDED: 'הוחלף',
+  // Retained so runs stored before the state-machine upgrade still render.
+  INTERRUPTED: 'הוחלף',
 };
 
 const EVENT_STATUS = {
   started: { label: 'בתהליך', icon: Activity }, success: { label: 'הצליח', icon: CheckCircle2 },
-  failed: { label: 'נכשל', icon: XCircle }, warning: { label: 'אזהרה', icon: CircleAlert }, info: { label: 'מידע', icon: Clock3 },
+  failed: { label: 'נכשל', icon: XCircle }, warning: { label: 'אזהרה', icon: CircleAlert },
+  info: { label: 'מידע', icon: Clock3 },
+  // A settled run can never leave a stage spinning; an unfinished stage is
+  // reported as abandoned instead.
+  abandoned: { label: 'נעצר', icon: CircleAlert },
 };
 
 const FILTERS = [
@@ -20,28 +28,51 @@ const FILTERS = [
   { value: 'SUCCEEDED', label: 'הושלם', tone: 'success' },
   { value: 'FAILED', label: 'נכשל', tone: 'failed' },
   { value: 'DEPLOYING', label: 'בפריסה', tone: 'deploying' },
+  { value: 'PAUSED', label: 'מושהה', tone: 'ready' },
   { value: 'READY_FOR_SHAREPOINT', label: 'מוכן ל-SharePoint', tone: 'ready' },
   { value: 'PREPARING_RELEASE', label: 'מכין ריליס', tone: 'preparing' },
-  { value: 'INTERRUPTED', label: 'הופסק', tone: 'interrupted' },
+  { value: 'CANCELLED', label: 'בוטל', tone: 'interrupted' },
+  { value: 'SUPERSEDED', label: 'הוחלף', tone: 'interrupted' },
 ];
 
-const STAGE_ORDER = [
-  { key: 'JOB_CREATED', label: 'יצירת משימה', tone: 'slate', hint: 'האתר והריליס ננעלים לריצה החדשה.' },
-  { key: 'RELEASE_VALIDATED', label: 'בדיקת הריליס', tone: 'blue', hint: 'המערכת מוודאת שה-dist והקבצים קיימים.' },
-  { key: 'RUNTIME_CONFIG', label: 'Runtime Config', tone: 'indigo', hint: 'נבנים host, siteCode וכל נתיבי SharePoint של האתר.' },
-  { key: 'MANIFEST', label: 'Manifest וסדר העלאה', tone: 'violet', hint: 'נבנה manifest ו-index.html נשמר לסוף.' },
-  { key: 'LOCAL_AUDIT', label: 'Audit מקומי (אופציונלי)', tone: 'purple', hint: 'בדיקת hashes, overlays, TXT וסימולציית פריסה מקומית. אינו חוסם פריסה אם לא הורץ.' },
-  { key: 'READY_FOR_SHAREPOINT', label: 'מוכן ל-SharePoint', tone: 'amber', hint: 'כל צד השרת הסתיים ונדרש מעבר לדפדפן SharePoint.' },
-  { key: 'DEPLOYER_INIT', label: 'טעינת Deployer', tone: 'yellow', hint: 'Release Manager טען את פרטי המשימה ומפעיל את מנוע SharePoint באותו דף.' },
-  { key: 'TARGET_VALIDATION', label: 'אימות אתר היעד', tone: 'cyan', hint: 'נבדק שה-Deployer רץ על ה-Host הנכון.' },
-  { key: 'FORM_DIGEST', label: 'חיבור ו-FormDigest', tone: 'sky', hint: 'SharePoint מחזיר FormDigest לכתיבה דרך REST.' },
-  { key: 'LIBRARIES', label: 'ספריות מסמכים', tone: 'teal', hint: 'בדיקה/יצירה של siteDB ו-siteUsersDb.' },
-  { key: 'FOLDERS', label: 'תיקיות', tone: 'emerald', hint: 'יצירה/בדיקה של dist, siteAssets, images ותיקיות assets.' },
-  { key: 'SEED_FILES', label: 'קובצי TXT', tone: 'lime', hint: 'קבצים קיימים נשמרים וחסרים נוצרים.' },
-  { key: 'RELEASE_FILES', label: 'העלאת הריליס', tone: 'orange', hint: 'קובצי ה-dist מועלים ל-SharePoint; index.html אחרון.' },
-  { key: 'FINAL_VERIFY', label: 'אימות סופי', tone: 'green', hint: 'נבדקים index.html וקובץ JavaScript מתוך היעד.' },
-  { key: 'COMPLETE', label: 'הושלם', tone: 'success', hint: 'הגרסה ותאריך העדכון נשמרים רק אחרי הצלחה מלאה.' },
-];
+/**
+ * Stage hints. The order itself comes from the shared canonical pipeline so the
+ * UI can never drift from what the engine actually reports.
+ */
+const STAGE_HINTS = {
+  RELEASE_VALIDATE: 'הארטיפקט האוניברסלי מאומת מול ה-manifest של Site Builder.',
+  TARGET_VALIDATE: 'זהות היעד נגזרת ומאומתת (host, siteCode, ספריות).',
+  STAGING_CREATE: 'נוצר Staging פרטי לריצה; הארטיפקט השמור לעולם לא משתנה.',
+  RUNTIME_CONFIG_CREATE: 'נוצרים Runtime Config ו-Deployment Metadata ליעד הזה בלבד.',
+  MANIFEST_CREATE: 'ה-manifest נבנה מחדש וכל ה-hashes מאומתים מחדש.',
+  READY_FOR_SHAREPOINT: 'צד השרת סיים; העבודה עוברת לדפדפן המחובר ל-SharePoint.',
+  BROWSER_ACTIVATE: 'מנוע הדפדפן תופס בעלות בלעדית על הריצה.',
+  SHAREPOINT_CONTEXTINFO: 'SharePoint מחזיר FormDigest לכתיבה.',
+  LIBRARY_DISCOVERY: 'איתור ספריות המסמכים המוגדרות והתנגשויות אפשריות.',
+  CREATE_LIBRARIES: 'ספריות חסרות נוצרות בנתיב המדויק, ללא סיומת אוטומטית.',
+  LIBRARY_STABILIZE: 'המתנה מבוקרת עד שכל ספרייה נקראת ומאומתת.',
+  CREATE_FOLDERS: 'התיקיות נוצרות מההורה כלפי מטה.',
+  FOLDER_STABILIZE: 'המתנה מבוקרת עד שכל תיקייה כתיבה בפועל.',
+  CREATE_TXT_SEEDS: 'קבצים קיימים נשמרים; רק קבצים חסרים נוצרים ומאומתים.',
+  PERMISSIONS_SETUP: 'בדיקת מצב ההרשאות. Release Manager אינו משנה הרשאות SharePoint.',
+  FINAL_ASSET_COPY: 'כל קובצי הריליס מועלים, למעט index.html.',
+  FINAL_ASSET_VERIFY: 'כל קובץ נקרא בחזרה ומאומת לפי גודל ו-SHA-256.',
+  FINAL_INDEX_COMMIT: 'index.html מועלה אחרון כדי שהאתר לא יישבר באמצע.',
+  FINAL_INDEX_VERIFY: 'index.html וכל ההפניות שלו מאומתים ביעד.',
+  FINAL_APP_SMOKE: 'בדיקה סטטית שהאפליקציה שהועלתה נטענת.',
+  COMPLETE: 'הגרסה נשמרת רק אחרי הצלחה מלאה ומאומתת.',
+};
+
+const STAGE_TONES = ['slate', 'blue', 'indigo', 'violet', 'purple', 'amber', 'yellow', 'cyan', 'sky', 'teal', 'emerald', 'lime', 'orange', 'green'];
+
+const STAGE_ORDER = CANONICAL_STAGE_ORDER.map((key, index) => ({
+  key,
+  label: stageLabel(key),
+  hint: STAGE_HINTS[key] || '',
+  tone: key === 'COMPLETE' ? 'success' : STAGE_TONES[index % STAGE_TONES.length],
+}));
+
+
 
 const formatDate = (value) => value ? new Intl.DateTimeFormat('he-IL', { dateStyle: 'short', timeStyle: 'medium' }).format(new Date(value)) : '—';
 const duration = (ms) => {
@@ -172,7 +203,29 @@ export default function RunsPage() {
 
 function RunDetailModal({ run, loading, onClose, onRefresh }) {
   const [copied, setCopied] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState('');
   const events = run?.runEvents || [];
+
+  /**
+   * Retry resumes at the first incomplete stage rather than restarting, so
+   * SharePoint state that is already verified is never redone.
+   */
+  const act = async (kind) => {
+    if (!run || busy) return;
+    if (kind === 'cancel' && !window.confirm('לבטל את הריצה? מצב היעד ב-SharePoint יישאר כפי שהוא כרגע.')) return;
+    setBusy(true);
+    setActionError('');
+    try {
+      if (kind === 'retry') await api.retryRun(run.id);
+      else await api.cancelRun(run.id);
+      await onRefresh();
+    } catch (error) {
+      setActionError(error.message);
+    } finally {
+      setBusy(false);
+    }
+  };
   const copyAll = async () => {
     if (!run) return;
     const lines = [
@@ -197,15 +250,22 @@ function RunDetailModal({ run, loading, onClose, onRefresh }) {
         <div className="run-detail-actions">
           <button className="run-action-button run-action-refresh" onClick={onRefresh}><RefreshCw size={15} />רענן</button>
           <button className="run-action-button run-action-copy" disabled={!run} onClick={copyAll}><ClipboardCopy size={15} />{copied ? 'הועתק' : 'העתק הכול'}</button>
+          {run?.canRetry && <button className="run-action-button run-action-retry" disabled={busy} onClick={() => act('retry')}>
+            <RotateCw size={15} />{run.canResume ? 'המשך ריצה' : 'הרץ מחדש'}
+          </button>}
+          {run?.canCancel && <button className="run-action-button run-action-cancel" disabled={busy} onClick={() => act('cancel')}>
+            <Ban size={15} />בטל ריצה
+          </button>}
           {run?.site?.finalUrl && <a className="run-action-button run-action-open" target="_blank" rel="noreferrer" href={run.site.finalUrl}><ExternalLink size={15} />פתח אתר יעד</a>}
           <button className="icon-button" onClick={onClose}><X size={20} /></button>
         </div>
       </div>
       {loading || !run ? <div className="center-state"><LoaderCircle className="spin" /><p>טוען...</p></div> : <>
+        {actionError && <div className="alert"><CircleAlert size={18} />{actionError}<button onClick={() => setActionError('')}><X size={16} /></button></div>}
         <div className="run-detail-summary">
           <div><small>אתר</small><strong>{run.site?.name || '—'}</strong><span dir="ltr">{run.site?.host}/sites/{run.site?.siteCode}</span></div>
           <div><small>ריליס</small><strong dir="ltr">{run.release?.version || '—'}</strong><span>{run.type === 'INSTALL' ? 'התקנה' : 'עדכון'}</span></div>
-          <div><small>מצב</small><StateBadge value={run.state} /><span>{run.progress || 0}%</span></div>
+          <div><small>מצב</small><StateBadge value={run.state} /><span>{run.progress || 0}%{run.attempt > 1 ? ` · ניסיון ${run.attempt}` : ''}</span></div>
           <div><small>התחלה</small><strong>{formatDate(run.startedAt || run.createdAt)}</strong><span>סיום: {formatDate(run.finishedAt)}</span></div>
         </div>
 
@@ -213,11 +273,17 @@ function RunDetailModal({ run, loading, onClose, onRefresh }) {
           <div className="failure-icon"><XCircle size={22} /></div>
           <div><h3>נקודת הכשל</h3><strong>{run.failureInfo.stageLabel || run.failureInfo.stage}</strong><p>{run.failureInfo.message}</p>
             <div className="failure-meta">
+              {run.failureInfo.errorClass && <span className="failure-class" dir="ltr">{run.failureInfo.errorClass}</span>}
               {run.failureInfo.currentFile && <code>{run.failureInfo.currentFile}</code>}
+              {run.failureInfo.target && <code>{run.failureInfo.target}</code>}
               {run.failureInfo.httpStatus != null && <span>HTTP {run.failureInfo.httpStatus}</span>}
+              {run.failureInfo.sharePointCode && <span dir="ltr">SP {run.failureInfo.sharePointCode}</span>}
+              {run.failureInfo.sharePointExceptionType && <span dir="ltr">{run.failureInfo.sharePointExceptionType}</span>}
               {run.failureInfo.operation && <span>{run.failureInfo.operation}</span>}
+              {run.failureInfo.attempt != null && <span>ניסיון {run.failureInfo.attempt}</span>}
               {run.failureInfo.method && <span dir="ltr">{run.failureInfo.method}</span>}
             </div>
+            {run.failureInfo.nextAction && <p className="failure-next-action">{run.failureInfo.nextAction}</p>}
             {run.failureInfo.url && <code className="run-url" dir="ltr">{run.failureInfo.url}</code>}
             {run.failureInfo.details?.responsePreview && <pre className="failure-preview">{run.failureInfo.details.responsePreview}</pre>}
           </div>

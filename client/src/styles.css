@@ -344,3 +344,26 @@ textarea { resize: vertical; }
 .sharepoint-ready-note { display: flex; gap: 10px; align-items: flex-start; margin: 12px 0; padding: 12px 14px; border: 1px solid #bae6fd; background: #f0f9ff; border-radius: 12px; color: #0c4a6e; }
 .sharepoint-ready-note div { display: grid; gap: 3px; }
 .sharepoint-ready-note span { font-size: 12px; line-height: 1.45; }
+
+/* Structured failure diagnostics and run actions */
+.failure-class {
+  background: #7f1d1d;
+  color: #fee2e2;
+  font-weight: 700;
+  letter-spacing: .02em;
+}
+.failure-next-action {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  color: #7c2d12;
+  font-weight: 600;
+}
+.run-action-retry { background: #ecfdf5; border-color: #a7f3d0; color: #065f46; }
+.run-action-cancel { background: #fef2f2; border-color: #fecaca; color: #991b1b; }
+.run-action-button:disabled { opacity: .55; cursor: not-allowed; }
+.stage-status-abandoned { opacity: .75; }
+.stage-status-abandoned .run-stage-card-head span { color: #b45309; }
+.global-deployment-next { color: #7c2d12; font-weight: 600; }
