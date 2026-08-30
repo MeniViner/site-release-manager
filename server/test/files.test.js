@@ -27,11 +27,17 @@ test('safeResolve stays under the root', () => {
   assert.throws(() => safeResolve(root, '../app.js'));
 });
 
-test('deployment overlay files are excluded from universal releases', () => {
+test('per-target overlay files are excluded from universal releases', () => {
   assert.ok(distExclusionReason('sitebuilder-runtime-config.json'));
   assert.ok(distExclusionReason('sitebuilder-deployment.json'));
-  assert.ok(distExclusionReason('sharepoint-deploy-manifest.json'));
   assert.equal(distExclusionReason('index.html'), '');
+});
+
+test('the Site Builder source manifest is preserved, not stripped', () => {
+  // sharepoint-deploy-manifest.json is the proof that an artifact is a genuine
+  // Universal build. Stripping it at ingest would destroy that provenance, so
+  // it must survive into the stored release.
+  assert.equal(distExclusionReason('sharepoint-deploy-manifest.json'), '');
 });
 
 test('findDistRoot accepts dist directly or one project level above it', () => {

@@ -19,7 +19,7 @@ dashboardRouter.get('/', async (_req, res, next) => {
         all: sites.length,
         active: sites.filter((site) => site.status === 'ACTIVE' || site.status === 'TRACKED').length,
         outdated: latestVersion ? sites.filter((site) => site.currentVersion && site.currentVersion !== latestVersion).length : 0,
-        waiting: sites.filter((site) => ['PREPARING_RELEASE', 'READY_FOR_SHAREPOINT', 'DEPLOYING'].includes(site.status)).length,
+        waiting: sites.filter((site) => ['QUEUED','PREPARING_RELEASE','READY_FOR_SHAREPOINT','WAITING_FOR_BROWSER','DEPLOYING','PAUSED'].includes(site.status)).length,
       },
       latestRelease: latestRelease ? { id: String(latestRelease._id), version: latestRelease.version } : null,
       recentSites: sites.slice(0, 8),

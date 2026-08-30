@@ -20,6 +20,8 @@ import {
   safeResolve,
 } from '../utils/files.js';
 import { nextReleaseVersions, parseReleaseVersion } from '../utils/versioning.js';
+import { validateUniversalArtifact, ReleaseValidationError as ArtifactValidationError } from '../services/releaseValidation.js';
+import { MANIFEST_FILE } from '../../../shared/universalManifest.js';
 
 class ReleaseValidationError extends Error {
   constructor(message) {
@@ -54,75 +56,6 @@ const folderUpload = multer({
 
 export const releasesRouter = Router();
 
-const UNIVERSAL_TEXT_EXTENSIONS = new Set(['.html', '.js', '.css', '.json', '.txt', '.svg', '.xml', '.webmanifest']);
-
-const SOURCE_MANIFEST_FILE = 'sharepoint-deploy-manifest.json';
-
-function readUniversalBuildProof(distDir, sourceName = '') {
-  const manifestPath = path.join(distDir, SOURCE_MANIFEST_FILE);
-  if (!fs.existsSync(manifestPath)) {
-    return { verified: false, reason: 'source-manifest-missing', file: null, buildId: null };
-  }
-  try {
-    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-    const mode = String(
-      manifest.buildMode
-      || manifest.mode
-      || manifest.artifactMode
-      || manifest.buildKind
-      || manifest.build?.mode
-      || manifest.build?.buildMode
-      || '',
-    ).trim().toLowerCase();
-    const artifactKind = String(manifest.artifactKind || manifest.kind || '').trim().toLowerCase();
-    const requiresRuntimeConfig = manifest.requiresRuntimeConfig === true
-      || manifest.runtime?.required === true
-      || manifest.runtimeConfigRequired === true;
-    const sourceLooksUniversal = /dist[-_]?universal/i.test(String(sourceName || ''));
-    const explicitUniversal = mode === 'universal'
-      || mode === 'universal-production'
-      || artifactKind.includes('universal');
-    const compatibleUniversalManifest = requiresRuntimeConfig
-      && !mode.includes('legacy')
-      && (artifactKind.includes('sitebuilder') || artifactKind.includes('site-builder') || artifactKind.includes('frontend') || artifactKind.includes('release-manifest'));
-    const structurallyValid = Array.isArray(manifest.files) && manifest.files.length > 0;
-    const verified = structurallyValid && (explicitUniversal || compatibleUniversalManifest || sourceLooksUniversal);
-    return {
-      verified,
-      reason: verified ? 'source-universal-manifest' : 'source-manifest-not-universal',
-      file: SOURCE_MANIFEST_FILE,
-      buildId: manifest.buildId || manifest.build?.id || manifest.releaseBuildId || null,
-      mode: mode || null,
-      artifactKind: artifactKind || null,
-      requiresRuntimeConfig,
-      fileCount: manifest.files.length,
-    };
-  } catch (error) {
-    return { verified: false, reason: `source-manifest-invalid:${error.message}`, file: SOURCE_MANIFEST_FILE, buildId: null };
-  }
-}
-
-function findCompiledSiteIdentity(distDir) {
-  const hits = [];
-  const patterns = [
-    /\/(?:sites|teams)\/[a-z0-9][a-z0-9-]{1,80}\/[A-Za-z0-9._-]{1,80}\/dist/ig,
-    /https?:\/\/[a-z0-9.-]+\/(?:sites|teams)\/[a-z0-9][a-z0-9-]{1,80}\/[A-Za-z0-9._-]{1,80}\/dist/ig,
-  ];
-  for (const file of collectFiles(distDir)) {
-    if (!UNIVERSAL_TEXT_EXTENSIONS.has(path.extname(file.path).toLowerCase())) continue;
-    const filePath = path.join(distDir, ...file.path.split('/'));
-    let text = '';
-    try { text = fs.readFileSync(filePath, 'utf8'); } catch { continue; }
-    for (const regex of patterns) {
-      regex.lastIndex = 0;
-      const match = regex.exec(text);
-      if (match) hits.push({ file: file.path, match: match[0] });
-      if (hits.length >= 8) return hits;
-    }
-  }
-  return hits;
-}
-
 const publicRelease = (release) => ({
   ...release,
   id: String(release._id),
@@ -131,36 +64,6 @@ const publicRelease = (release) => ({
   distDir: undefined,
 });
 
-function validateUniversalDist(distDir, { sourceName = '' } = {}) {
-  const indexPath = path.join(distDir, 'index.html');
-  const assetsDir = path.join(distDir, 'assets');
-  if (!fs.existsSync(indexPath)) throw new ReleaseValidationError('חסר dist/index.html.');
-  if (!fs.existsSync(assetsDir) || !fs.statSync(assetsDir).isDirectory()) {
-    throw new ReleaseValidationError('חסרה תיקיית dist/assets.');
-  }
-  const files = collectFiles(distDir);
-  if (!files.some((file) => /^assets\/.*\.js$/i.test(file.path))) {
-    throw new ReleaseValidationError('לא נמצא JavaScript build תחת dist/assets.');
-  }
-  if (files.some((file) => file.path === 'sitebuilder-runtime-config.json')) {
-    throw new ReleaseValidationError('ה-dist מכיל sitebuilder-runtime-config.json. ריליס אוניברסלי חייב להגיע ללא Runtime Config פר-אתר.');
-  }
-
-  const proof = readUniversalBuildProof(distDir, sourceName);
-  const identityHits = findCompiledSiteIdentity(distDir);
-  if (identityHits.length && !proof.verified) {
-    throw new ReleaseValidationError(`ה-dist אינו אוניברסלי: נמצאה זהות SharePoint צרובה (${identityHits.map((hit) => `${hit.file} -> ${hit.match}`).join(' | ')}). הרץ npm run build:universal מחדש והעלה את dist-universal החדש.`);
-  }
-
-  return {
-    files,
-    proof,
-    identityHits,
-    warnings: identityHits.length
-      ? [`נמצאו ${identityHits.length} מחרוזות SharePoint בתוך bundle, אך ה-artifact אומת באמצעות manifest של build:universal. המחרוזות נשמרו לאבחון ואינן חוסמות את הריליס.`]
-      : [],
-  };
-}
 async function ensureUniqueVersion(version, excludeId = null) {
   const query = { version };
   if (excludeId) query._id = { $ne: excludeId };
@@ -169,8 +72,9 @@ async function ensureUniqueVersion(version, excludeId = null) {
 }
 
 function baseReleaseDocument({ releaseId, releaseRoot, distDir, version, notes, uploadType, originalFileName }) {
-  const validation = validateUniversalDist(distDir, { sourceName: originalFileName });
+  const validation = validateUniversalArtifact(distDir, { sourceName: originalFileName });
   const stats = directoryStats(distDir);
+  const info = validation.proof.info;
   return {
     _id: releaseId,
     version,
@@ -184,13 +88,28 @@ function baseReleaseDocument({ releaseId, releaseRoot, distDir, version, notes, 
     sha256: hashDirectory(distDir),
     fileCount: stats.fileCount,
     totalBytes: stats.totalBytes,
-    universalProof: validation.proof,
+    // Provenance of the Site Builder build this release was ingested from.
+    universalProof: {
+      verified: true,
+      reason: validation.proof.reason,
+      file: MANIFEST_FILE,
+      buildId: info.buildId,
+      buildMode: info.buildMode,
+      artifactKind: info.artifactKind,
+      schemaVersion: info.schemaVersion,
+      requiresRuntimeConfig: info.requiresRuntimeConfig,
+      storageCompatibility: info.storageCompatibility,
+      generatedAt: info.generatedAt,
+      fileCount: info.fileCount,
+    },
+    buildId: info.buildId,
     validationWarnings: validation.warnings,
     identityDiagnostics: validation.identityHits,
     createdAt: new Date(),
     updatedAt: new Date(),
   };
 }
+
 function parseUploadedPaths(raw, expectedCount) {
   let parsed;
   try {
@@ -282,6 +201,9 @@ releasesRouter.post('/upload-folder', folderUpload.array('files', config.maxRele
     cleanupTempFiles(req.files);
     if (releaseRoot) removeDirectory(releaseRoot);
     if (error?.code === 11000) return res.status(409).json({ error: 'ריליס עם מספר הגרסה הזה כבר קיים.' });
+    if (error instanceof ArtifactValidationError) {
+      return res.status(400).json({ error: error.message, code: 'INVALID_UNIVERSAL_ARTIFACT', problems: error.errors || [], warnings: error.warnings || [] });
+    }
     return next(error);
   }
 });
@@ -320,6 +242,9 @@ releasesRouter.post('/upload', zipUpload.single('file'), async (req, res, next) 
     if (req.file?.path && fs.existsSync(req.file.path)) fs.rmSync(req.file.path, { force: true });
     if (releaseRoot) removeDirectory(releaseRoot);
     if (error?.code === 11000) return res.status(409).json({ error: 'ריליס עם מספר הגרסה הזה כבר קיים.' });
+    if (error instanceof ArtifactValidationError) {
+      return res.status(400).json({ error: error.message, code: 'INVALID_UNIVERSAL_ARTIFACT', problems: error.errors || [], warnings: error.warnings || [] });
+    }
     return next(error);
   }
 });

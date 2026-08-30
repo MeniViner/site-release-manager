@@ -1,43 +1,22 @@
+/**
+ * Durable run telemetry.
+ *
+ * Every stage records status, timestamps, attempt, elapsed time, operation,
+ * source, target, HTTP status, SharePoint code/type, the normalized error class
+ * and the next action — so the Runs UI can explain a failure without anyone
+ * reading raw logs.
+ */
+
 import { ObjectId } from 'mongodb';
 import { getDb } from '../db.js';
+import { STAGE, STAGE_LABELS, canonicalStage, stageLabel } from '../../../shared/deploymentStages.js';
+import { summarizeStages } from './jobState.js';
 
-const MAX_EVENTS = 1200;
+const MAX_EVENTS = 1500;
 
-export const RUN_STAGES = Object.freeze({
-  JOB_CREATED: 'JOB_CREATED',
-  RELEASE_VALIDATED: 'RELEASE_VALIDATED',
-  RUNTIME_CONFIG: 'RUNTIME_CONFIG',
-  MANIFEST: 'MANIFEST',
-  LOCAL_AUDIT: 'LOCAL_AUDIT',
-  READY_FOR_SHAREPOINT: 'READY_FOR_SHAREPOINT',
-  DEPLOYER_INIT: 'DEPLOYER_INIT',
-  TARGET_VALIDATION: 'TARGET_VALIDATION',
-  FORM_DIGEST: 'FORM_DIGEST',
-  LIBRARIES: 'LIBRARIES',
-  FOLDERS: 'FOLDERS',
-  SEED_FILES: 'SEED_FILES',
-  RELEASE_FILES: 'RELEASE_FILES',
-  FINAL_VERIFY: 'FINAL_VERIFY',
-  COMPLETE: 'COMPLETE',
-});
-
-export const STAGE_LABELS = Object.freeze({
-  JOB_CREATED: 'יצירת משימת פריסה',
-  RELEASE_VALIDATED: 'בדיקת הריליס',
-  RUNTIME_CONFIG: 'יצירת Runtime Config',
-  MANIFEST: 'יצירת Manifest וסדר העלאה',
-  LOCAL_AUDIT: 'Audit מקומי',
-  READY_FOR_SHAREPOINT: 'מוכן לפריסה ב-SharePoint',
-  DEPLOYER_INIT: 'אתחול מנוע הפריסה בדפדפן',
-  TARGET_VALIDATION: 'אימות אתר היעד',
-  FORM_DIGEST: 'חיבור ל-SharePoint וקבלת FormDigest',
-  LIBRARIES: 'בדיקת/יצירת ספריות מסמכים',
-  FOLDERS: 'בדיקת/יצירת תיקיות',
-  SEED_FILES: 'בדיקת/יצירת קובצי TXT',
-  RELEASE_FILES: 'העלאת קובצי הריליס',
-  FINAL_VERIFY: 'אימות האתר הסופי',
-  COMPLETE: 'סיום הפריסה',
-});
+/** Canonical stage keys. Kept under the historical export name for compatibility. */
+export const RUN_STAGES = STAGE;
+export { STAGE_LABELS, canonicalStage, stageLabel };
 
 const text = (value, max = 2000) => String(value ?? '').slice(0, max);
 
@@ -53,25 +32,37 @@ function sanitizeDetails(details) {
   return result;
 }
 
+let eventCounter = 0;
+
 export function normalizeRunEvent(input = {}, defaults = {}) {
   const now = new Date();
-  const stage = text(input.stage || defaults.stage || 'UNKNOWN', 80).toUpperCase();
+  const stage = canonicalStage(input.stage || defaults.stage || 'UNKNOWN');
   const status = ['started', 'success', 'warning', 'failed', 'info'].includes(input.status)
     ? input.status
     : (defaults.status || 'info');
+
+  eventCounter += 1;
   return {
-    eventId: text(input.eventId || `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`, 100),
+    eventId: text(input.eventId || `${Date.now()}-${eventCounter}-${Math.random().toString(36).slice(2, 9)}`, 100),
     stage,
-    stageLabel: text(input.stageLabel || STAGE_LABELS[stage] || defaults.stageLabel || stage, 200),
+    stageLabel: text(input.stageLabel || stageLabel(stage) || defaults.stageLabel || stage, 200),
     status,
-    source: text(input.source || defaults.source || 'server', 40),
+    source: text(input.source || defaults.source || 'server', 60),
     message: text(input.message || defaults.message || '', 2000),
     currentFile: text(input.currentFile || '', 1000),
     operation: text(input.operation || '', 200),
+    target: text(input.target || '', 500),
     method: text(input.method || '', 20),
     url: text(input.url || '', 2000),
-    httpStatus: Number.isFinite(Number(input.httpStatus)) ? Number(input.httpStatus) : null,
+    httpStatus: Number.isFinite(Number(input.httpStatus)) && input.httpStatus !== null && input.httpStatus !== ''
+      ? Number(input.httpStatus)
+      : null,
+    attempt: Number.isFinite(Number(input.attempt)) ? Number(input.attempt) : null,
     durationMs: Number.isFinite(Number(input.durationMs)) ? Number(input.durationMs) : null,
+    errorClass: text(input.errorClass || '', 60),
+    sharePointCode: text(input.sharePointCode || '', 60),
+    sharePointExceptionType: text(input.sharePointExceptionType || '', 200),
+    nextAction: text(input.nextAction || '', 500),
     details: sanitizeDetails(input.details),
     at: input.at ? new Date(input.at) : now,
   };
@@ -85,10 +76,10 @@ export async function appendRunEvent(jobId, input, defaults = {}) {
     $push: { runEvents: { $each: [event], $slice: -MAX_EVENTS } },
     $set: { updatedAt: new Date() },
   };
+
   // LOCAL_AUDIT is an optional side-check that may run after server preparation.
-  // It must not move the canonical deployment state machine backwards from
-  // READY_FOR_SHAREPOINT to LOCAL_AUDIT.
-  if (event.stage !== RUN_STAGES.LOCAL_AUDIT) {
+  // It must not move the canonical deployment state machine backwards.
+  if (event.stage !== 'LOCAL_AUDIT') {
     update.$set.currentStage = event.stage;
     update.$set.currentStageLabel = event.stageLabel;
   }
@@ -100,13 +91,23 @@ export async function appendRunEvent(jobId, input, defaults = {}) {
       message: event.message,
       currentFile: event.currentFile || '',
       operation: event.operation || '',
+      target: event.target || '',
       method: event.method || '',
       url: event.url || '',
       httpStatus: event.httpStatus,
+      attempt: event.attempt,
+      errorClass: event.errorClass || '',
+      sharePointCode: event.sharePointCode || '',
+      sharePointExceptionType: event.sharePointExceptionType || '',
+      nextAction: event.nextAction || '',
       details: event.details,
       at: event.at,
     };
   }
+  // A stage that succeeds after an earlier failure clears the failure focus, so
+  // a recovered transient condition does not keep the run looking broken.
+  if (event.status === 'success') update.$unset = { failureStage: '', failureInfo: '' };
+
   await db.collection('deployment_jobs').updateOne({ _id: objectId }, update);
   return event;
 }
@@ -115,42 +116,7 @@ export async function appendRunEvents(jobId, events, defaults = {}) {
   for (const event of events || []) await appendRunEvent(jobId, event, defaults);
 }
 
-export function summarizeEvents(events = []) {
-  const stages = new Map();
-  for (const raw of events) {
-    const event = normalizeRunEvent(raw);
-    const current = stages.get(event.stage) || {
-      stage: event.stage,
-      stageLabel: event.stageLabel,
-      status: 'info',
-      startedAt: null,
-      finishedAt: null,
-      durationMs: null,
-      message: '',
-      currentFile: '',
-      source: event.source,
-    };
-    current.stageLabel = event.stageLabel || current.stageLabel;
-    current.source = event.source || current.source;
-    if (event.status === 'started') {
-      current.startedAt = event.at;
-      current.status = 'started';
-    } else if (event.status === 'success') {
-      current.finishedAt = event.at;
-      current.status = 'success';
-    } else if (event.status === 'failed') {
-      current.finishedAt = event.at;
-      current.status = 'failed';
-    } else if (event.status === 'warning' && current.status !== 'failed') {
-      current.status = 'warning';
-    }
-    if (event.message) current.message = event.message;
-    if (event.currentFile) current.currentFile = event.currentFile;
-    if (event.durationMs != null) current.durationMs = event.durationMs;
-    if (current.durationMs == null && current.startedAt && current.finishedAt) {
-      current.durationMs = Math.max(0, new Date(current.finishedAt).getTime() - new Date(current.startedAt).getTime());
-    }
-    stages.set(event.stage, current);
-  }
-  return [...stages.values()];
+/** Retained for compatibility with existing callers and tests. */
+export function summarizeEvents(events = [], jobState = '') {
+  return summarizeStages(events.map((event) => normalizeRunEvent(event)), jobState);
 }

@@ -1,265 +1,289 @@
+/**
+ * Server-side deployment preparation.
+ *
+ * NODE/BROWSER BOUNDARY: everything in this file runs in Node and touches only
+ * local Mongo and the local filesystem. It never performs an authenticated
+ * SharePoint mutation — Node has no SharePoint cookie, no FormDigest and no
+ * JSOM. All SharePoint work belongs to the browser worker.
+ */
+
 import fs from 'node:fs';
 import path from 'node:path';
 import { ObjectId } from 'mongodb';
 import { config, paths } from '../config.js';
 import { getDb } from '../db.js';
-import { collectFiles, ensureDirectory, hashFile, removeDirectory } from '../utils/files.js';
-import { appendRunEvent, RUN_STAGES } from './runTelemetry.js';
+import { STAGE } from '../../../shared/deploymentStages.js';
+import { buildSiteIdentity, buildTxtSeedPlan, requiredLibraries, requiredFolders, canonicalTargetKey } from '../../../shared/siteRuntime.js';
+import { verifyStoredReleaseIntegrity } from './releaseValidation.js';
+import {
+  createStaging, writeTargetOverlay, regenerateManifest, verifyStaging,
+  buildUploadOrder, resolveStagedFile, destroyStaging,
+} from './stagingService.js';
+import { appendRunEvent } from './runTelemetry.js';
+import { JOB_STATE } from './jobState.js';
 
-const OVERLAY_NAMES = [
-  'sitebuilder-runtime-config.json',
-  'sitebuilder-deployment.json',
-  'sharepoint-deploy-manifest.json',
-];
-
-const UNIVERSAL_SCAN_EXTENSIONS = new Set(['.html', '.js', '.css', '.json', '.txt', '.svg', '.xml', '.webmanifest']);
-
-function findUniversalIdentityLeaks(distDir) {
-  const hits = [];
-  const patterns = [
-    /\/(?:sites|teams)\/[a-z0-9][a-z0-9-]{1,80}\/[A-Za-z0-9._-]{1,80}\/dist/ig,
-    /https?:\/\/[a-z0-9.-]+\/(?:sites|teams)\/[a-z0-9][a-z0-9-]{1,80}\/[A-Za-z0-9._-]{1,80}\/dist/ig,
-  ];
-  for (const file of collectFiles(distDir)) {
-    if (!UNIVERSAL_SCAN_EXTENSIONS.has(path.extname(file.path).toLowerCase())) continue;
-    const filePath = path.join(distDir, ...file.path.split('/'));
-    let text = '';
-    try { text = fs.readFileSync(filePath, 'utf8'); } catch { continue; }
-    for (const regex of patterns) {
-      regex.lastIndex = 0;
-      const match = regex.exec(text);
-      if (match) hits.push({ file: file.path, match: match[0] });
-      if (hits.length >= 8) return hits;
-    }
-  }
-  return hits;
-}
-
-function deploymentLog(jobId, message) {
+function log(jobId, message) {
   const line = `[${new Date().toISOString()}] [prepare] ${message}`;
   console.log(`[job ${jobId}] ${line}`);
   return line;
 }
 
+/** Canonical per-target runtime identity. Nothing downstream re-derives paths. */
 export function buildSiteRuntime(site, release, jobId, deployedAt) {
-  const siteRoot = `/sites/${site.siteCode}`;
-  const siteDbFolder = String(site.siteDbFolder || 'siteDB').trim();
-  const usersDbFolder = String(site.usersDbFolder || 'siteUsersDb').trim();
-  const siteAssetsFolder = String(site.siteAssetsFolder || 'siteAssets').trim();
-  const imagesFolder = String(site.imagesFolder || 'images').trim();
-  const widgetsDbTarget = String(site.widgetsDbTarget || 'users').trim().toLowerCase() === 'site' ? 'site' : 'users';
-  const siteDbRoot = `${siteRoot}/${siteDbFolder}`;
-  const usersDbRoot = `${siteRoot}/${usersDbFolder}`;
-  const siteAssetsRoot = `${siteDbRoot}/${siteAssetsFolder}`;
-  const imagesRoot = `${siteDbRoot}/${imagesFolder}`;
-  const targetDistPath = `${siteDbRoot}/dist`;
-  const sharePointSiteUrl = `https://${site.host}${siteRoot}`;
+  const identity = buildSiteIdentity(site);
   return {
     schemaVersion: 2,
-    storageBackend: 'txt',
-    host: site.host,
-    siteCode: site.siteCode,
-    siteId: site.siteCode,
-    siteDbFolder,
-    usersDbFolder,
-    siteAssetsFolder,
-    imagesFolder,
-    widgetsDbTarget,
-    bootstrapLibrary: 'SiteAssets',
-    bootstrapFolder: 'sitebuilder-bootstrap',
-    siteRoot,
-    siteApiRoot: siteRoot,
-    siteDbRoot,
-    usersDbRoot,
-    siteAssetsRoot,
-    imagesRoot,
-    sharePointSiteUrl,
-    allowedSiteRoot: sharePointSiteUrl,
-    targetDistPath,
-    finalAppUrl: `${sharePointSiteUrl}/${siteDbFolder}/dist/index.html`,
+    ...identity,
     releaseVersion: release.version,
     releaseId: String(release._id),
     deployedAt,
     deploymentGeneratedBy: 'site-release-manager',
-    deploymentJobId: jobId,
+    deploymentJobId: String(jobId),
   };
 }
 
-function writeJson(filePath, payload) {
-  fs.writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+export function stagingRootForJob(jobId) {
+  return path.join(paths.builds, String(jobId));
 }
 
-function fileInfo(root, name) {
-  const filePath = path.join(root, name);
-  return { path: name, size: fs.statSync(filePath).size, sha256: hashFile(filePath), source: 'overlay' };
-}
-
+/**
+ * Prepare a job: validate the release, validate the target, create a fresh
+ * private staging directory, generate this target's overlay, regenerate the
+ * manifest and re-verify every hash. Only then is the job handed to the browser.
+ */
 export async function prepareDeploymentJob(jobId) {
   const db = getDb();
   const objectId = new ObjectId(jobId);
   const job = await db.collection('deployment_jobs').findOne({ _id: objectId });
   if (!job) throw new Error('Job not found.');
+
   const [site, release] = await Promise.all([
     db.collection('sites').findOne({ _id: job.siteId }),
     db.collection('releases').findOne({ _id: job.releaseId }),
   ]);
-  if (!site || !release) throw new Error('Site or release not found.');
-  if (release.artifactType !== 'universal-dist' || !release.distDir || !fs.existsSync(release.distDir)) {
-    throw new Error('הריליס אינו Universal dist תקין. העלה מחדש את תיקיית dist שנבנתה לאחר מעבר Site Builder ל-Runtime Config.');
+  if (!site) throw new Error('האתר לא נמצא.');
+  if (!release) throw new Error('הריליס לא נמצא.');
+
+  const logs = [log(jobId, `START prepare | release=${release.version} | site=${site.host}/sites/${site.siteCode}`)];
+
+  // --- 1. RELEASE_VALIDATE ------------------------------------------------
+  await appendRunEvent(objectId, { stage: STAGE.RELEASE_VALIDATE, status: 'started', source: 'server', message: 'מאמת את ארטיפקט הריליס.' });
+  if (release.artifactType !== 'universal-dist') {
+    throw new Error('הריליס נוצר במודל הישן של קוד מקור. העלה Universal dist חדש.');
   }
-  const identityLeaks = findUniversalIdentityLeaks(release.distDir);
-  const manifestVerified = release.universalProof?.verified === true;
-  if (identityLeaks.length && !manifestVerified) {
-    throw new Error(`הריליס אינו Universal dist נקי: נמצאו נתיבי SharePoint צרובים ללא הוכחת manifest של build:universal (${identityLeaks.map((hit) => `${hit.file} -> ${hit.match}`).join(' | ')}). צור npm run build:universal חדש והעלה את dist-universal.`);
-  }
-  if (identityLeaks.length && manifestVerified) {
-    console.warn(`[job ${jobId}] Universal manifest verified; preserving ${identityLeaks.length} SharePoint-like bundle string(s) as diagnostics only.`);
-  }
+  const integrity = verifyStoredReleaseIntegrity(release);
   await appendRunEvent(objectId, {
-    stage: RUN_STAGES.RELEASE_VALIDATED,
+    stage: STAGE.RELEASE_VALIDATE,
     status: 'success',
     source: 'server',
-    message: `Universal dist ${release.version} נמצא ותקין להכנת פריסה.`,
-    details: { releaseSha256: release.sha256, distDir: release.distDir },
+    message: `ארטיפקט Universal ${release.version} אומת (${integrity.fileCount} קבצים).`,
+    details: { releaseSha256: release.sha256, buildId: integrity.proof.info.buildId, fileCount: integrity.fileCount },
   });
+  logs.push(log(jobId, `release verified sha256=${release.sha256} buildId=${integrity.proof.info.buildId}`));
 
-  const buildRoot = path.join(paths.builds, jobId);
-  const overlayDir = path.join(buildRoot, 'overlay');
-  removeDirectory(buildRoot);
-  ensureDirectory(overlayDir);
-  const now = new Date();
-  const deployedAt = now.toISOString();
-  const prepareLogs = [
-    deploymentLog(jobId, `START universal-dist preparation | release=${release.version} | site=${site.host}/sites/${site.siteCode}`),
-    deploymentLog(jobId, `releaseDist=${release.distDir}`),
-    deploymentLog(jobId, `releaseSha256=${release.sha256}`),
-  ];
+  // --- 2. TARGET_VALIDATE -------------------------------------------------
+  await appendRunEvent(objectId, { stage: STAGE.TARGET_VALIDATE, status: 'started', source: 'server', message: 'מאמת את זהות אתר היעד.' });
+  const identity = buildSiteIdentity(site);
+  const targetKey = canonicalTargetKey(identity);
+  await appendRunEvent(objectId, {
+    stage: STAGE.TARGET_VALIDATE,
+    status: 'success',
+    source: 'server',
+    message: `היעד ${identity.host}${identity.siteRoot} תקין.`,
+    target: identity.targetDistPath,
+    details: {
+      targetKey,
+      siteDbRoot: identity.siteDbRoot,
+      usersDbRoot: identity.usersDbRoot,
+      siteAssetsRoot: identity.siteAssetsRoot,
+      imagesRoot: identity.imagesRoot,
+      widgetsDbTarget: identity.widgetsDbTarget,
+      storageBackend: identity.storageBackend,
+    },
+  });
+  logs.push(log(jobId, `target siteDbRoot=${identity.siteDbRoot} usersDbRoot=${identity.usersDbRoot} dist=${identity.targetDistPath}`));
+
+  const deployedAt = new Date().toISOString();
+  const stagingRoot = stagingRootForJob(jobId);
 
   await db.collection('deployment_jobs').updateOne(
     { _id: objectId },
-    { $set: { state: 'PREPARING_RELEASE', progress: 25, buildRoot, overlayDir, updatedAt: now } },
+    { $set: { state: JOB_STATE.PREPARING_RELEASE, progress: 15, stagingRoot, targetKey, updatedAt: new Date() } },
   );
 
-  const runtimeConfig = buildSiteRuntime(site, release, jobId, deployedAt);
-  writeJson(path.join(overlayDir, 'sitebuilder-runtime-config.json'), runtimeConfig);
+  // --- 3. STAGING_CREATE --------------------------------------------------
+  await appendRunEvent(objectId, { stage: STAGE.STAGING_CREATE, status: 'started', source: 'server', message: 'יוצר Staging ייעודי לריצה.' });
+  const staging = createStaging({ releaseDistDir: release.distDir, stagingRoot });
   await appendRunEvent(objectId, {
-    stage: RUN_STAGES.RUNTIME_CONFIG,
+    stage: STAGE.STAGING_CREATE,
     status: 'success',
     source: 'server',
-    message: 'Runtime Config פר-אתר נוצר ונגזר מהיעד.',
-    details: { host: runtimeConfig.host, siteCode: runtimeConfig.siteCode, siteRoot: runtimeConfig.siteRoot, targetDistPath: runtimeConfig.targetDistPath, finalAppUrl: runtimeConfig.finalAppUrl },
+    message: `Staging נוצר עם ${staging.fileCount} קבצים; הארטיפקט השמור לא נגע.`,
+    details: { stagingDist: staging.distDir, fileCount: staging.fileCount, removedOverlays: staging.removedOverlays.join(',') || 'none' },
   });
-  prepareLogs.push(deploymentLog(jobId, `runtime host=${runtimeConfig.host} siteCode=${runtimeConfig.siteCode} siteRoot=${runtimeConfig.siteRoot}`));
-  prepareLogs.push(deploymentLog(jobId, `runtime siteDbRoot=${runtimeConfig.siteDbRoot} usersDbRoot=${runtimeConfig.usersDbRoot} siteAssetsRoot=${runtimeConfig.siteAssetsRoot}`));
-  prepareLogs.push(deploymentLog(jobId, `runtime imagesRoot=${runtimeConfig.imagesRoot} targetDistPath=${runtimeConfig.targetDistPath}`));
-  prepareLogs.push(deploymentLog(jobId, `runtime finalAppUrl=${runtimeConfig.finalAppUrl}`));
+  logs.push(log(jobId, `staging=${staging.distDir} files=${staging.fileCount}`));
 
-  const deploymentMetadata = {
-    kind: 'sitebuilder-deployment',
-    schemaVersion: 2,
-    generatedBy: 'site-release-manager',
+  // --- 4. RUNTIME_CONFIG_CREATE -------------------------------------------
+  await appendRunEvent(objectId, { stage: STAGE.RUNTIME_CONFIG_CREATE, status: 'started', source: 'server', message: 'מייצר Runtime Config פר-אתר.' });
+  const overlay = writeTargetOverlay({
+    distDir: staging.distDir,
+    identity,
+    release,
     jobId,
-    releaseId: String(release._id),
-    releaseVersion: release.version,
-    releaseSha256: release.sha256,
-    siteCode: site.siteCode,
-    host: site.host,
-    storageBackend: 'txt',
     deployedAt,
-    targetDistPath: runtimeConfig.targetDistPath,
-    finalAppUrl: runtimeConfig.finalAppUrl,
-  };
-  writeJson(path.join(overlayDir, 'sitebuilder-deployment.json'), deploymentMetadata);
+    backendApiUrl: site.backendApiUrl || '',
+  });
+  await appendRunEvent(objectId, {
+    stage: STAGE.RUNTIME_CONFIG_CREATE,
+    status: 'success',
+    source: 'server',
+    message: 'Runtime Config ו-Deployment Metadata נוצרו ונגזרו מהיעד הזה בלבד.',
+    details: {
+      host: overlay.runtimeConfig.host,
+      siteCode: overlay.runtimeConfig.siteCode,
+      targetDistPath: overlay.runtimeConfig.targetDistPath,
+      finalAppUrl: overlay.runtimeConfig.finalAppUrl,
+      storageBackend: overlay.runtimeConfig.storageBackend,
+    },
+  });
+  logs.push(log(jobId, `runtime finalAppUrl=${overlay.runtimeConfig.finalAppUrl}`));
 
-  const staticFiles = collectFiles(release.distDir)
-    .filter((file) => !OVERLAY_NAMES.includes(file.path))
-    .map((file) => ({ ...file, source: 'release' }));
-  if (!staticFiles.some((file) => file.path === 'index.html')) throw new Error('Release dist is missing index.html.');
-  if (!staticFiles.some((file) => /^assets\/.*\.js$/i.test(file.path))) throw new Error('Release dist contains no JavaScript asset.');
-  const totalStaticBytes = staticFiles.reduce((sum, file) => sum + Number(file.size || 0), 0);
-  prepareLogs.push(deploymentLog(jobId, `universal dist files=${staticFiles.length} bytes=${totalStaticBytes}`));
-
-  const preManifestOverlays = [
-    fileInfo(overlayDir, 'sitebuilder-runtime-config.json'),
-    fileInfo(overlayDir, 'sitebuilder-deployment.json'),
-  ];
-  const manifestPayload = {
-    kind: 'sitebuilder-release-manifest',
-    schemaVersion: 2,
-    artifactKind: 'site-builder-frontend',
-    storageCompatibility: ['txt'],
-    releaseId: String(release._id),
-    releaseVersion: release.version,
-    releaseSha256: release.sha256,
-    site: { host: site.host, siteCode: site.siteCode },
-    files: [...staticFiles, ...preManifestOverlays].map(({ path: filePath, size, sha256 }) => ({ path: filePath, size, sha256 })),
-  };
-  writeJson(path.join(overlayDir, 'sharepoint-deploy-manifest.json'), manifestPayload);
-  const overlays = [...preManifestOverlays, fileInfo(overlayDir, 'sharepoint-deploy-manifest.json')];
-  const files = [...staticFiles, ...overlays].sort((a, b) => a.path.localeCompare(b.path));
-  const normalFiles = files.filter((file) => file.path !== 'index.html');
-  const uploadOrder = [...normalFiles.map((file) => file.path), 'index.html'];
-
-  const artifactManifest = {
-    kind: 'site-release-manager-artifact',
-    schemaVersion: 2,
+  // --- 5. MANIFEST_CREATE -------------------------------------------------
+  await appendRunEvent(objectId, { stage: STAGE.MANIFEST_CREATE, status: 'started', source: 'server', message: 'מייצר Manifest מחדש כולל ה-overlay.' });
+  const manifest = regenerateManifest({
+    distDir: staging.distDir,
+    release,
+    identity,
     jobId,
+    sourceProof: integrity.proof.info,
+  });
+  verifyStaging({ distDir: staging.distDir, manifest });
+  const uploadOrder = buildUploadOrder(manifest);
+  const manifestPath = path.join(stagingRoot, 'artifact-manifest.json');
+  fs.writeFileSync(manifestPath, `${JSON.stringify({
+    kind: 'site-release-manager-artifact',
+    schemaVersion: 3,
+    jobId: String(jobId),
+    targetKey,
     release: { id: String(release._id), version: release.version, sha256: release.sha256 },
     site: {
-      host: site.host,
-      siteCode: site.siteCode,
-      siteRoot: runtimeConfig.siteRoot,
-      siteDbRoot: runtimeConfig.siteDbRoot,
-      usersDbRoot: runtimeConfig.usersDbRoot,
-      finalDistRoot: runtimeConfig.targetDistPath,
-      finalUrl: runtimeConfig.finalAppUrl,
+      host: identity.host,
+      siteCode: identity.siteCode,
+      siteRoot: identity.siteRoot,
+      siteDbRoot: identity.siteDbRoot,
+      usersDbRoot: identity.usersDbRoot,
+      siteAssetsRoot: identity.siteAssetsRoot,
+      imagesRoot: identity.imagesRoot,
+      finalDistRoot: identity.targetDistPath,
+      finalUrl: identity.finalAppUrl,
     },
-    files,
+    manifest,
     uploadOrder,
-  };
-  const manifestPath = path.join(buildRoot, 'artifact-manifest.json');
-  writeJson(manifestPath, artifactManifest);
-  await appendRunEvent(objectId, {
-    stage: RUN_STAGES.MANIFEST,
-    status: 'success',
-    source: 'server',
-    message: `Manifest וסדר העלאה נוצרו עבור ${files.length} קבצים.`,
-    details: { fileCount: files.length, uploadOrderCount: uploadOrder.length, firstFile: uploadOrder[0] || '', lastFile: uploadOrder.at(-1) || '' },
-  });
+  }, null, 2)}\n`, 'utf8');
 
-  const deployerUrl = `https://${site.host}${config.sharePointDeployerPath}?jobId=${encodeURIComponent(jobId)}&apiBase=${encodeURIComponent(config.publicApiUrl)}`;
-  prepareLogs.push(deploymentLog(jobId, `artifact files=${files.length} uploadOrder=${uploadOrder.length} first=${uploadOrder[0] || '—'} last=${uploadOrder.at(-1) || '—'}`));
-  prepareLogs.push(deploymentLog(jobId, `overlays=${OVERLAY_NAMES.join(',')}`));
-  prepareLogs.push(deploymentLog(jobId, `deployerUrl=${deployerUrl}`));
-  prepareLogs.push(deploymentLog(jobId, 'READY_FOR_SHAREPOINT'));
   await appendRunEvent(objectId, {
-    stage: RUN_STAGES.READY_FOR_SHAREPOINT,
+    stage: STAGE.MANIFEST_CREATE,
     status: 'success',
     source: 'server',
-    message: 'כל קבצי הפריסה מוכנים; אפשר לפתוח את SharePoint Deployer.',
-    details: { deployerUrl, manifestPath },
+    message: `Manifest אומת מחדש עבור ${manifest.files.length} קבצים; ${manifest.commitFile} יעלה אחרון.`,
+    details: {
+      fileCount: manifest.files.length,
+      indexReferences: manifest.indexReferences.length,
+      firstUpload: uploadOrder[0] || '',
+      lastUpload: uploadOrder.at(-1) || '',
+    },
   });
+  logs.push(log(jobId, `manifest files=${manifest.files.length} uploadOrder=${uploadOrder.length} last=${uploadOrder.at(-1)}`));
+
+  // --- 6. READY_FOR_SHAREPOINT --------------------------------------------
+  const deployerUrl = `https://${identity.host}${config.sharePointDeployerPath}`
+    + `?jobId=${encodeURIComponent(String(jobId))}&apiBase=${encodeURIComponent(config.publicApiUrl)}`;
+  await appendRunEvent(objectId, {
+    stage: STAGE.READY_FOR_SHAREPOINT,
+    status: 'success',
+    source: 'server',
+    message: 'הכנת השרת הושלמה. ממתין למנוע הפריסה בדפדפן SharePoint.',
+    details: { deployerUrl, manifestPath, targetKey },
+  });
+  logs.push(log(jobId, 'READY_FOR_SHAREPOINT'));
+
   await db.collection('deployment_jobs').updateOne(
     { _id: objectId },
     {
       $set: {
-        state: 'READY_FOR_SHAREPOINT',
-        progress: 40,
+        state: JOB_STATE.READY_FOR_SHAREPOINT,
+        progress: 35,
         manifestPath,
+        stagingDistDir: staging.distDir,
         deployerUrl,
+        finalDistRoot: identity.targetDistPath,
+        finalUrl: identity.finalAppUrl,
         message: 'צד השרת מוכן. ממתין למנוע הפריסה בדפדפן SharePoint.',
+        error: null,
         updatedAt: new Date(),
       },
-      $push: { logs: { $each: prepareLogs, $slice: -500 } },
+      $push: { logs: { $each: logs, $slice: -500 } },
     },
   );
   await db.collection('sites').updateOne(
     { _id: site._id },
-    { $set: { status: 'READY_FOR_SHAREPOINT', activeJobId: objectId, updatedAt: new Date() } },
+    { $set: { status: JOB_STATE.READY_FOR_SHAREPOINT, activeJobId: objectId, updatedAt: new Date() } },
   );
 }
 
-export function resolveDeploymentFile(job, release, relativePath) {
-  if (OVERLAY_NAMES.includes(relativePath)) return path.join(job.overlayDir, relativePath);
-  return path.join(release.distDir, ...relativePath.split('/'));
+/**
+ * The complete instruction set the browser worker needs. Derived fresh from the
+ * job's own staging and identity so it can never carry another target's values.
+ */
+export function buildDeploymentDescriptor({ job, site, release, manifest, uploadOrder }) {
+  const identity = buildSiteIdentity(site);
+  return {
+    job: {
+      id: String(job._id),
+      state: job.state,
+      progress: job.progress || 0,
+      type: job.type,
+      currentStage: job.currentStage || '',
+      currentStageLabel: job.currentStageLabel || '',
+      targetKey: job.targetKey || canonicalTargetKey(identity),
+      browserLease: job.browserLease || null,
+    },
+    site: {
+      id: String(site._id),
+      name: site.name,
+      ...identity,
+      finalDistRoot: identity.targetDistPath,
+      finalUrl: identity.finalAppUrl,
+    },
+    release: { id: String(release._id), version: release.version, notes: release.notes || '' },
+    libraries: requiredLibraries(identity),
+    folders: requiredFolders(identity, distSubFolders(manifest)),
+    seedFiles: buildTxtSeedPlan(identity),
+    permissionsMarker: `${identity.usersDbRoot}/.permissions-setup.json`,
+    manifest: { ...manifest, uploadOrder },
+  };
 }
+
+/** Every folder the staged dist needs beneath the target dist root. */
+function distSubFolders(manifest) {
+  const folders = new Set();
+  for (const file of manifest.files) {
+    const parts = file.path.split('/');
+    for (let index = 1; index < parts.length; index += 1) {
+      folders.add(parts.slice(0, index).join('/'));
+    }
+  }
+  return [...folders];
+}
+
+/**
+ * Resolve a file for the browser worker.
+ * Files are always served from the job's own staging, never from the immutable
+ * stored release directory.
+ */
+export function resolveDeploymentFile(job, _release, relativePath) {
+  const distDir = job.stagingDistDir || path.join(stagingRootForJob(job._id), 'dist');
+  return resolveStagedFile(distDir, relativePath);
+}
+
+export { destroyStaging };
