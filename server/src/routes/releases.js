@@ -56,6 +56,52 @@ export const releasesRouter = Router();
 
 const UNIVERSAL_TEXT_EXTENSIONS = new Set(['.html', '.js', '.css', '.json', '.txt', '.svg', '.xml', '.webmanifest']);
 
+const SOURCE_MANIFEST_FILE = 'sharepoint-deploy-manifest.json';
+
+function readUniversalBuildProof(distDir, sourceName = '') {
+  const manifestPath = path.join(distDir, SOURCE_MANIFEST_FILE);
+  if (!fs.existsSync(manifestPath)) {
+    return { verified: false, reason: 'source-manifest-missing', file: null, buildId: null };
+  }
+  try {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    const mode = String(
+      manifest.buildMode
+      || manifest.mode
+      || manifest.artifactMode
+      || manifest.buildKind
+      || manifest.build?.mode
+      || manifest.build?.buildMode
+      || '',
+    ).trim().toLowerCase();
+    const artifactKind = String(manifest.artifactKind || manifest.kind || '').trim().toLowerCase();
+    const requiresRuntimeConfig = manifest.requiresRuntimeConfig === true
+      || manifest.runtime?.required === true
+      || manifest.runtimeConfigRequired === true;
+    const sourceLooksUniversal = /dist[-_]?universal/i.test(String(sourceName || ''));
+    const explicitUniversal = mode === 'universal'
+      || mode === 'universal-production'
+      || artifactKind.includes('universal');
+    const compatibleUniversalManifest = requiresRuntimeConfig
+      && !mode.includes('legacy')
+      && (artifactKind.includes('sitebuilder') || artifactKind.includes('site-builder') || artifactKind.includes('frontend') || artifactKind.includes('release-manifest'));
+    const structurallyValid = Array.isArray(manifest.files) && manifest.files.length > 0;
+    const verified = structurallyValid && (explicitUniversal || compatibleUniversalManifest || sourceLooksUniversal);
+    return {
+      verified,
+      reason: verified ? 'source-universal-manifest' : 'source-manifest-not-universal',
+      file: SOURCE_MANIFEST_FILE,
+      buildId: manifest.buildId || manifest.build?.id || manifest.releaseBuildId || null,
+      mode: mode || null,
+      artifactKind: artifactKind || null,
+      requiresRuntimeConfig,
+      fileCount: manifest.files.length,
+    };
+  } catch (error) {
+    return { verified: false, reason: `source-manifest-invalid:${error.message}`, file: SOURCE_MANIFEST_FILE, buildId: null };
+  }
+}
+
 function findCompiledSiteIdentity(distDir) {
   const hits = [];
   const patterns = [
@@ -85,7 +131,7 @@ const publicRelease = (release) => ({
   distDir: undefined,
 });
 
-function validateUniversalDist(distDir) {
+function validateUniversalDist(distDir, { sourceName = '' } = {}) {
   const indexPath = path.join(distDir, 'index.html');
   const assetsDir = path.join(distDir, 'assets');
   if (!fs.existsSync(indexPath)) throw new ReleaseValidationError('חסר dist/index.html.');
@@ -99,13 +145,22 @@ function validateUniversalDist(distDir) {
   if (files.some((file) => file.path === 'sitebuilder-runtime-config.json')) {
     throw new ReleaseValidationError('ה-dist מכיל sitebuilder-runtime-config.json. ריליס אוניברסלי חייב להגיע ללא Runtime Config פר-אתר.');
   }
-  const identityHits = findCompiledSiteIdentity(distDir);
-  if (identityHits.length) {
-    throw new ReleaseValidationError(`ה-dist אינו אוניברסלי: נמצאה זהות SharePoint צרובה (${identityHits.map((hit) => `${hit.file} -> ${hit.match}`).join(' | ')}). הרץ npm run build:universal מחדש והעלה את ה-dist החדש.`);
-  }
-  return files;
-}
 
+  const proof = readUniversalBuildProof(distDir, sourceName);
+  const identityHits = findCompiledSiteIdentity(distDir);
+  if (identityHits.length && !proof.verified) {
+    throw new ReleaseValidationError(`ה-dist אינו אוניברסלי: נמצאה זהות SharePoint צרובה (${identityHits.map((hit) => `${hit.file} -> ${hit.match}`).join(' | ')}). הרץ npm run build:universal מחדש והעלה את dist-universal החדש.`);
+  }
+
+  return {
+    files,
+    proof,
+    identityHits,
+    warnings: identityHits.length
+      ? [`נמצאו ${identityHits.length} מחרוזות SharePoint בתוך bundle, אך ה-artifact אומת באמצעות manifest של build:universal. המחרוזות נשמרו לאבחון ואינן חוסמות את הריליס.`]
+      : [],
+  };
+}
 async function ensureUniqueVersion(version, excludeId = null) {
   const query = { version };
   if (excludeId) query._id = { $ne: excludeId };
@@ -114,7 +169,7 @@ async function ensureUniqueVersion(version, excludeId = null) {
 }
 
 function baseReleaseDocument({ releaseId, releaseRoot, distDir, version, notes, uploadType, originalFileName }) {
-  validateUniversalDist(distDir);
+  const validation = validateUniversalDist(distDir, { sourceName: originalFileName });
   const stats = directoryStats(distDir);
   return {
     _id: releaseId,
@@ -129,11 +184,13 @@ function baseReleaseDocument({ releaseId, releaseRoot, distDir, version, notes, 
     sha256: hashDirectory(distDir),
     fileCount: stats.fileCount,
     totalBytes: stats.totalBytes,
+    universalProof: validation.proof,
+    validationWarnings: validation.warnings,
+    identityDiagnostics: validation.identityHits,
     createdAt: new Date(),
     updatedAt: new Date(),
   };
 }
-
 function parseUploadedPaths(raw, expectedCount) {
   let parsed;
   try {

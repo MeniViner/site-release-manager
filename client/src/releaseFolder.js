@@ -1,8 +1,9 @@
 const OVERLAY_FILES = new Set([
   'sitebuilder-runtime-config.json',
   'sitebuilder-deployment.json',
-  'sharepoint-deploy-manifest.json',
 ]);
+const DIST_DIRECTORY_NAMES = ['dist-universal', 'dist'];
+const isDistDirectoryName = (value) => DIST_DIRECTORY_NAMES.includes(String(value || '').toLowerCase());
 const LOCAL_FILES = new Set(['.DS_Store', 'Thumbs.db']);
 const normalizePath = (value) => String(value || '').replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/{2,}/g, '/');
 
@@ -22,27 +23,30 @@ function detectDistPrefix(items) {
   const paths = items.map((item) => normalizePath(item.originalPath)).filter(Boolean);
   const withDirectoryPaths = paths.filter((value) => value.includes('/'));
   if (!withDirectoryPaths.length) {
-    throw new Error('הדפדפן לא החזיר נתיבי תיקייה. פתח את המערכת ב-Chrome/Safari רגיל ובחר שוב את תיקיית dist. בדפדפן המשובץ של VS Code בחירת תיקייה עלולה לא לעבוד.');
+    throw new Error('הדפדפן לא החזיר נתיבי תיקייה. פתח את המערכת ב-Chrome/Safari רגיל ובחר שוב את תיקיית dist-universal. בדפדפן המשובץ של VS Code בחירת תיקייה עלולה לא לעבוד.');
   }
 
-  // Selecting dist directly normally yields: dist/index.html, dist/assets/...
-  if (withDirectoryPaths.some((value) => pathParts(value)[0]?.toLowerCase() === 'dist')) {
-    return { prefix: 'dist/', detectedFromProjectRoot: false };
+  // Selecting dist-universal/dist directly normally yields: <folder>/index.html, <folder>/assets/...
+  for (const directoryName of DIST_DIRECTORY_NAMES) {
+    if (withDirectoryPaths.some((value) => pathParts(value)[0]?.toLowerCase() === directoryName)) {
+      return { prefix: `${directoryName}/`, detectedFromProjectRoot: false, sourceDirectoryName: directoryName };
+    }
   }
 
-  // Selecting project root normally yields: <project>/dist/index.html.
-  const firstLevelCandidate = withDirectoryPaths.find((value) => {
-    const parts = pathParts(value);
-    return parts.length >= 3 && parts[1]?.toLowerCase() === 'dist';
-  });
-  if (firstLevelCandidate) {
-    const rootName = pathParts(firstLevelCandidate)[0];
-    return { prefix: `${rootName}/dist/`, detectedFromProjectRoot: true };
+  // Selecting project root yields: <project>/dist-universal/index.html (preferred) or <project>/dist/index.html.
+  for (const directoryName of DIST_DIRECTORY_NAMES) {
+    const candidate = withDirectoryPaths.find((value) => {
+      const parts = pathParts(value);
+      return parts.length >= 3 && parts[1]?.toLowerCase() === directoryName;
+    });
+    if (candidate) {
+      const rootName = pathParts(candidate)[0];
+      return { prefix: `${rootName}/${directoryName}/`, detectedFromProjectRoot: true, sourceDirectoryName: directoryName };
+    }
   }
 
-  throw new Error('לא נמצאה תיקיית dist ישירות בתיקייה שנבחרה. בחר את dist עצמה או את תיקיית הפרויקט שמכילה dist בשורש.');
+  throw new Error('לא נמצאה תיקיית dist-universal או dist ישירות בתיקייה שנבחרה. לריליס חדש מומלץ לבחור את dist-universal שנוצרה ע״י npm run build:universal.');
 }
-
 function normalizeSelectedFiles(fileList) {
   const all = Array.from(fileList || []);
   if (!all.length) throw new Error('לא התקבלו קבצים מבחירת התיקייה.');
@@ -51,7 +55,7 @@ function normalizeSelectedFiles(fileList) {
     file,
     originalPath: normalizePath(file.webkitRelativePath || file.relativePath || ''),
   }));
-  const { prefix, detectedFromProjectRoot } = detectDistPrefix(withPaths);
+  const { prefix, detectedFromProjectRoot, sourceDirectoryName } = detectDistPrefix(withPaths);
 
   const files = [];
   const excluded = [];
@@ -69,7 +73,7 @@ function normalizeSelectedFiles(fileList) {
 
   return {
     kind: 'folder',
-    rootName: 'dist',
+    rootName: sourceDirectoryName || 'dist-universal',
     files,
     excluded,
     detectedFromProjectRoot,
@@ -101,7 +105,7 @@ async function walkEntry(entry, parentPath, result) {
   }
   if (!entry.isFile) return;
   const parts = pathParts(relativePath);
-  const distIndex = parts.findIndex((part) => part.toLowerCase() === 'dist');
+  const distIndex = parts.findIndex((part) => isDistDirectoryName(part));
   const path = distIndex >= 0 ? parts.slice(distIndex + 1).join('/') : relativePath;
   if (!path) return;
   const reason = distExclusionReason(path);
@@ -114,19 +118,21 @@ async function walkEntry(entry, parentPath, result) {
 }
 
 async function collectFromDirectoryEntry(rootEntry) {
-  const result = { kind: 'folder', rootName: 'dist', files: [], excluded: [], detectedFromProjectRoot: false };
+  const result = { kind: 'folder', rootName: 'dist-universal', files: [], excluded: [], detectedFromProjectRoot: false };
   let distEntry = rootEntry;
-  if (rootEntry.name.toLowerCase() !== 'dist') {
+  if (!isDistDirectoryName(rootEntry.name)) {
     const children = await readAllDirectoryEntries(rootEntry);
-    distEntry = children.find((entry) => entry.isDirectory && entry.name.toLowerCase() === 'dist');
-    if (!distEntry) throw new Error('לא נמצאה תיקיית dist ישירות בתוך התיקייה שנבחרה.');
+    distEntry = DIST_DIRECTORY_NAMES
+      .map((name) => children.find((entry) => entry.isDirectory && entry.name.toLowerCase() === name))
+      .find(Boolean);
+    if (!distEntry) throw new Error('לא נמצאה תיקיית dist-universal או dist ישירות בתוך התיקייה שנבחרה.');
     result.detectedFromProjectRoot = true;
   }
+  result.rootName = distEntry.name;
   const children = await readAllDirectoryEntries(distEntry);
-  for (const child of children) await walkEntry(child, 'dist', result);
+  for (const child of children) await walkEntry(child, distEntry.name, result);
   return result;
 }
-
 export async function collectDroppedFolder(dataTransfer) {
   const entries = Array.from(dataTransfer?.items || [])
     .map((item) => item.webkitGetAsEntry?.())
@@ -142,7 +148,7 @@ async function walkHandle(handle, parentPath, result) {
       continue;
     }
     const parts = pathParts(`${parentPath}/${child.name}`);
-    const distIndex = parts.findIndex((part) => part.toLowerCase() === 'dist');
+    const distIndex = parts.findIndex((part) => isDistDirectoryName(part));
     const path = distIndex >= 0 ? parts.slice(distIndex + 1).join('/') : parts.join('/');
     const reason = distExclusionReason(path);
     if (reason) {
@@ -155,21 +161,26 @@ async function walkHandle(handle, parentPath, result) {
 }
 
 export async function collectDirectoryHandle(directoryHandle) {
-  const result = { kind: 'folder', rootName: 'dist', files: [], excluded: [], detectedFromProjectRoot: false };
+  const result = { kind: 'folder', rootName: 'dist-universal', files: [], excluded: [], detectedFromProjectRoot: false };
   if (!directoryHandle || directoryHandle.kind !== 'directory') return result;
   let distHandle = directoryHandle;
-  if (directoryHandle.name.toLowerCase() !== 'dist') {
-    try {
-      distHandle = await directoryHandle.getDirectoryHandle('dist');
-      result.detectedFromProjectRoot = true;
-    } catch {
-      throw new Error('לא נמצאה תיקיית dist ישירות בתוך התיקייה שנבחרה.');
+  if (!isDistDirectoryName(directoryHandle.name)) {
+    distHandle = null;
+    for (const directoryName of DIST_DIRECTORY_NAMES) {
+      try {
+        distHandle = await directoryHandle.getDirectoryHandle(directoryName);
+        break;
+      } catch {
+        // Try the next supported directory name.
+      }
     }
+    if (!distHandle) throw new Error('לא נמצאה תיקיית dist-universal או dist ישירות בתוך התיקייה שנבחרה.');
+    result.detectedFromProjectRoot = true;
   }
-  await walkHandle(distHandle, 'dist', result);
+  result.rootName = distHandle.name;
+  await walkHandle(distHandle, distHandle.name, result);
   return result;
 }
-
 export function validateDistSource(source) {
   const paths = new Set((source?.files || []).map((item) => item.path));
   if (!paths.has('index.html')) throw new Error('ה-dist חסר index.html.');

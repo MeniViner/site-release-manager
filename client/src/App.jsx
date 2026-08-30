@@ -407,7 +407,7 @@ function ReleasesPage() {
   return <div className="page">
     <PageHeader
       title="ריליסים"
-      subtitle="גוררים את תיקיית dist האוניברסלית ושומרים אותה פעם אחת לשימוש בכל האתרים"
+      subtitle="מעלים את dist-universal שנוצרה ע״י npm run build:universal ושומרים אותה פעם אחת לשימוש בכל האתרים"
       actions={<button className="primary-button" onClick={() => setShowUpload(true)}><CloudUpload size={18} />ריליס חדש</button>}
     />
     {versionInfo?.latestVersion && <div className="release-last-banner"><strong>הריליס האחרון:</strong><span dir="ltr">{versionInfo.latestVersion}</span><span>· הבא המומלץ:</span><strong dir="ltr">{versionInfo.recommended}</strong></div>}
@@ -490,7 +490,7 @@ function SourcePreview({ source }) {
   const summary = summarizeSource(source);
   const tree = useMemo(() => buildSourceTree(source), [source]);
   const roots = Array.from(tree.children.values());
-  return <div className="source-preview"><div className="source-summary"><div><strong>{source.rootName || 'dist'}</strong><span>{summary.fileCount.toLocaleString('he-IL')} קבצים יעלו · {formatBytes(summary.totalBytes)}</span>{source.detectedFromProjectRoot && <small>זוהתה תיקיית dist אוטומטית מתוך תיקיית הפרויקט — שאר הפרויקט לא יעלה.</small>}</div><div className="source-summary-badges"><span className="included-badge">Universal dist מוכן</span>{summary.excludedCount > 0 && <span className="excluded-badge">{summary.excludedCount} קובצי overlay ייווצרו בפריסה</span>}</div></div><div className="source-tree" dir="ltr">{roots.map((node) => <TreeNode key={node.path} node={node} />)}</div></div>;
+  return <div className="source-preview"><div className="source-summary"><div><strong>{source.rootName || 'dist'}</strong><span>{summary.fileCount.toLocaleString('he-IL')} קבצים יעלו · {formatBytes(summary.totalBytes)}</span>{source.detectedFromProjectRoot && <small>זוהתה תיקיית build אוטומטית מתוך תיקיית הפרויקט — שאר הפרויקט לא יעלה.</small>}</div><div className="source-summary-badges"><span className="included-badge">Universal dist מוכן</span>{summary.excludedCount > 0 && <span className="excluded-badge">{summary.excludedCount} קובצי overlay ייווצרו בפריסה</span>}</div></div><div className="source-tree" dir="ltr">{roots.map((node) => <TreeNode key={node.path} node={node} />)}</div></div>;
 }
 
 function UploadReleaseModal({ versionInfo, onClose, onSave }) {
@@ -507,7 +507,7 @@ function UploadReleaseModal({ versionInfo, onClose, onSave }) {
   const pickerSupport = useMemo(() => folderPickerDiagnostics(), []);
 
   const setFolderSource = (next) => {
-    if (!next?.files?.length) throw new Error('לא נמצאו קבצים בתיקיית dist.');
+    if (!next?.files?.length) throw new Error('לא נמצאו קבצים בתיקיית dist-universal/dist.');
     validateDistSource(next);
     setSource(next);
     setZipFile(null);
@@ -583,8 +583,8 @@ function UploadReleaseModal({ versionInfo, onClose, onSave }) {
     <div className="form-grid release-meta-grid"><Field label="מספר גרסה"><input dir="ltr" value={version} onChange={(e) => setVersion(e.target.value)} placeholder="0.1.15" /></Field><Field label="מה בוצע בריליס"><textarea rows="3" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="תיקונים ושינויים בריליס..." /></Field></div>
     <div className={`folder-drop-zone ${dragging ? 'dragging' : ''}`} onDragEnter={(e) => { e.preventDefault(); setDragging(true); }} onDragOver={(e) => { e.preventDefault(); setDragging(true); }} onDragLeave={(e) => { e.preventDefault(); if (e.currentTarget === e.target) setDragging(false); }} onDrop={onDrop}>
       <CloudUpload size={34} />
-      <strong>{reading ? 'קורא את התיקייה...' : 'גרור לכאן את תיקיית dist'}</strong>
-      <span>אפשר גם לגרור את תיקיית הפרויקט — אם קיימת בה dist, המערכת תיקח רק אותה ולא תיגע בשאר הקבצים.</span>
+      <strong>{reading ? 'קורא את התיקייה...' : 'גרור לכאן את תיקיית dist-universal'}</strong>
+      <span>אפשר גם לגרור את תיקיית הפרויקט — המערכת תחפש קודם dist-universal ורק אחר כך dist, ולא תעלה את שאר הפרויקט.</span>
       <div className="folder-picker-actions">
         <label className={`secondary-button folder-picker-label ${reading || saving ? 'disabled' : ''}`}>
           <Folder size={17} />בחר תיקיית dist
@@ -592,12 +592,12 @@ function UploadReleaseModal({ versionInfo, onClose, onSave }) {
         </label>
         {pickerSupport.fileSystemAccess && <button type="button" className="ghost-button" disabled={reading || saving} onClick={chooseFolderAdvanced}>בחירה מתקדמת</button>}
       </div>
-      {!pickerSupport.webkitDirectory && !pickerSupport.fileSystemAccess && <small className="folder-browser-warning">הדפדפן המשובץ לא תומך בבחירת תיקיות. פתח את http://localhost:5173 ב-Chrome רגיל או גרור את תיקיית dist לכאן.</small>}
+      {!pickerSupport.webkitDirectory && !pickerSupport.fileSystemAccess && <small className="folder-browser-warning">הדפדפן המשובץ לא תומך בבחירת תיקיות. פתח את http://localhost:5173 ב-Chrome רגיל או גרור את תיקיית dist-universal לכאן.</small>}
     </div>
     <div className="auto-exclude-row"><strong>הריליס כולל רק:</strong><span>index.html</span><span>assets</span><span>images וקבצי build</span><span>Runtime Config נוצר בזמן הפריסה</span></div>
     {source && <SourcePreview source={source} />}
     {zipFile && <div className="zip-fallback-selected"><FileArchive size={18} /><div><strong>{zipFile.name}</strong><span>{formatBytes(zipFile.size)}</span></div><button className="icon-button" onClick={() => setZipFile(null)}><X size={16} /></button></div>}
-    <div className="zip-fallback"><span>יש לך dist.zip?</span><button type="button" onClick={() => zipInputRef.current?.click()}>בחר dist.zip</button><input ref={zipInputRef} className="hidden-file-input" type="file" accept=".zip,application/zip" onChange={onZipPicked} /></div>
+    <div className="zip-fallback"><span>יש לך dist-universal.zip?</span><button type="button" onClick={() => zipInputRef.current?.click()}>בחר dist-universal.zip</button><input ref={zipInputRef} className="hidden-file-input" type="file" accept=".zip,application/zip" onChange={onZipPicked} /></div>
   </div><div className="modal-actions"><button className="secondary-button" disabled={saving} onClick={onClose}>ביטול</button><button className="primary-button" disabled={!ready || saving || reading} onClick={submit}><CloudUpload size={17} />{saving ? 'מעלה ושומר...' : 'שמור ריליס'}</button></div></Modal>;
 }
 

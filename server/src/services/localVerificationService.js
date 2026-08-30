@@ -303,8 +303,13 @@ export async function runLocalDeploymentVerification(jobId) {
     { name: 'literal-sharepoint-users-library-path', regex: /\/(?:sites|teams)\/[a-z0-9][a-z0-9-]{1,80}\/[A-Za-z0-9._-]{1,80}\/widgets_data\.txt/ig },
     { name: 'literal-absolute-sharepoint-final-dist', regex: /https?:\/\/[a-z0-9.-]+\/(?:sites|teams)\/[a-z0-9][a-z0-9-]{1,80}\/[A-Za-z0-9._-]{1,80}\/dist/ig },
   ]);
-  if (!literalIdentityHits.length) pass('לא נמצאו נתיבי SharePoint פר-אתר ליטרליים ב-dist', 'סריקה כללית לכל siteCode, לא רק לאתר הנבדק');
-  else fail('נמצאו נתיבי SharePoint פר-אתר בתוך Universal dist', literalIdentityHits.slice(0, 8).map((hit) => `${hit.file} -> ${hit.match}`).join(' | '));
+  if (!literalIdentityHits.length) {
+    pass('לא נמצאו נתיבי SharePoint פר-אתר ליטרליים ב-dist', 'סריקה כללית לכל siteCode, לא רק לאתר הנבדק');
+  } else if (release.universalProof?.verified === true) {
+    warn('נמצאו מחרוזות SharePoint בתוך bundle, אך Manifest אוניברסלי מאומת', literalIdentityHits.slice(0, 8).map((hit) => `${hit.file} -> ${hit.match}`).join(' | '));
+  } else {
+    fail('נמצאו נתיבי SharePoint פר-אתר בתוך Universal dist ללא הוכחת Manifest אוניברסלי', literalIdentityHits.slice(0, 8).map((hit) => `${hit.file} -> ${hit.match}`).join(' | '));
+  }
 
   const rawIndexCheck = verifyIndexReferences(release.distDir);
   if (!rawIndexCheck.absoluteRootRefs.length) pass('index.html משתמש בנתיבי assets יחסיים', `${rawIndexCheck.refs.length} הפניות מקומיות`);

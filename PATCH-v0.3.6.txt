@@ -1,0 +1,10 @@
+Site Release Manager v0.3.6
+
+Fixes Universal Dist ingestion after Site Builder introduced a separate dist-universal output:
+- Folder picker accepts dist-universal directly and prefers it when project root is selected.
+- ZIP discovery accepts dist-universal as a first-class build directory.
+- The source sharepoint-deploy-manifest.json is preserved during release ingestion as build provenance.
+- Universal validation trusts a valid universal/source manifest instead of hard-failing on every SharePoint-like literal found inside minified bundles.
+- SharePoint-like literals remain diagnostics/warnings and still block artifacts that have no verified universal build manifest.
+- Deployment preparation and local Audit use the same proof rule, preventing upload-vs-deploy validation disagreement.
+- Runtime Config and deployment metadata remain excluded from source releases and continue to be generated per-site at deployment time.

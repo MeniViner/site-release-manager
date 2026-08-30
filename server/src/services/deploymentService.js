@@ -108,8 +108,12 @@ export async function prepareDeploymentJob(jobId) {
     throw new Error('הריליס אינו Universal dist תקין. העלה מחדש את תיקיית dist שנבנתה לאחר מעבר Site Builder ל-Runtime Config.');
   }
   const identityLeaks = findUniversalIdentityLeaks(release.distDir);
-  if (identityLeaks.length) {
-    throw new Error(`הריליס אינו Universal dist נקי: נמצאו נתיבי SharePoint צרובים (${identityLeaks.map((hit) => `${hit.file} -> ${hit.match}`).join(' | ')}). צור npm run build:universal חדש והעלה אותו כריליס חדש.`);
+  const manifestVerified = release.universalProof?.verified === true;
+  if (identityLeaks.length && !manifestVerified) {
+    throw new Error(`הריליס אינו Universal dist נקי: נמצאו נתיבי SharePoint צרובים ללא הוכחת manifest של build:universal (${identityLeaks.map((hit) => `${hit.file} -> ${hit.match}`).join(' | ')}). צור npm run build:universal חדש והעלה את dist-universal.`);
+  }
+  if (identityLeaks.length && manifestVerified) {
+    console.warn(`[job ${jobId}] Universal manifest verified; preserving ${identityLeaks.length} SharePoint-like bundle string(s) as diagnostics only.`);
   }
   await appendRunEvent(objectId, {
     stage: RUN_STAGES.RELEASE_VALIDATED,

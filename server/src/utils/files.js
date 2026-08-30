@@ -6,7 +6,6 @@ import AdmZip from 'adm-zip';
 export const DEPLOYMENT_OVERLAY_FILES = new Set([
   'sitebuilder-runtime-config.json',
   'sitebuilder-deployment.json',
-  'sharepoint-deploy-manifest.json',
 ]);
 
 const LOCAL_FILES = new Set(['.DS_Store', 'Thumbs.db']);
@@ -83,21 +82,26 @@ function hasBuiltDistShape(directory) {
 }
 
 export function findDistRoot(root) {
-  const candidates = [root, path.join(root, 'dist')];
+  const candidates = [root, path.join(root, 'dist-universal'), path.join(root, 'dist')];
   if (fs.existsSync(root)) {
     for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
       const child = path.join(root, entry.name);
-      candidates.push(child, path.join(child, 'dist'));
+      candidates.push(child, path.join(child, 'dist-universal'), path.join(child, 'dist'));
     }
   }
-  const found = candidates.find((candidate) => fs.existsSync(candidate) && fs.statSync(candidate).isDirectory() && hasBuiltDistShape(candidate));
+  const seen = new Set();
+  const found = candidates.find((candidate) => {
+    const resolved = path.resolve(candidate);
+    if (seen.has(resolved)) return false;
+    seen.add(resolved);
+    return fs.existsSync(candidate) && fs.statSync(candidate).isDirectory() && hasBuiltDistShape(candidate);
+  });
   if (!found) {
-    throw new Error('לא נמצאה תיקיית dist תקינה. נדרשים index.html ותיקיית assets עם קובץ JavaScript.');
+    throw new Error('לא נמצאה תיקיית dist-universal או dist תקינה. נדרשים index.html ותיקיית assets עם קובץ JavaScript.');
   }
   return found;
 }
-
 export function copyDistWithoutDeploymentOverlay(source, destination) {
   ensureDirectory(destination);
   for (const file of collectFiles(source)) {
