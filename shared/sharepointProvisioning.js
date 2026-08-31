@@ -15,7 +15,11 @@
 import { SP_ERROR, classifySharePointError, sharePointError } from './sharepointErrors.js';
 import { stabilize, retryOperation, STABILIZE_RETRY, DEFAULT_RETRY, RetryBudgetExceededError } from './retry.js';
 import { SEED_CONTENT_TYPE, ASSET_CONTENT_TYPE, normalizePath } from './sharepointClient.js';
-import { parseIndexReferencesFromHtml } from './universalManifest.js';
+import {
+  DEPLOYMENT_METADATA_FILE,
+  RUNTIME_CONFIG_FILE,
+  parseIndexReferencesFromHtml,
+} from './universalManifest.js';
 
 export const LIBRARY_OUTCOME = Object.freeze({
   REUSED: 'REUSED_EXISTING_EXACT_LIBRARY',
@@ -33,6 +37,17 @@ export const PROVISIONING_ERROR = Object.freeze({
   SEED_VERIFY_FAILED: 'SEED_VERIFY_FAILED',
   ASSET_VERIFY_FAILED: 'ASSET_VERIFY_FAILED',
   INDEX_REFERENCE_MISSING: 'INDEX_REFERENCE_MISSING',
+  RUNTIME_CONFIG_READ_FAILED: 'RUNTIME_CONFIG_READ_FAILED',
+  RUNTIME_CONFIG_INVALID: 'RUNTIME_CONFIG_INVALID',
+  RUNTIME_CONFIG_TARGET_MISMATCH: 'RUNTIME_CONFIG_TARGET_MISMATCH',
+});
+
+export const BACKUP_OUTCOME = Object.freeze({
+  PASSED: 'PASSED',
+  PARTIAL: 'PARTIAL',
+  FAILED: 'FAILED',
+  SKIPPED_FRESH_TARGET: 'SKIPPED_FRESH_TARGET',
+  SKIPPED_UNSUPPORTED_BACKEND: 'SKIPPED_UNSUPPORTED_BACKEND',
 });
 
 export class ProvisioningError extends Error {
@@ -420,6 +435,178 @@ function defaultEncode(value) {
   return new TextEncoder().encode(String(value));
 }
 
+function backupFolderName(value) {
+  return `backup-${value.toISOString().replace(/[:.]/g, '-').slice(0, 19)}`;
+}
+
+function backupBaseResult({ sourceFiles, startedAt, backupPath = '', backupUrl = '' }) {
+  return {
+    outcome: BACKUP_OUTCOME.FAILED,
+    strategy: 'SHAREPOINT_TXT_FILES',
+    trigger: 'PRE_DEPLOY',
+    startedAt,
+    finishedAt: '',
+    backupPath,
+    backupUrl,
+    fileCount: sourceFiles.length,
+    copiedFiles: [],
+    skippedFiles: [],
+    failedFiles: [],
+    totalSizeBytes: 0,
+    verificationStatus: 'FAILED',
+    warningDetails: [],
+  };
+}
+
+/**
+ * Best-effort snapshot of the canonical TXT plan into Site Builder's existing
+ * <siteAssetsRoot>/Backups/backup-<timestamp> layout.
+ *
+ * The caller deliberately treats every returned outcome as non-fatal. This
+ * function never writes a source path and uses overwrite=false for backup files.
+ */
+export async function createTxtBackup(client, options = {}) {
+  const {
+    sourceFiles = [],
+    siteAssetsRoot,
+    host,
+    libraryRoots = [],
+    sha256,
+    retry = {},
+    signal,
+    dateNow = () => new Date(),
+    log = noopLog,
+  } = options;
+  if (typeof sha256 !== 'function') throw new Error('createTxtBackup requires a sha256 implementation.');
+  if (!siteAssetsRoot || !host) throw new Error('createTxtBackup requires siteAssetsRoot and host.');
+
+  const started = new Date(dateNow());
+  const result = backupBaseResult({ sourceFiles, startedAt: started.toISOString() });
+  const readable = [];
+
+  for (const source of sourceFiles) {
+    try {
+      // Sequential reads avoid creating a burst of authenticated requests on
+      // older SharePoint farms and reuse the deployment retry classifier.
+      // eslint-disable-next-line no-await-in-loop
+      const read = await retryOperation(() => client.readFile(source.path), {
+        ...DEFAULT_RETRY, ...retry, signal, describe: `backup-read:${source.path}`,
+      });
+      if (!read.value.found) {
+        result.skippedFiles.push({ fileName: source.fileName, sourcePath: source.path, reason: 'SOURCE_MISSING' });
+      } else {
+        readable.push({ ...source, bytes: read.value.bytes });
+      }
+    } catch (error) {
+      result.failedFiles.push({
+        fileName: source.fileName,
+        sourcePath: source.path,
+        operation: 'read',
+        error: error?.message || String(error),
+        errorClass: error?.sharePoint?.errorClass || error?.errorClass || '',
+        httpStatus: error?.sharePoint?.httpStatus ?? error?.httpStatus ?? null,
+      });
+    }
+  }
+
+  if (!readable.length) {
+    result.finishedAt = new Date(dateNow()).toISOString();
+    if (!result.failedFiles.length) {
+      result.outcome = BACKUP_OUTCOME.SKIPPED_FRESH_TARGET;
+      result.verificationStatus = 'NOT_APPLICABLE';
+    } else {
+      result.warningDetails.push('No canonical TXT source could be read, so no backup folder was created.');
+    }
+    return result;
+  }
+
+  const backupRoot = `${normalizePath(siteAssetsRoot)}/Backups`;
+  let selectedPath = '';
+  try {
+    // Preserve Site Builder's exact second-resolution naming contract while
+    // probing subsequent seconds if a folder with that name already exists.
+    for (let offset = 0; offset < 120; offset += 1) {
+      const candidate = `${backupRoot}/${backupFolderName(new Date(started.getTime() + (offset * 1000)))}`;
+      // eslint-disable-next-line no-await-in-loop
+      const probe = await client.probeFolder(candidate);
+      if (!probe.exists) {
+        selectedPath = candidate;
+        break;
+      }
+    }
+    if (!selectedPath) throw new Error('Could not allocate a unique backup folder name.');
+    result.backupPath = selectedPath;
+    result.backupUrl = `https://${host}${selectedPath}`;
+    await ensureFolderTree(client, [backupRoot, selectedPath], {
+      log, signal, retry, libraryRoots,
+    });
+  } catch (error) {
+    for (const source of readable) {
+      result.failedFiles.push({
+        fileName: source.fileName,
+        sourcePath: source.path,
+        operation: 'prepare-folder',
+        error: error?.message || String(error),
+        errorClass: error?.sharePoint?.errorClass || error?.errorClass || '',
+        httpStatus: error?.sharePoint?.httpStatus ?? error?.httpStatus ?? null,
+      });
+    }
+    result.warningDetails.push(`Backup folder preparation failed: ${error?.message || String(error)}`);
+    result.finishedAt = new Date(dateNow()).toISOString();
+    return result;
+  }
+
+  for (const source of readable) {
+    const targetPath = `${selectedPath}/${source.fileName}`;
+    try {
+      // The no-overwrite flag is a second safety barrier after unique-folder
+      // allocation: even a collision can never replace an older backup.
+      // eslint-disable-next-line no-await-in-loop
+      await retryOperation(() => client.uploadFile(targetPath, source.bytes, SEED_CONTENT_TYPE, { overwrite: false }), {
+        ...DEFAULT_RETRY, ...retry, signal, describe: `backup-write:${targetPath}`,
+      });
+      // eslint-disable-next-line no-await-in-loop
+      const sourceSha256 = await sha256(source.bytes);
+      // eslint-disable-next-line no-await-in-loop
+      await verifyRemoteFile(client, targetPath, { size: source.bytes.length, sha256: sourceSha256 }, {
+        sha256, retry, signal, describe: `backup-verify:${targetPath}`,
+      });
+      result.copiedFiles.push({
+        fileName: source.fileName,
+        sourcePath: source.path,
+        targetPath,
+        size: source.bytes.length,
+        sha256: sourceSha256,
+        verified: true,
+      });
+      result.totalSizeBytes += source.bytes.length;
+    } catch (error) {
+      result.failedFiles.push({
+        fileName: source.fileName,
+        sourcePath: source.path,
+        targetPath,
+        operation: 'copy-or-verify',
+        error: error?.message || String(error),
+        errorClass: error?.sharePoint?.errorClass || error?.errorClass || '',
+        httpStatus: error?.sharePoint?.httpStatus ?? error?.httpStatus ?? null,
+      });
+    }
+  }
+
+  result.finishedAt = new Date(dateNow()).toISOString();
+  if (result.copiedFiles.length === sourceFiles.length) {
+    result.outcome = BACKUP_OUTCOME.PASSED;
+    result.verificationStatus = 'PASSED';
+  } else if (result.copiedFiles.length > 0) {
+    result.outcome = BACKUP_OUTCOME.PARTIAL;
+    result.verificationStatus = 'PARTIAL';
+  } else {
+    result.outcome = BACKUP_OUTCOME.FAILED;
+    result.verificationStatus = 'FAILED';
+  }
+  return result;
+}
+
 /**
  * Upload every non-index asset, verify each one at the target, then commit
  * index.html last and verify it plus every asset it references.
@@ -429,6 +616,7 @@ export async function uploadReleaseAssets(client, plan, options = {}) {
     log = noopLog, retry = {}, signal, sha256, downloadFile,
     onProgress = noopLog, distRoot, commitFile = 'index.html',
     alreadyVerified = new Set(),
+    beforeCommit = null,
     // Called ONLY after a file has been uploaded AND verified at the target.
     // Reporting a file as verified any earlier would let a later resume skip
     // a file that was never actually written.
@@ -471,6 +659,8 @@ export async function uploadReleaseAssets(client, plan, options = {}) {
   }
 
   await log({ stage: 'FINAL_ASSET_VERIFY', status: 'success', message: `כל ${nonCommit.length} הקבצים (ללא ${commitFile}) הועלו ואומתו ביעד.`, details: { count: nonCommit.length } });
+
+  if (beforeCommit) await beforeCommit();
 
   // --- Commit index last --------------------------------------------------
   const indexFile = filesByPath.get(commitFile);
@@ -539,20 +729,194 @@ export async function verifyRemoteFile(client, targetPath, expected, options = {
   }
 }
 
+function looksLikeHtml(text, contentType = '') {
+  const prefix = String(text || '').trim().slice(0, 240).toLowerCase();
+  return String(contentType || '').toLowerCase().includes('text/html')
+    || prefix.startsWith('<!doctype html')
+    || prefix.startsWith('<html')
+    || prefix.includes('<head>');
+}
+
+async function fetchDirectJson(fetchImpl, url, options = {}) {
+  const { retry = {}, signal, kind = 'Runtime Config' } = options;
+  const fetched = await retryOperation(async () => {
+    const response = await fetchImpl(url, {
+      method: 'GET',
+      credentials: 'include',
+      cache: 'no-store',
+      headers: { Accept: 'application/json' },
+      signal,
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      throw sharePointError(classifySharePointError({
+        httpStatus: response.status,
+        body: text,
+        operation: `direct-${kind.toLowerCase().replace(/\s+/g, '-')}-read`,
+        target: url,
+        url,
+        method: 'GET',
+      }));
+    }
+    if (looksLikeHtml(text, response.headers?.get?.('content-type'))) {
+      throw new ProvisioningError(
+        PROVISIONING_ERROR.RUNTIME_CONFIG_INVALID,
+        `${kind} at ${url} returned HTML instead of JSON.`,
+        { errorClass: SP_ERROR.PERMANENT_FAILURE, target: url, url },
+      );
+    }
+    let payload;
+    try {
+      payload = JSON.parse(text);
+    } catch (error) {
+      throw new ProvisioningError(
+        PROVISIONING_ERROR.RUNTIME_CONFIG_INVALID,
+        `${kind} at ${url} is malformed JSON: ${error.message}`,
+        { errorClass: SP_ERROR.PERMANENT_FAILURE, target: url, url },
+      );
+    }
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      throw new ProvisioningError(
+        PROVISIONING_ERROR.RUNTIME_CONFIG_INVALID,
+        `${kind} at ${url} must contain a JSON object.`,
+        { errorClass: SP_ERROR.PERMANENT_FAILURE, target: url, url },
+      );
+    }
+    return {
+      payload,
+      status: response.status,
+      contentType: response.headers?.get?.('content-type') || '',
+      bytes: new TextEncoder().encode(text).length,
+    };
+  }, { ...DEFAULT_RETRY, ...retry, signal, describe: `direct-json:${url}` });
+  return { ...fetched.value, attempts: fetched.attempts };
+}
+
+function assertExpectedFields(payload, expected, fields, kind, url) {
+  const mismatches = [];
+  for (const field of fields) {
+    const wanted = String(expected[field] ?? '');
+    if (!wanted) continue;
+    const actual = String(payload[field] ?? '');
+    if (actual !== wanted) mismatches.push(`${field}="${actual || '(missing)'}" expected "${wanted}"`);
+  }
+  if (mismatches.length) {
+    throw new ProvisioningError(
+      PROVISIONING_ERROR.RUNTIME_CONFIG_TARGET_MISMATCH,
+      `${kind} does not belong to this deployment target: ${mismatches.join(' | ')}`,
+      {
+        errorClass: SP_ERROR.PERMANENT_FAILURE,
+        target: url,
+        url,
+        mismatches,
+      },
+    );
+  }
+}
+
+/**
+ * Fetch exactly the two URLs Site Builder derives beside index.html, parse both
+ * JSON files and reject stale/cross-target overlays before index.html is made
+ * active for this run.
+ */
+export async function verifyFinalRuntimeConfig(fetchImpl, verification, options = {}) {
+  if (typeof fetchImpl !== 'function') throw new Error('verifyFinalRuntimeConfig requires fetchImpl.');
+  const expected = verification?.expected || {};
+  const runtimeUrl = verification?.runtimeConfigUrl
+    || new URL(RUNTIME_CONFIG_FILE, expected.finalAppUrl).toString();
+  const deploymentUrl = verification?.deploymentMetadataUrl
+    || new URL(DEPLOYMENT_METADATA_FILE, expected.finalAppUrl).toString();
+  const exactRuntimeUrl = new URL(RUNTIME_CONFIG_FILE, expected.finalAppUrl).toString();
+  const exactDeploymentUrl = new URL(DEPLOYMENT_METADATA_FILE, expected.finalAppUrl).toString();
+  if (runtimeUrl !== exactRuntimeUrl || deploymentUrl !== exactDeploymentUrl) {
+    throw new ProvisioningError(
+      PROVISIONING_ERROR.RUNTIME_CONFIG_TARGET_MISMATCH,
+      'Runtime verification URLs do not match the URLs Site Builder derives from index.html.',
+      { errorClass: SP_ERROR.PERMANENT_FAILURE, target: runtimeUrl },
+    );
+  }
+
+  const runtime = await fetchDirectJson(fetchImpl, runtimeUrl, { ...options, kind: 'Runtime Config' });
+  assertExpectedFields(runtime.payload, expected, [
+    'host', 'siteCode', 'siteDbFolder', 'siteDbRoot', 'usersDbFolder', 'usersDbRoot',
+    'siteAssetsFolder', 'siteAssetsRoot', 'widgetsDbTarget', 'storageBackend',
+    'targetDistPath', 'finalAppUrl', 'deploymentJobId', 'releaseId', 'releaseVersion',
+  ], 'Runtime Config', runtimeUrl);
+
+  const deployment = await fetchDirectJson(fetchImpl, deploymentUrl, { ...options, kind: 'Deployment Metadata' });
+  assertExpectedFields(deployment.payload, expected, [
+    'host', 'siteCode', 'siteDbRoot', 'usersDbRoot', 'siteAssetsRoot', 'storageBackend',
+    'targetDistPath', 'finalAppUrl', 'deploymentJobId', 'releaseId', 'releaseVersion',
+  ], 'Deployment Metadata', deploymentUrl);
+
+  return {
+    ok: true,
+    runtimeConfigUrl: runtimeUrl,
+    deploymentMetadataUrl: deploymentUrl,
+    runtimeStatus: runtime.status,
+    deploymentStatus: deployment.status,
+    runtimeBytes: runtime.bytes,
+    deploymentBytes: deployment.bytes,
+    runtimeAttempts: runtime.attempts,
+    deploymentAttempts: deployment.attempts,
+    deploymentJobId: runtime.payload.deploymentJobId,
+    releaseId: runtime.payload.releaseId,
+    targetDistPath: runtime.payload.targetDistPath,
+  };
+}
+
 /**
  * Static smoke check of the deployed application entry point.
  * A static GET only: nothing is mutated and no application state is touched.
  */
 export async function finalAppSmoke(client, distRoot, options = {}) {
-  const { retry = {}, signal, commitFile = 'index.html' } = options;
+  const {
+    retry = {}, signal, commitFile = 'index.html',
+    fetchImpl = null, finalUrl = '', runtimeVerification = null,
+  } = options;
   const result = await retryOperation(async () => {
     const readBack = await client.readFile(`${distRoot}/${commitFile}`);
     if (!readBack.found) throw sharePointError(classifySharePointError({ httpStatus: readBack.status, body: '', operation: 'final-app-smoke', target: `${distRoot}/${commitFile}` }));
     return readBack;
   }, { ...DEFAULT_RETRY, ...retry, signal, describe: 'final-app-smoke' });
 
-  const html = new TextDecoder().decode(result.value.bytes);
+  let html = new TextDecoder().decode(result.value.bytes);
+  let directStatus = null;
+  if (fetchImpl && finalUrl) {
+    const direct = await retryOperation(async () => {
+      const response = await fetchImpl(finalUrl, {
+        method: 'GET',
+        credentials: 'include',
+        cache: 'no-store',
+        headers: { Accept: 'text/html,*/*' },
+        signal,
+      });
+      const text = await response.text();
+      if (!response.ok) {
+        throw sharePointError(classifySharePointError({
+          httpStatus: response.status,
+          body: text,
+          operation: 'final-app-direct-smoke',
+          target: finalUrl,
+          url: finalUrl,
+          method: 'GET',
+        }));
+      }
+      return { text, status: response.status };
+    }, { ...DEFAULT_RETRY, ...retry, signal, describe: 'final-app-direct-smoke' });
+    html = direct.value.text;
+    directStatus = direct.value.status;
+  }
   const references = parseIndexReferencesFromHtml(html);
   const hasScript = /<script\b/i.test(html);
-  return { ok: hasScript && references.length > 0, bytes: result.value.bytes.length, references: references.length, hasScript };
+  const runtimeConfigVerified = runtimeVerification?.ok === true;
+  return {
+    ok: hasScript && references.length > 0 && runtimeConfigVerified,
+    bytes: new TextEncoder().encode(html).length,
+    references: references.length,
+    hasScript,
+    directStatus,
+    runtimeConfigVerified,
+    runtimeConfigUrl: runtimeVerification?.runtimeConfigUrl || '',
+  };
 }

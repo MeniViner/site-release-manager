@@ -17,7 +17,8 @@ import { STAGE, stageLabel } from './deploymentStages.js';
 import { createSharePointClient } from './sharepointClient.js';
 import {
   ensureExactLibrary, ensureFolderTree, ensureTxtSeeds,
-  uploadReleaseAssets, finalAppSmoke,
+  uploadReleaseAssets, finalAppSmoke, createTxtBackup,
+  verifyFinalRuntimeConfig, BACKUP_OUTCOME,
 } from './sharepointProvisioning.js';
 import { classifySharePointError, SP_ERROR } from './sharepointErrors.js';
 
@@ -256,6 +257,115 @@ export async function runDeploymentPipeline(options) {
       { details: { libraries: JSON.stringify(libraryResults) } });
     await reportEvent(STAGE.LIBRARY_STABILIZE, 'success', 'כל הספריות אומתו כיציבות מול SharePoint.');
 
+    // --- PRE_DEPLOY_BACKUP -------------------------------------------------
+    // This is deliberately best-effort. It runs after exact libraries are
+    // stable and before folders, seeds or release assets can mutate the target.
+    stage = STAGE.PRE_DEPLOY_BACKUP;
+    await reportProgress(48, 'מנסה ליצור גיבוי TXT לפני הפריסה', '', stage);
+    await reportEvent(stage, 'started', 'בודק אם יש נתוני TXT קיימים לגיבוי לפני הפריסה.');
+    const backupPersistenceWarnings = [];
+    let existingBackup = null;
+    try {
+      const persisted = await post(`/api/deployments/${encodeURIComponent(jobId)}/backup/start`, {
+        startedAt: new Date().toISOString(),
+      });
+      existingBackup = persisted?.reused && persisted?.backup?.outcome !== 'IN_PROGRESS'
+        ? persisted.backup
+        : null;
+    } catch (error) {
+      if (abortOnOwnershipLoss(error)) throw ownershipLost;
+      backupPersistenceWarnings.push(`start metadata: ${error?.message || String(error)}`);
+    }
+
+    let backup = existingBackup;
+    if (!backup) {
+      if (site.storageBackend !== 'txt') {
+        const now = new Date().toISOString();
+        backup = {
+          outcome: BACKUP_OUTCOME.SKIPPED_UNSUPPORTED_BACKEND,
+          strategy: 'MONGO_NOT_IMPLEMENTED',
+          trigger: 'PRE_DEPLOY',
+          startedAt: now,
+          finishedAt: now,
+          backupPath: '',
+          backupUrl: '',
+          fileCount: 0,
+          copiedFiles: [],
+          skippedFiles: [],
+          failedFiles: [],
+          totalSizeBytes: 0,
+          verificationStatus: 'NOT_APPLICABLE',
+          warningDetails: ['Mongo backup strategy is intentionally not implemented yet.'],
+        };
+      } else {
+        try {
+          backup = await createTxtBackup(client, {
+            sourceFiles: descriptor.seedFiles,
+            siteAssetsRoot: site.siteAssetsRoot,
+            host: site.host,
+            libraryRoots: descriptor.libraries.map((library) => library.rootFolder),
+            sha256,
+            retry,
+            signal: effectiveSignal,
+            log,
+          });
+        } catch (error) {
+          if (error?.cancelled) throw error;
+          const now = new Date().toISOString();
+          backup = {
+            outcome: BACKUP_OUTCOME.FAILED,
+            strategy: 'SHAREPOINT_TXT_FILES',
+            trigger: 'PRE_DEPLOY',
+            startedAt: now,
+            finishedAt: now,
+            backupPath: '',
+            backupUrl: '',
+            fileCount: descriptor.seedFiles.length,
+            copiedFiles: [],
+            skippedFiles: [],
+            failedFiles: [{ operation: 'backup', error: error?.message || String(error) }],
+            totalSizeBytes: 0,
+            verificationStatus: 'FAILED',
+            warningDetails: ['The backup attempt failed before it could finish.'],
+          };
+        }
+      }
+
+      try {
+        const persisted = await post(`/api/deployments/${encodeURIComponent(jobId)}/backup/finish`, backup);
+        if (persisted?.backup) backup = persisted.backup;
+      } catch (error) {
+        if (abortOnOwnershipLoss(error)) throw ownershipLost;
+        backupPersistenceWarnings.push(`finish metadata: ${error?.message || String(error)}`);
+      }
+    }
+
+    const backupIsWarning = [BACKUP_OUTCOME.PARTIAL, BACKUP_OUTCOME.FAILED].includes(backup.outcome);
+    const copiedCount = Array.isArray(backup.copiedFiles) ? backup.copiedFiles.length : Number(backup.copiedCount || 0);
+    const skippedCount = Array.isArray(backup.skippedFiles) ? backup.skippedFiles.length : Number(backup.skippedCount || 0);
+    const failedCount = Array.isArray(backup.failedFiles) ? backup.failedFiles.length : Number(backup.failedCount || 0);
+    const backupMessage = backup.outcome === BACKUP_OUTCOME.SKIPPED_FRESH_TARGET
+      ? 'זהו יעד לוגי חדש ללא קובצי TXT קיימים; גיבוי מקדים לא נדרש.'
+      : backup.outcome === BACKUP_OUTCOME.SKIPPED_UNSUPPORTED_BACKEND
+        ? 'גיבוי מקדים דולג: אסטרטגיית גיבוי Mongo טרם מומשה.'
+        : `תוצאת הגיבוי: ${backup.outcome} — הועתקו ${copiedCount}, חסרים/דולגו ${skippedCount}, נכשלו ${failedCount}.`;
+    await reportEvent(stage, backupIsWarning ? 'warning' : 'success', backupMessage, {
+      target: backup.backupPath || site.siteAssetsRoot,
+      nextAction: backupIsWarning ? 'הפריסה ממשיכה כרגיל; בדוק את פירוט הגיבוי לאחר סיום הריצה.' : '',
+      details: {
+        backupOutcome: backup.outcome,
+        backupPath: backup.backupPath || '',
+        backupUrl: backup.backupUrl || '',
+        copiedCount,
+        skippedCount,
+        failedCount,
+        totalSizeBytes: backup.totalSizeBytes || 0,
+        verificationStatus: backup.verificationStatus || '',
+        persistenceWarnings: backupPersistenceWarnings.join(' | '),
+        nonBlocking: true,
+      },
+    });
+
     // --- CREATE_FOLDERS / FOLDER_STABILIZE --------------------------------
     stage = STAGE.CREATE_FOLDERS;
     await reportProgress(52, 'יוצר ומייצב תיקיות', '', stage);
@@ -303,6 +413,7 @@ export async function runDeploymentPipeline(options) {
       try { await post(`/api/deployments/${encodeURIComponent(jobId)}/verified-asset`, { paths }); } catch { /* resume optimisation only */ }
     };
 
+    let runtimeVerification = null;
     const result = await uploadReleaseAssets(client, manifest, {
       log, signal: effectiveSignal, retry, sha256, distRoot: site.finalDistRoot,
       alreadyVerified: new Set(claim.verifiedAssets || []),
@@ -318,20 +429,46 @@ export async function runDeploymentPipeline(options) {
         verifiedBuffer.push(filePath);
         if (verifiedBuffer.length >= 20) await flushVerified();
       },
+      // Runtime config is a non-index asset. Verify it through the exact direct
+      // URL Site Builder will request before activating the new index.html.
+      beforeCommit: async () => {
+        await flushVerified();
+        await reportEvent(STAGE.FINAL_ASSET_COPY, 'success', 'כל קובצי הריליס שאינם index.html הועלו.');
+        await reportEvent(STAGE.FINAL_ASSET_VERIFY, 'success', 'כל הקבצים שאינם index.html אומתו ביעד לפי גודל ו-SHA-256.');
+        stage = STAGE.FINAL_RUNTIME_CONFIG_VERIFY;
+        await reportProgress(90, 'מאמת Runtime Config סופי', descriptor.runtimeVerification.runtimeConfigFile, stage);
+        await reportEvent(stage, 'started', 'קורא את Runtime Config ו-Deployment Metadata מהכתובות המדויקות שהאפליקציה תבקש.');
+        runtimeVerification = await verifyFinalRuntimeConfig(fetchImpl, descriptor.runtimeVerification, {
+          retry,
+          signal: effectiveSignal,
+        });
+        await reportEvent(stage, 'success', 'Runtime Config הסופי קריא, תקין ושייך לריצה וליעד הלוגי הנוכחיים.', {
+          target: runtimeVerification.runtimeConfigUrl,
+          method: 'GET',
+          url: runtimeVerification.runtimeConfigUrl,
+          httpStatus: runtimeVerification.runtimeStatus,
+          details: runtimeVerification,
+        });
+      },
     });
     await flushVerified();
 
-    await reportEvent(STAGE.FINAL_ASSET_COPY, 'success', 'כל קובצי הריליס הועלו.');
-    await reportEvent(STAGE.FINAL_ASSET_VERIFY, 'success', 'כל הקבצים אומתו ביעד לפי גודל ו-SHA-256.');
+    stage = STAGE.FINAL_INDEX_COMMIT;
     await reportEvent(STAGE.FINAL_INDEX_COMMIT, 'success', 'index.html הועלה אחרון ואומת.', { details: { indexSha256: result.indexSha256 } });
     await reportEvent(STAGE.FINAL_INDEX_VERIFY, 'success', `כל ${result.referencesVerified} ההפניות מתוך index.html אומתו ביעד.`);
 
     // --- FINAL_APP_SMOKE ---------------------------------------------------
     stage = STAGE.FINAL_APP_SMOKE;
     await reportProgress(95, 'בודק את האפליקציה הסופית', '', stage);
-    const smoke = await finalAppSmoke(client, site.finalDistRoot, { signal: effectiveSignal, retry });
+    const smoke = await finalAppSmoke(client, site.finalDistRoot, {
+      signal: effectiveSignal,
+      retry,
+      fetchImpl,
+      finalUrl: site.finalUrl,
+      runtimeVerification,
+    });
     if (!smoke.ok) {
-      const error = new Error('בדיקת ה-Smoke נכשלה: index.html שהועלה אינו נראה כאפליקציה תקינה.');
+      const error = new Error('בדיקת ה-Smoke נכשלה: האפליקציה הסופית או Runtime Config שלה אינם ניתנים לטעינה.');
       error.stage = stage;
       error.errorClass = SP_ERROR.PERMANENT_FAILURE;
       throw error;
@@ -348,11 +485,20 @@ export async function runDeploymentPipeline(options) {
         indexSha256: result.indexSha256,
         libraries: libraryResults,
         seeds: { preserved, created },
+        backup,
+        runtimeConfig: runtimeVerification,
         smoke,
       },
     });
     onProgress({ progress: 100, stage, message: 'הפריסה הושלמה בהצלחה' });
-    return { ok: true, finalUrl: site.finalUrl, libraries: libraryResults, seeds: { preserved, created } };
+    return {
+      ok: true,
+      finalUrl: site.finalUrl,
+      libraries: libraryResults,
+      seeds: { preserved, created },
+      backup,
+      runtimeConfig: runtimeVerification,
+    };
   } catch (error) {
     const failure = describeFailure(error, stage);
     try {

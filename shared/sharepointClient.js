@@ -290,13 +290,14 @@ export function createSharePointClient(options = {}) {
     throw sharePointError(result.normalized);
   }
 
-  async function uploadFile(filePath, bytes, contentType = ASSET_CONTENT_TYPE) {
+  async function uploadFile(filePath, bytes, contentType = ASSET_CONTENT_TYPE, options = {}) {
     assertServerRelativePath(filePath, 'file');
     const folder = filePath.slice(0, filePath.lastIndexOf('/'));
     const fileName = filePath.slice(filePath.lastIndexOf('/') + 1);
     const encodedName = encodeURIComponent(fileName).replace(/'/g, '%27');
+    const overwrite = options.overwrite !== false;
     const url = `${base}/_api/web/GetFolderByServerRelativeUrl('${escapeODataPath(folder)}')`
-      + `/Files/Add(overwrite=true,url='${encodedName}')`;
+      + `/Files/Add(overwrite=${overwrite ? 'true' : 'false'},url='${encodedName}')`;
     const result = await raw(url, {
       method: 'POST',
       headers: { Accept: ODATA_VERBOSE, 'Content-Type': contentType },

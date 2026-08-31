@@ -10,6 +10,7 @@ import { releasesRouter } from './routes/releases.js';
 import { jobsRouter } from './routes/jobs.js';
 import { deploymentsRouter } from './routes/deployments.js';
 import { runsRouter } from './routes/runs.js';
+import { backupsRouter } from './routes/backups.js';
 
 /**
  * Headers the browser worker sends. X-SRM-Lease carries the exclusive write
@@ -92,6 +93,7 @@ export function createApp() {
   app.use('/api/jobs', jobsRouter);
   app.use('/api/deployments', deploymentsRouter);
   app.use('/api/runs', runsRouter);
+  app.use('/api/backups', backupsRouter);
 
   // An unknown /api route must never fall through to the SPA fallback, which
   // would answer HTML and make a typo look like a broken API.

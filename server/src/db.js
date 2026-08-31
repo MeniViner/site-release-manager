@@ -48,6 +48,10 @@ export async function migrateIndexes(db) {
     db.collection('deployment_jobs').createIndex({ targetKey: 1, createdAt: -1 }),
     db.collection('deployment_locks').createIndex({ targetKey: 1 }, { unique: true }),
     db.collection('deployment_locks').createIndex({ jobId: 1 }),
+    db.collection('backups').createIndex({ runId: 1, trigger: 1 }, { unique: true }),
+    db.collection('backups').createIndex({ siteId: 1, createdAt: -1 }),
+    db.collection('backups').createIndex({ storageBackend: 1, outcome: 1, createdAt: -1 }),
+    db.collection('backups').createIndex({ targetKey: 1, createdAt: -1 }),
   ]);
 }
 

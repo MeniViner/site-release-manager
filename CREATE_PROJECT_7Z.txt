@@ -23,3 +23,4 @@ $project = Split-Path -Leaf (Get-Location); $stamp = Get-Date -Format 'yyyy-MM-d
 
 The archive intentionally keeps .env because the current closed-Windows transfer
 workflow needs the environment configuration inside the whitened package.
+`

@@ -20,6 +20,7 @@ import { settleJob } from '../services/jobQueue.js';
 import { heartbeatTargetLock } from '../services/targetLock.js';
 import { STAGE } from '../../../shared/deploymentStages.js';
 import { JOB_STATE, canonicalState, isTerminal, resumeStage, completedStages, assertTransition } from '../services/jobState.js';
+import { finishBackupRecord, publicBackup, startBackupRecord } from '../services/backupService.js';
 
 export const deploymentsRouter = Router();
 
@@ -287,6 +288,44 @@ deploymentsRouter.post('/:jobId/verified-asset', async (req, res, next) => {
       { $addToSet: { verifiedAssets: { $each: paths } }, $set: { updatedAt: new Date() } },
     );
     return res.json({ ok: true, recorded: paths.length });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+/** Start/reuse the one durable pre-deploy backup record for this run. */
+deploymentsRouter.post('/:jobId/backup/start', async (req, res, next) => {
+  try {
+    const context = await loadContext(req.params.jobId);
+    if (!context) return res.status(404).json({ error: 'המשימה לא נמצאה.' });
+    assertWritable(context.job);
+    assertLease(context.job, req);
+    const result = await startBackupRecord({
+      job: context.job,
+      site: context.site,
+      release: context.release,
+      startedAt: req.body?.startedAt,
+    });
+    return res.json({ reused: result.reused, backup: publicBackup(result.backup, context.site) });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+/** Finish a backup attempt. FAILED/PARTIAL are valid, non-fatal outcomes. */
+deploymentsRouter.post('/:jobId/backup/finish', async (req, res, next) => {
+  try {
+    const context = await loadContext(req.params.jobId);
+    if (!context) return res.status(404).json({ error: 'המשימה לא נמצאה.' });
+    assertWritable(context.job);
+    assertLease(context.job, req);
+    const backup = await finishBackupRecord({
+      job: context.job,
+      site: context.site,
+      release: context.release,
+      payload: req.body,
+    });
+    return res.json({ ok: true, backup: publicBackup(backup, context.site) });
   } catch (error) {
     return next(error);
   }

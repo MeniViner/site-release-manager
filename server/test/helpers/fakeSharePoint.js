@@ -201,17 +201,29 @@ export function createFakeSharePoint(config = {}) {
     }
 
     // --- file upload ------------------------------------------------------
-    const upload = clean.match(/\/_api\/web\/GetFolderByServerRelativeUrl\('(.+?)'\)\/Files\/Add\(overwrite=true,url='(.+?)'\)$/);
+    const upload = clean.match(/\/_api\/web\/GetFolderByServerRelativeUrl\('(.+?)'\)\/Files\/Add\(overwrite=(true|false),url='(.+?)'\)$/);
     if (upload && method === 'POST') {
       const folderPath = decodeODataArg(upload[1]);
-      const fileName = decodeURIComponent(upload[2].replace(/%27/g, "'"));
+      const overwrite = upload[2] === 'true';
+      const fileName = decodeURIComponent(upload[3].replace(/%27/g, "'"));
       if (!state.folders.has(folderPath)) return jsonResponse(400, directoryNotFoundPayload());
       const full = `${folderPath}/${fileName}`;
+      if (!overwrite && state.files.has(full)) return jsonResponse(400, alreadyExistsPayload());
       const bytes = init.body instanceof Uint8Array ? init.body : new Uint8Array(Buffer.from(init.body));
       state.files.set(full, { bytes, contentType: init.headers?.['Content-Type'] || '' });
       state.uploadSequence.push(full);
       markPending(`file:${full}`);
       return jsonResponse(200, { d: { ServerRelativeUrl: full } });
+    }
+
+    // Direct static fetches mirror the URLs Site Builder itself requests from
+    // beside index.html (not the SharePoint REST $value endpoint).
+    if (method === 'GET' && clean.startsWith(`${base}/`) && !clean.includes('/_api/')) {
+      const filePath = decodeURIComponent(new URL(clean).pathname);
+      const file = state.files.get(filePath);
+      if (!file) return notReadyShape === '404' ? jsonResponse(404, notFoundPayload()) : jsonResponse(400, notFoundPayload());
+      if (consumePending(`file:${filePath}`)) return notReadyResponse();
+      return bytesResponse(200, file.bytes);
     }
 
     return jsonResponse(404, notFoundPayload());

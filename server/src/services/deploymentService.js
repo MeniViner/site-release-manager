@@ -14,6 +14,7 @@ import { config, paths } from '../config.js';
 import { getDb } from '../db.js';
 import { STAGE } from '../../../shared/deploymentStages.js';
 import { buildSiteIdentity, buildTxtSeedPlan, requiredLibraries, requiredFolders, canonicalTargetKey } from '../../../shared/siteRuntime.js';
+import { RUNTIME_CONFIG_FILE, DEPLOYMENT_METADATA_FILE } from '../../../shared/universalManifest.js';
 import { verifyStoredReleaseIntegrity } from './releaseValidation.js';
 import {
   createStaging, writeTargetOverlay, regenerateManifest, verifyStaging,
@@ -266,6 +267,29 @@ export function buildDeploymentDescriptor({ job, site, release, manifest, upload
     folders: requiredFolders(identity, distSubFolders(manifest)),
     seedFiles: buildTxtSeedPlan(identity),
     permissionsMarker: `${identity.usersDbRoot}/.permissions-setup.json`,
+    runtimeVerification: {
+      runtimeConfigFile: RUNTIME_CONFIG_FILE,
+      deploymentMetadataFile: DEPLOYMENT_METADATA_FILE,
+      runtimeConfigUrl: `${identity.siteBaseUrl}/${RUNTIME_CONFIG_FILE}`,
+      deploymentMetadataUrl: `${identity.siteBaseUrl}/${DEPLOYMENT_METADATA_FILE}`,
+      expected: {
+        host: identity.host,
+        siteCode: identity.siteCode,
+        siteDbFolder: identity.siteDbFolder,
+        siteDbRoot: identity.siteDbRoot,
+        usersDbFolder: identity.usersDbFolder,
+        usersDbRoot: identity.usersDbRoot,
+        siteAssetsFolder: identity.siteAssetsFolder,
+        siteAssetsRoot: identity.siteAssetsRoot,
+        widgetsDbTarget: identity.widgetsDbTarget,
+        storageBackend: identity.storageBackend,
+        targetDistPath: identity.targetDistPath,
+        finalAppUrl: identity.finalAppUrl,
+        deploymentJobId: String(job._id),
+        releaseId: String(release._id),
+        releaseVersion: release.version,
+      },
+    },
     manifest: { ...manifest, uploadOrder },
   };
 }
