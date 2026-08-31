@@ -132,7 +132,7 @@ generic HTTP 200 is not sufficient evidence that a folder is writable.
 superset covering the Node-side preparation Site Builder has no equivalent for.
 The names that overlap are identical on purpose — `SHAREPOINT_CONTEXTINFO`,
 `CREATE_LIBRARIES`, `CREATE_FOLDERS`, `CREATE_TXT_SEEDS`, `FINAL_ASSET_COPY`,
-`FINAL_ASSET_VERIFY`, `FINAL_INDEX_COMMIT`, `FINAL_INDEX_VERIFY`,
+`FINAL_ASSET_VERIFY`, `FINAL_RUNTIME_CONFIG_VERIFY`, `FINAL_INDEX_COMMIT`, `FINAL_INDEX_VERIFY`,
 `FINAL_APP_SMOKE`, `COMPLETE` — so evidence from either system reads the same.
 
 ---

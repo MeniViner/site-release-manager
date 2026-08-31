@@ -1,9 +1,16 @@
 # Windows Acceptance Checklist — Release Manager TXT Pipeline
 
-Everything in this repository has been verified on macOS against a simulated
-eventually-consistent SharePoint farm. **No part of it has been executed against
-the real closed SharePoint environment.** This checklist is what turns that into
-a real acceptance result with the least manual effort.
+The branch has now completed a real deployment on the closed Windows +
+SharePoint environment for the existing `schedule` Web using the independent
+logical target `siteDB1` + `siteUsersDb1`. Release Manager reached 100% and
+reported a successful SharePoint deployment. This is real evidence that one Web
+can host more than one logical Site Builder target.
+
+The same acceptance run also produced a screenshot of Site Builder showing
+`missing_runtime_config`. That observation is not accepted as an unrelated UI
+issue: a deployment is only successful when the runtime file beside
+`index.html` is directly readable and matches the current target and run. The
+current pipeline now enforces that contract before activating `index.html`.
 
 Run it on the closed Windows workstation, from the SharePoint host, in order.
 
@@ -68,6 +75,7 @@ The protected regression path. Use a site that already works.
 - [ ] `CREATE_TXT_SEEDS` reports files **preserved**, not created
 - [ ] Open the site: existing events / users / theme / widgets are unchanged
 - [ ] `FINAL_INDEX_VERIFY` and `FINAL_APP_SMOKE` both pass
+- [ ] `FINAL_RUNTIME_CONFIG_VERIFY` directly reads both runtime JSON files and passes
 - [ ] The site's current version updates only after COMPLETE
 
 > **Stop here if this fails.** This is the frozen working path.
@@ -155,7 +163,7 @@ list, or with a library owned by a different title.
 - [ ] Site details show libraries, folders and the 10 TXT paths to be created
 - [ ] Site details state that Release Manager does **not** create a SharePoint Web
 - [ ] Edit a site: derived paths follow the change automatically
-- [ ] Editing is blocked while a run is active
+- [ ] While a run is active, metadata remains editable but identity/path fields are locked
 - [ ] Delete a Site record — requires confirmation
 - [ ] **After deletion, the SharePoint libraries, folders and TXT data still exist**
 
@@ -185,6 +193,7 @@ LIBRARIES: READY
 DEPLOY MODE: FINAL
 FINAL_ASSET_COPY: SUCCESS
 FINAL_ASSET_VERIFY: SUCCESS
+FINAL_RUNTIME_CONFIG_VERIFY: SUCCESS
 FINAL_INDEX_COMMIT: SUCCESS
 FINAL_INDEX_VERIFY: SUCCESS
 FINAL_APP_SMOKE: STATIC PASS
@@ -193,18 +202,70 @@ LEGACY_PIPELINE: COMPLETE
 
 ---
 
-## 7. Known macOS limitations (why this checklist exists)
+## 7. Remaining real-environment limitations
 
-| Verified on macOS | NOT verified anywhere yet |
+| Verified in automation or on Windows | Still requires Windows acceptance |
 |---|---|
 | Error classification against simulated 400/404/DirectoryNotFound/SPException | Real SharePoint error payloads from this farm |
 | Stabilization and bounded retry logic | Real propagation timing — the retry budget may need tuning |
-| Exact-URL library provisioning logic | Real JSOM `SP.ListCreationInformation` behaviour |
-| TXT preservation, SHA verification, index-last commit | Real SharePoint REST upload semantics |
+| Exact-URL library provisioning logic and one successful `siteDB1` / `siteUsersDb1` deployment | Repeat the JSOM path while capturing the final physical library URLs |
+| TXT preservation, SHA verification, index-last commit in automation | Real pre-deploy backup bytes and index-last order on an update |
 | Lease, locking, resume, cancel, retry (real MongoDB) | Behaviour under real network interruption |
 | Contract compatibility with the on-disk Site Builder | Real browser JSOM script loading from `_layouts/15` |
 | CORS, preflight, Private Network Access headers | Real Chrome/Edge behaviour on the closed network |
+| Direct runtime URL and target validation in simulation | Confirm the deployed app no longer reports `missing_runtime_config` |
 
 The JSOM library-creation path and the real SharePoint error payloads carry the
 highest residual risk, because they are the two things a simulation cannot
 faithfully reproduce.
+
+---
+
+## 8. Next acceptance after the `siteDB1` Windows run
+
+### A — Update the existing `siteDB1` logical target
+
+- [ ] Deploy another Release to `schedule | siteDB1 | siteUsersDb1`
+- [ ] `PRE_DEPLOY_BACKUP` is attempted before folder/seed/release mutations
+- [ ] The backup outcome and copied/skipped/failed counts are visible in the Run
+- [ ] Deployment still reaches COMPLETE
+- [ ] Every original TXT file is byte-identical after deployment
+- [ ] `<siteAssetsRoot>/Backups/backup-<timestamp>` exists and contains the copied files
+
+### B — Observe or force a backup failure
+
+- [ ] Cause at least one backup read/copy/verification failure
+- [ ] The backup outcome is FAILED or PARTIAL and appears as a warning
+- [ ] The deployment continues through the normal pipeline
+- [ ] A valid deployment may still finish SUCCEEDED
+- [ ] The durable backup record retains the error and file counts
+
+### C — Open a completed Run
+
+- [ ] Primary action is `פתח אתר`
+- [ ] Secondary action is `ריליסים אחרונים`
+- [ ] External SharePoint diagnostics are not the primary success CTA
+- [ ] A failed Run still exposes SharePoint diagnostics prominently
+
+### D — Open the Site workspace
+
+- [ ] The Site name opens the internal `#/sites/:siteId` route
+- [ ] Current Release, recent deployment attempts, recent Runs and backup summary are correct
+- [ ] The ten canonical TXT paths match `shared/siteRuntime.js`
+- [ ] The link to all backups opens `#/backups?siteId=<siteId>`
+
+### E — Open the deployed Site Builder app
+
+- [ ] The app does not show `missing_runtime_config`
+- [ ] `sitebuilder-runtime-config.json` is beside `index.html`
+- [ ] `sitebuilder-deployment.json` is beside `index.html`
+- [ ] Runtime host, `siteCode`, library roots, `siteAssetsRoot`, backend and final path match `siteDB1`
+- [ ] Runtime deployment job/release metadata matches the completed Run
+
+### F — Recheck two library pairs in the same `schedule` Web
+
+- [ ] The original `siteDB | siteUsersDb` target remains independent
+- [ ] The `siteDB1 | siteUsersDb1` target remains independent
+- [ ] A deployment lock on one target does not block the other
+- [ ] Each target receives its own Runtime Config and final URL
+- [ ] No runtime path, TXT data, release history or backup metadata leaks between targets
