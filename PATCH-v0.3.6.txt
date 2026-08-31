@@ -1,4 +1,4 @@
-Site Release Manager v0.3.6
+Site Release Manager v0.3.7
 
 Fixes Universal Dist ingestion after Site Builder introduced a separate dist-universal output:
 - Folder picker accepts dist-universal directly and prefers it when project root is selected.
