@@ -837,6 +837,10 @@ export async function verifyFinalRuntimeConfig(fetchImpl, verification, options 
   }
 
   const runtime = await fetchDirectJson(fetchImpl, runtimeUrl, { ...options, kind: 'Runtime Config' });
+  assertExpectedFields(runtime.payload, {
+    schemaVersion: 2,
+    deploymentGeneratedBy: 'site-release-manager',
+  }, ['schemaVersion', 'deploymentGeneratedBy'], 'Runtime Config', runtimeUrl);
   assertExpectedFields(runtime.payload, expected, [
     'host', 'siteCode', 'siteDbFolder', 'siteDbRoot', 'usersDbFolder', 'usersDbRoot',
     'siteAssetsFolder', 'siteAssetsRoot', 'widgetsDbTarget', 'storageBackend',
@@ -844,6 +848,11 @@ export async function verifyFinalRuntimeConfig(fetchImpl, verification, options 
   ], 'Runtime Config', runtimeUrl);
 
   const deployment = await fetchDirectJson(fetchImpl, deploymentUrl, { ...options, kind: 'Deployment Metadata' });
+  assertExpectedFields(deployment.payload, {
+    kind: 'sitebuilder-deployment',
+    schemaVersion: 3,
+    generatedBy: 'site-release-manager',
+  }, ['kind', 'schemaVersion', 'generatedBy'], 'Deployment Metadata', deploymentUrl);
   assertExpectedFields(deployment.payload, expected, [
     'host', 'siteCode', 'siteDbRoot', 'usersDbRoot', 'siteAssetsRoot', 'storageBackend',
     'targetDistPath', 'finalAppUrl', 'deploymentJobId', 'releaseId', 'releaseVersion',

@@ -24,9 +24,23 @@ const SITES = 'sites';
 
 /** Mirrors the browser lease TTL enforced by the deployments routes. */
 export const BROWSER_LEASE_TTL_MS = 90 * 1000;
+export const SITE_IDENTITY_EDIT_TTL_MS = 90 * 1000;
 
 export const isBrowserLeaseLive = (lease, now = Date.now()) =>
   Boolean(lease?.leaseId) && (now - new Date(lease.heartbeatAt || lease.acquiredAt || 0).getTime()) < BROWSER_LEASE_TTL_MS;
+
+function siteIdentityEditError(message = 'זהות היעד מתעדכנת כעת. נסה להפעיל את הפריסה שוב בעוד רגע.') {
+  return Object.assign(new Error(message), {
+    statusCode: 409,
+    code: 'SITE_IDENTITY_EDIT_IN_PROGRESS',
+  });
+}
+
+function identityEditIsLive(site, now = Date.now()) {
+  if (!site?.identityEdit?.token) return false;
+  const acquiredAt = new Date(site.identityEdit.acquiredAt || 0).getTime();
+  return Number.isFinite(acquiredAt) && (now - acquiredAt) < SITE_IDENTITY_EDIT_TTL_MS;
+}
 
 /** Roll a job into a terminal state and release everything it holds. */
 export async function settleJob(jobId, state, { message = '', error = null, stage = null } = {}) {
@@ -150,6 +164,13 @@ export async function createDeploymentJob({ siteId, releaseId, type = 'UPDATE', 
   ]);
   if (!site) throw Object.assign(new Error('האתר לא נמצא.'), { statusCode: 404 });
   if (!release) throw Object.assign(new Error('הריליס לא נמצא.'), { statusCode: 404 });
+  if (identityEditIsLive(site)) throw siteIdentityEditError();
+  if (site.identityEdit?.token) {
+    await db.collection(SITES).updateOne(
+      { _id: normalizedSiteId, 'identityEdit.token': site.identityEdit.token },
+      { $unset: { identityEdit: '' } },
+    );
+  }
   if (release.artifactType !== 'universal-dist') {
     throw Object.assign(new Error('הריליס נוצר במודל הישן של קוד מקור. העלה Universal dist חדש.'), { statusCode: 400 });
   }
@@ -198,47 +219,80 @@ export async function createDeploymentJob({ siteId, releaseId, type = 'UPDATE', 
   try {
     const lock = await acquireTargetLock({ targetKey, jobId, siteId: normalizedSiteId, takeOver: force, now });
     supersededJobId = lock.supersededJobId;
-  } catch (error) {
-    await db.collection(JOBS).deleteOne({ _id: jobId });
-    throw error;
-  }
+    const lockedSite = await db.collection(SITES).findOne({ _id: normalizedSiteId });
+    if (!lockedSite) {
+      throw Object.assign(new Error('האתר לא נמצא.'), { statusCode: 404 });
+    }
+    const liveIdentityEdit = identityEditIsLive(lockedSite);
+    if (!liveIdentityEdit && lockedSite.identityEdit?.token) {
+      await db.collection(SITES).updateOne(
+        { _id: normalizedSiteId, 'identityEdit.token': lockedSite.identityEdit.token },
+        { $unset: { identityEdit: '' } },
+      );
+    }
+    const lockedTargetKey = canonicalTargetKey(buildSiteIdentity(lockedSite));
+    if (!supersededJobId && (liveIdentityEdit || lockedTargetKey !== targetKey)) {
+      throw siteIdentityEditError(
+        lockedTargetKey === targetKey
+          ? undefined
+          : 'זהות היעד השתנתה בזמן יצירת הריצה. נסה להפעיל את הפריסה שוב.',
+      );
+    }
 
-  if (supersededJobId) {
+    if (supersededJobId) {
+      await db.collection(JOBS).updateOne(
+        { _id: new ObjectId(supersededJobId) },
+        {
+          $set: {
+            state: JOB_STATE.SUPERSEDED,
+            progress: 100,
+            message: 'הריצה הוחלפה בריצה חדשה לפי בקשת המשתמש.',
+            finishedAt: now,
+            updatedAt: now,
+            browserLease: null,
+          },
+          $push: { logs: `[${now.toISOString()}] Superseded by job ${jobId}.` },
+        },
+      );
+      await appendRunEvent(new ObjectId(supersededJobId), {
+        stage: STAGE.READY_FOR_SHAREPOINT,
+        status: 'warning',
+        source: 'server',
+        message: 'הריצה הוחלפה בריצה חדשה לפי בקשת המשתמש.',
+        details: { supersededBy: String(jobId) },
+      });
+    }
+
+    await appendRunEvent(jobId, {
+      stage: STAGE.RELEASE_VALIDATE,
+      status: 'started',
+      source: 'server',
+      message: `נוצרה ריצת ${type === 'INSTALL' ? 'התקנה' : 'עדכון'} חדשה.`,
+      details: { targetKey, releaseVersion: release.version, supersededJobId: supersededJobId || '' },
+    });
+    await db.collection(SITES).updateOne(
+      { _id: normalizedSiteId },
+      { $set: { status: JOB_STATE.PREPARING_RELEASE, activeJobId: jobId, updatedAt: now } },
+    );
     await db.collection(JOBS).updateOne(
-      { _id: new ObjectId(supersededJobId) },
+      { _id: jobId },
+      { $set: { state: JOB_STATE.PREPARING_RELEASE, updatedAt: new Date() } },
+    );
+  } catch (error) {
+    await releaseTargetLock(jobId).catch(() => {});
+    await db.collection(JOBS).deleteOne({ _id: jobId }).catch(() => {});
+    await db.collection(SITES).updateOne(
+      { _id: normalizedSiteId, activeJobId: jobId },
       {
         $set: {
-          state: JOB_STATE.SUPERSEDED,
-          progress: 100,
-          message: 'הריצה הוחלפה בריצה חדשה לפי בקשת המשתמש.',
-          finishedAt: now,
-          updatedAt: now,
-          browserLease: null,
+          activeJobId: null,
+          status: site.firstPublishedAt ? 'ACTIVE' : 'TRACKED',
+          updatedAt: new Date(),
         },
-        $push: { logs: `[${now.toISOString()}] Superseded by job ${jobId}.` },
       },
-    );
-    await appendRunEvent(new ObjectId(supersededJobId), {
-      stage: STAGE.READY_FOR_SHAREPOINT,
-      status: 'warning',
-      source: 'server',
-      message: 'הריצה הוחלפה בריצה חדשה לפי בקשת המשתמש.',
-      details: { supersededBy: String(jobId) },
-    });
+    ).catch(() => {});
+    throw error;
   }
-
-  await appendRunEvent(jobId, {
-    stage: STAGE.RELEASE_VALIDATE,
-    status: 'started',
-    source: 'server',
-    message: `נוצרה ריצת ${type === 'INSTALL' ? 'התקנה' : 'עדכון'} חדשה.`,
-    details: { targetKey, releaseVersion: release.version, supersededJobId: supersededJobId || '' },
-  });
-  await db.collection(SITES).updateOne(
-    { _id: normalizedSiteId },
-    { $set: { status: JOB_STATE.PREPARING_RELEASE, activeJobId: jobId, updatedAt: now } },
-  );
-  await db.collection(JOBS).updateOne({ _id: jobId }, { $set: { state: JOB_STATE.PREPARING_RELEASE, updatedAt: new Date() } });
 
   try {
     await prepareDeploymentJob(String(jobId));
@@ -271,10 +325,24 @@ export async function retryDeploymentJob(jobId) {
 
   const site = await db.collection(SITES).findOne({ _id: job.siteId });
   if (!site) throw Object.assign(new Error('האתר לא נמצא.'), { statusCode: 404 });
-  const targetKey = job.targetKey || canonicalTargetKey(buildSiteIdentity(site));
+  if (identityEditIsLive(site)) throw siteIdentityEditError();
+  if (site.identityEdit?.token) {
+    await db.collection(SITES).updateOne(
+      { _id: site._id, 'identityEdit.token': site.identityEdit.token },
+      { $unset: { identityEdit: '' } },
+    );
+  }
+  const targetKey = canonicalTargetKey(buildSiteIdentity(site));
+  if (job.targetKey && job.targetKey !== targetKey) {
+    throw Object.assign(
+      new Error('זהות היעד השתנתה מאז יצירת הריצה. צור ריצת פריסה חדשה עבור היעד הנוכחי.'),
+      { statusCode: 409, code: 'RUN_TARGET_CHANGED' },
+    );
+  }
 
   const active = await findActiveJobForTarget(targetKey);
-  if (active && String(active.job._id) !== String(objectId)) {
+  const alreadyOwnedLock = Boolean(active && String(active.job._id) === String(objectId));
+  if (active && !alreadyOwnedLock) {
     throw new TargetLockedError(active.lock, active.stale);
   }
 
@@ -288,7 +356,47 @@ export async function retryDeploymentJob(jobId) {
     );
   }
 
-  await acquireTargetLock({ targetKey, jobId: objectId, siteId: job.siteId, takeOver: true });
+  // A retry never supersedes a different run. A concurrent new deployment wins
+  // or loses through the unique target lock; it can never be silently replaced.
+  await acquireTargetLock({ targetKey, jobId: objectId, siteId: job.siteId, takeOver: false });
+  const claimed = await db.collection(JOBS).findOneAndUpdate(
+    { _id: objectId, state: job.state },
+    { $set: { state: JOB_STATE.PREPARING_RELEASE, updatedAt: new Date() } },
+    { returnDocument: 'after' },
+  );
+  if (!claimed) {
+    throw Object.assign(
+      new Error('הריצה כבר מופעלת מחדש או שמצבה השתנה.'),
+      { statusCode: 409, code: 'RETRY_ALREADY_CLAIMED' },
+    );
+  }
+
+  const lockedSite = await db.collection(SITES).findOne({ _id: job.siteId });
+  let lockedTargetKey = '';
+  try {
+    lockedTargetKey = lockedSite ? canonicalTargetKey(buildSiteIdentity(lockedSite)) : '';
+  } catch {
+    lockedTargetKey = '';
+  }
+  if (!lockedSite || identityEditIsLive(lockedSite) || lockedTargetKey !== targetKey) {
+    await db.collection(JOBS).updateOne(
+      { _id: objectId, state: JOB_STATE.PREPARING_RELEASE },
+      { $set: { state: job.state, updatedAt: new Date() } },
+    );
+    if (!alreadyOwnedLock) await releaseTargetLock(objectId);
+    if (!lockedSite) throw Object.assign(new Error('האתר לא נמצא.'), { statusCode: 404 });
+    if (identityEditIsLive(lockedSite)) throw siteIdentityEditError();
+    throw Object.assign(
+      new Error('זהות היעד השתנתה בזמן הפעלת הריצה מחדש. צור ריצת פריסה חדשה.'),
+      { statusCode: 409, code: 'RUN_TARGET_CHANGED' },
+    );
+  }
+
+  const now = new Date();
+  await db.collection(SITES).updateOne(
+    { _id: job.siteId },
+    { $set: { activeJobId: objectId, status: JOB_STATE.PREPARING_RELEASE, updatedAt: now } },
+  );
 
   // Staging is disposable; rebuild it so a retry always deploys freshly
   // generated, freshly verified bytes. A failure here must not leave the target
@@ -299,7 +407,6 @@ export async function retryDeploymentJob(jobId) {
     await settleJob(objectId, JOB_STATE.FAILED, { message: error.message, error: error.message });
     throw error;
   }
-  const now = new Date();
   await db.collection(JOBS).updateOne(
     { _id: objectId },
     {

@@ -3,6 +3,7 @@ import {
   Activity, CheckCircle2, CircleAlert, ClipboardCopy, Clock3, ExternalLink,
   FileWarning, LoaderCircle, Ban, RotateCw, RefreshCw, Search, X, XCircle,
 } from 'lucide-react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from './api.js';
 import { STAGE_ORDER as CANONICAL_STAGE_ORDER, stageLabel } from '../../shared/deploymentStages.js';
 
@@ -51,12 +52,14 @@ const STAGE_HINTS = {
   LIBRARY_DISCOVERY: 'איתור ספריות המסמכים המוגדרות והתנגשויות אפשריות.',
   CREATE_LIBRARIES: 'ספריות חסרות נוצרות בנתיב המדויק, ללא סיומת אוטומטית.',
   LIBRARY_STABILIZE: 'המתנה מבוקרת עד שכל ספרייה נקראת ומאומתת.',
+  PRE_DEPLOY_BACKUP: 'גיבוי best-effort של קובצי ה-TXT הקיימים לפני כל שינוי ביעד.',
   CREATE_FOLDERS: 'התיקיות נוצרות מההורה כלפי מטה.',
   FOLDER_STABILIZE: 'המתנה מבוקרת עד שכל תיקייה כתיבה בפועל.',
   CREATE_TXT_SEEDS: 'קבצים קיימים נשמרים; רק קבצים חסרים נוצרים ומאומתים.',
   PERMISSIONS_SETUP: 'בדיקת מצב ההרשאות. Release Manager אינו משנה הרשאות SharePoint.',
   FINAL_ASSET_COPY: 'כל קובצי הריליס מועלים, למעט index.html.',
   FINAL_ASSET_VERIFY: 'כל קובץ נקרא בחזרה ומאומת לפי גודל ו-SHA-256.',
+  FINAL_RUNTIME_CONFIG_VERIFY: 'ה-Runtime Config נקרא מה-URL המדויק של Site Builder ומאומת מול היעד והריצה.',
   FINAL_INDEX_COMMIT: 'index.html מועלה אחרון כדי שהאתר לא יישבר באמצע.',
   FINAL_INDEX_VERIFY: 'index.html וכל ההפניות שלו מאומתים ביעד.',
   FINAL_APP_SMOKE: 'בדיקה סטטית שהאפליקציה שהועלתה נטענת.',
@@ -109,6 +112,7 @@ function summarizeStage(events, stageKey) {
 }
 
 export default function RunsPage() {
+  const [searchParams] = useSearchParams();
   const [runs, setRuns] = useState([]);
   const [selectedId, setSelectedId] = useState('');
   const [detail, setDetail] = useState(null);
@@ -144,6 +148,10 @@ export default function RunsPage() {
   };
 
   useEffect(() => { load(); }, []);
+  useEffect(() => {
+    const requestedRunId = searchParams.get('runId');
+    if (requestedRunId) openRun(requestedRunId);
+  }, [searchParams]);
 
   const filtered = useMemo(() => runs.filter((run) => {
     if (stateFilter && run.state !== stateFilter) return false;
@@ -202,10 +210,13 @@ export default function RunsPage() {
 }
 
 function RunDetailModal({ run, loading, onClose, onRefresh }) {
+  const navigate = useNavigate();
   const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState('');
   const events = run?.runEvents || [];
+  const succeeded = run?.state === 'SUCCEEDED';
+  const failed = run?.state === 'FAILED';
 
   /**
    * Retry resumes at the first incomplete stage rather than restarting, so
@@ -256,7 +267,10 @@ function RunDetailModal({ run, loading, onClose, onRefresh }) {
           {run?.canCancel && <button className="run-action-button run-action-cancel" disabled={busy} onClick={() => act('cancel')}>
             <Ban size={15} />בטל ריצה
           </button>}
-          {run?.site?.finalUrl && <a className="run-action-button run-action-open" target="_blank" rel="noreferrer" href={run.site.finalUrl}><ExternalLink size={15} />פתח אתר יעד</a>}
+          {succeeded && run?.site?.finalUrl && <a className="run-action-button run-action-open" target="_blank" rel="noreferrer" href={run.site.finalUrl}><ExternalLink size={15} />פתח אתר</a>}
+          {succeeded && run?.site?.id && <button className="run-action-button run-action-releases" onClick={() => { onClose(); navigate(`/sites/${run.site.id}?section=releases`); }}><Clock3 size={15} />ריליסים אחרונים</button>}
+          {failed && run?.deployerUrl && <a className="run-action-button run-action-diagnostic" target="_blank" rel="noreferrer" href={run.deployerUrl}><ExternalLink size={15} />אבחון SharePoint</a>}
+          {!succeeded && !failed && run?.site?.finalUrl && <a className="run-action-button run-action-open" target="_blank" rel="noreferrer" href={run.site.finalUrl}><ExternalLink size={15} />פתח אתר יעד</a>}
           <button className="icon-button" onClick={onClose}><X size={20} /></button>
         </div>
       </div>
@@ -268,6 +282,7 @@ function RunDetailModal({ run, loading, onClose, onRefresh }) {
           <div><small>מצב</small><StateBadge value={run.state} /><span>{run.progress || 0}%{run.attempt > 1 ? ` · ניסיון ${run.attempt}` : ''}</span></div>
           <div><small>התחלה</small><strong>{formatDate(run.startedAt || run.createdAt)}</strong><span>סיום: {formatDate(run.finishedAt)}</span></div>
         </div>
+        {succeeded && run.deployerUrl && <details className="run-diagnostic-menu"><summary>אבחון SharePoint</summary><a href={run.deployerUrl} target="_blank" rel="noreferrer">פתח כלי אבחון חיצוני</a></details>}
 
         {run.failureInfo && <section className="run-failure-focus">
           <div className="failure-icon"><XCircle size={22} /></div>

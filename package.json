@@ -16,6 +16,7 @@
     "build:deployer": "npm --prefix sharepoint-deployer run build",
     "start": "npm --prefix server run start",
     "test": "npm --prefix server run test",
+    "test:client": "npm --prefix client test",
     "verify:transfer": "node scripts/verify-transfer.mjs",
     "upgrade:v0.2": "node scripts/upgrade-v0.2.mjs",
     "doctor": "node scripts/doctor.mjs",
@@ -29,6 +30,6 @@
     "sharepoint:local": "node scripts/dev.mjs --api-only",
     "sharepoint:test": "npm run build && npm run deploy:deployer-sharepoint && npm run sharepoint:local",
     "deploy:deployer-sharepoint": "node scripts/deploy-deployer-sharepoint.mjs",
-    "test:full": "node scripts/test-with-mongo.mjs"
+    "test:full": "node scripts/test-with-mongo.mjs && npm run test:client"
   }
 }

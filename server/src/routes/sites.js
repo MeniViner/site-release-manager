@@ -13,14 +13,43 @@ import { Router } from 'express';
 import { ObjectId } from 'mongodb';
 import { config } from '../config.js';
 import { getDb } from '../db.js';
-import { createDeploymentJob, findActiveJobForTarget } from '../services/jobQueue.js';
+import { createDeploymentJob, findActiveJobForTarget, SITE_IDENTITY_EDIT_TTL_MS } from '../services/jobQueue.js';
 import { TargetLockedError } from '../services/targetLock.js';
 import { buildSiteIdentity, canonicalTargetKey, SiteIdentityError, requiredLibraries, requiredFolders, buildTxtSeedPlan } from '../../../shared/siteRuntime.js';
 import { canonicalState, isResumable, stateLabel } from '../services/jobState.js';
+import { publicBackup } from '../services/backupService.js';
+import { parseReleaseVersion } from '../utils/versioning.js';
 
 export const sitesRouter = Router();
 
 const toDateOrNull = (value) => (value ? new Date(value) : null);
+
+function isNewerRelease(candidate, current) {
+  if (!candidate) return false;
+  if (!current) return true;
+  const a = parseReleaseVersion(candidate.version);
+  const b = parseReleaseVersion(current.version);
+  if (!a || !b) return new Date(candidate.createdAt || 0) > new Date(current.createdAt || 0);
+  return a.major > b.major
+    || (a.major === b.major && a.minor > b.minor)
+    || (a.major === b.major && a.minor === b.minor && a.patch > b.patch);
+}
+
+function identityChanged(before, after) {
+  if (!before) return true;
+  return [
+    'host',
+    'siteCode',
+    'siteDbFolder',
+    'usersDbFolder',
+    'siteAssetsFolder',
+    'imagesFolder',
+    'widgetsDbTarget',
+    'bootstrapLibrary',
+    'bootstrapFolder',
+    'storageBackend',
+  ].some((key) => String(before[key] || '') !== String(after[key] || ''));
+}
 
 /**
  * Release Manager provisions libraries and folders inside an existing
@@ -37,13 +66,13 @@ export const PROVISIONING_BOUNDARY = Object.freeze({
 
 function publicSite(site) {
   if (!site) return null;
-  const base = { ...site, id: String(site._id), _id: undefined };
+  const base = { ...site, id: String(site._id), _id: undefined, identityEdit: undefined };
   try {
     const identity = buildSiteIdentity(site);
     return { ...base, identity, targetKey: canonicalTargetKey(identity), finalUrl: identity.finalAppUrl };
   } catch (error) {
     // A stored record with an invalid identity must still be visible so it can be fixed.
-    return { ...base, identity: null, identityError: error.message };
+    return { ...base, identity: null, identityError: error.message, targetKey: '', finalUrl: '' };
   }
 }
 
@@ -69,6 +98,7 @@ sitesRouter.get('/provisioning-boundary', (_req, res) => res.json(PROVISIONING_B
 /** Full site details: derived identity, what will be provisioned, and run history. */
 sitesRouter.get('/:id', async (req, res, next) => {
   try {
+    if (!ObjectId.isValid(req.params.id)) return res.status(404).json({ error: 'האתר לא נמצא.' });
     const db = getDb();
     const site = await db.collection('sites').findOne({ _id: new ObjectId(req.params.id) });
     if (!site) return res.status(404).json({ error: 'האתר לא נמצא.' });
@@ -95,26 +125,84 @@ sitesRouter.get('/:id', async (req, res, next) => {
       }
     }
 
-    const [runs, release] = await Promise.all([
-      db.collection('deployment_jobs').find({ siteId: site._id }).sort({ createdAt: -1 }).limit(20).toArray(),
+    const targetScopedQuery = payload.targetKey
+      ? {
+        siteId: site._id,
+        $or: [
+          { targetKey: payload.targetKey },
+          { targetKey: { $exists: false } },
+          { targetKey: null },
+          { targetKey: '' },
+        ],
+      }
+      : { siteId: site._id };
+    const backupQuery = payload.targetKey
+      ? { siteId: site._id, targetKey: payload.targetKey }
+      : { siteId: site._id };
+    const [runs, release, availableReleases, backups] = await Promise.all([
+      db.collection('deployment_jobs').find(targetScopedQuery).sort({ createdAt: -1 }).limit(30).toArray(),
       site.currentReleaseId ? db.collection('releases').findOne({ _id: site.currentReleaseId }) : null,
+      db.collection('releases').find({ status: 'READY' }).toArray(),
+      db.collection('backups').find(backupQuery).sort({ createdAt: -1 }).limit(10).toArray(),
     ]);
+    const runReleaseIds = [...new Set(runs.map((job) => String(job.releaseId || '')).filter(Boolean))]
+      .filter((id) => ObjectId.isValid(id))
+      .map((id) => new ObjectId(id));
+    const runReleases = runReleaseIds.length
+      ? await db.collection('releases').find({ _id: { $in: runReleaseIds } }).toArray()
+      : [];
+    const releaseMap = new Map(runReleases.map((item) => [String(item._id), item]));
+    const lastSuccessful = runs.find((job) => canonicalState(job.state) === 'SUCCEEDED') || null;
+    const latestRelease = availableReleases.reduce(
+      (latest, candidate) => (isNewerRelease(candidate, latest) ? candidate : latest),
+      null,
+    );
+    const currentReleaseBaseline = release || (site.currentVersion
+      ? { version: site.currentVersion, createdAt: site.lastPublishedAt || site.updatedAt }
+      : null);
 
     return res.json({
       ...payload,
       plan,
       activeRun: active,
-      currentRelease: release ? { id: String(release._id), version: release.version, notes: release.notes || '' } : null,
+      currentRelease: release ? {
+        id: String(release._id),
+        version: release.version,
+        notes: release.notes || '',
+        buildId: release.buildId || release.universalProof?.buildId || '',
+        createdAt: release.createdAt,
+        deployedAt: site.lastPublishedAt,
+      } : null,
+      latestAvailableRelease: isNewerRelease(latestRelease, currentReleaseBaseline) ? {
+        id: String(latestRelease._id),
+        version: latestRelease.version,
+        buildId: latestRelease.buildId || latestRelease.universalProof?.buildId || '',
+        createdAt: latestRelease.createdAt,
+      } : null,
+      lastSuccessfulRun: lastSuccessful ? {
+        id: String(lastSuccessful._id),
+        finishedAt: lastSuccessful.finishedAt,
+        finalUrl: lastSuccessful.finalUrl || payload.finalUrl,
+      } : null,
       runs: runs.map((job) => ({
+        release: releaseMap.has(String(job.releaseId)) ? {
+          id: String(job.releaseId),
+          version: releaseMap.get(String(job.releaseId)).version,
+          buildId: releaseMap.get(String(job.releaseId)).buildId || releaseMap.get(String(job.releaseId)).universalProof?.buildId || '',
+        } : null,
         id: String(job._id),
+        targetKey: job.targetKey || payload.targetKey || '',
         state: canonicalState(job.state),
         stateLabel: stateLabel(job.state),
         type: job.type,
         progress: job.progress || 0,
         error: job.error || '',
         createdAt: job.createdAt,
+        startedAt: job.startedAt,
         finishedAt: job.finishedAt,
+        finalUrl: job.finalUrl || payload.finalUrl,
       })),
+      backups: backups.map((backup) => publicBackup(backup, site)),
     });
   } catch (error) {
     return next(error);
@@ -164,7 +252,7 @@ sitesRouter.post('/', async (req, res, next) => {
     }
     return res.status(201).json({ site: publicSite({ ...document, _id: result.insertedId }), job, boundary: PROVISIONING_BOUNDARY });
   } catch (error) {
-    if (error?.code === 11000) return res.status(409).json({ error: 'קיים כבר אתר עם אותו Host וקוד אתר.' });
+    if (error?.code === 11000) return res.status(409).json({ error: 'קיים כבר אתר שמצביע לאותו יעד פיזי: Host, siteCode, ספריית אתר וספריית משתמשים זהים.' });
     if (error instanceof SiteIdentityError) return res.status(400).json({ error: error.message });
     return next(error);
   }
@@ -173,18 +261,10 @@ sitesRouter.post('/', async (req, res, next) => {
 sitesRouter.patch('/:id', async (req, res, next) => {
   try {
     const db = getDb();
+    if (!ObjectId.isValid(req.params.id)) return res.status(404).json({ error: 'האתר לא נמצא.' });
     const objectId = new ObjectId(req.params.id);
     const existing = await db.collection('sites').findOne({ _id: objectId });
     if (!existing) return res.status(404).json({ error: 'האתר לא נמצא.' });
-
-    const owner = existing.targetKey ? await findActiveJobForTarget(existing.targetKey) : null;
-    if (owner) {
-      return res.status(409).json({
-        error: 'לא ניתן לערוך אתר בזמן שריצת פריסה פעילה. סיים, בטל או החלף את הריצה קודם.',
-        code: 'TARGET_LOCKED',
-        activeJobId: String(owner.job._id),
-      });
-    }
 
     const body = req.body || {};
     const merged = {
@@ -200,6 +280,18 @@ sitesRouter.patch('/:id', async (req, res, next) => {
       storageBackend: existing.storageBackend || 'txt',
     };
     const identity = resolveIdentity(merged);
+    let previousIdentity = null;
+    try { previousIdentity = buildSiteIdentity(existing); } catch { /* Invalid legacy records remain repairable. */ }
+    const previousTargetKey = existing.targetKey || (previousIdentity ? canonicalTargetKey(previousIdentity) : '');
+    const changesIdentity = identityChanged(previousIdentity, identity);
+
+    const metadataPatch = { updatedAt: new Date() };
+    for (const key of ['unit', 'name', 'managerName', 'currentVersion']) {
+      if (key in body) metadataPatch[key] = String(body[key] ?? '').trim() || (key === 'currentVersion' ? null : '');
+    }
+    for (const key of ['firstPublishedAt', 'lastPublishedAt']) {
+      if (key in body) metadataPatch[key] = toDateOrNull(body[key]);
+    }
 
     const patch = {
       host: identity.host,
@@ -214,17 +306,71 @@ sitesRouter.patch('/:id', async (req, res, next) => {
       // Derived values are never editable on their own; they always follow identity.
       targetKey: canonicalTargetKey(identity),
       finalUrl: identity.finalAppUrl,
-      updatedAt: new Date(),
+      ...metadataPatch,
     };
-    for (const key of ['unit', 'name', 'managerName', 'currentVersion']) {
-      if (key in body) patch[key] = String(body[key] ?? '').trim() || (key === 'currentVersion' ? null : '');
-    }
-    for (const key of ['firstPublishedAt', 'lastPublishedAt']) if (key in body) patch[key] = toDateOrNull(body[key]);
 
-    const result = await db.collection('sites').findOneAndUpdate({ _id: objectId }, { $set: patch }, { returnDocument: 'after' });
-    return res.json(publicSite(result));
+    if (!changesIdentity) {
+      const result = await db.collection('sites').findOneAndUpdate(
+        { _id: objectId },
+        { $set: metadataPatch },
+        { returnDocument: 'after' },
+      );
+      return res.json(publicSite(result));
+    }
+
+    // Coordinate with createDeploymentJob in both directions. The edit guard
+    // closes the gap between checking the target lock and changing targetKey;
+    // the job creator re-reads the guarded Site after taking its lock.
+    const editToken = new ObjectId().toString();
+    const staleBefore = new Date(Date.now() - SITE_IDENTITY_EDIT_TTL_MS);
+    const guarded = await db.collection('sites').findOneAndUpdate(
+      {
+        _id: objectId,
+        $or: [
+          { identityEdit: { $exists: false } },
+          { identityEdit: null },
+          { 'identityEdit.acquiredAt': { $lt: staleBefore } },
+        ],
+      },
+      { $set: { identityEdit: { token: editToken, acquiredAt: new Date() } } },
+      { returnDocument: 'after' },
+    );
+    if (!guarded) {
+      return res.status(409).json({
+        error: 'שינוי אחר של זהות היעד כבר מתבצע. נסה שוב בעוד רגע.',
+        code: 'SITE_IDENTITY_EDIT_IN_PROGRESS',
+      });
+    }
+
+    try {
+      const owner = previousTargetKey ? await findActiveJobForTarget(previousTargetKey) : null;
+      if (owner) {
+        return res.status(409).json({
+          error: 'לא ניתן לשנות את זהות היעד בזמן שריצת פריסה פעילה. עדיין ניתן לערוך שם, יחידה ומנהל.',
+          code: 'TARGET_LOCKED',
+          activeJobId: String(owner.job._id),
+        });
+      }
+      const result = await db.collection('sites').findOneAndUpdate(
+        { _id: objectId, 'identityEdit.token': editToken },
+        { $set: patch, $unset: { identityEdit: '' } },
+        { returnDocument: 'after' },
+      );
+      if (!result) {
+        return res.status(409).json({
+          error: 'זהות היעד השתנתה במקביל. טען מחדש ונסה שוב.',
+          code: 'SITE_IDENTITY_EDIT_CONFLICT',
+        });
+      }
+      return res.json(publicSite(result));
+    } finally {
+      await db.collection('sites').updateOne(
+        { _id: objectId, 'identityEdit.token': editToken },
+        { $unset: { identityEdit: '' } },
+      );
+    }
   } catch (error) {
-    if (error?.code === 11000) return res.status(409).json({ error: 'קיים כבר אתר עם אותו Host וקוד אתר.' });
+    if (error?.code === 11000) return res.status(409).json({ error: 'קיים כבר אתר שמצביע לאותו יעד פיזי: Host, siteCode, ספריית אתר וספריית משתמשים זהים.' });
     if (error instanceof SiteIdentityError) return res.status(400).json({ error: error.message });
     return next(error);
   }
@@ -237,6 +383,7 @@ sitesRouter.patch('/:id', async (req, res, next) => {
 sitesRouter.delete('/:id', async (req, res, next) => {
   try {
     const db = getDb();
+    if (!ObjectId.isValid(req.params.id)) return res.status(404).json({ error: 'האתר לא נמצא.' });
     const objectId = new ObjectId(req.params.id);
     const site = await db.collection('sites').findOne({ _id: objectId });
     if (!site) return res.status(404).json({ error: 'האתר לא נמצא.' });
@@ -258,9 +405,13 @@ sitesRouter.delete('/:id', async (req, res, next) => {
       });
     }
 
-    await db.collection('deployment_jobs').deleteMany({ siteId: objectId });
     await db.collection('sites').deleteOne({ _id: objectId });
-    return res.json({ ok: true, deletedSharePointData: false });
+    return res.json({
+      ok: true,
+      deletedSharePointData: false,
+      preservedRunHistory: true,
+      preservedBackupMetadata: true,
+    });
   } catch (error) {
     return next(error);
   }
@@ -268,6 +419,7 @@ sitesRouter.delete('/:id', async (req, res, next) => {
 
 sitesRouter.post('/:id/deploy', async (req, res, next) => {
   try {
+    if (!ObjectId.isValid(req.params.id)) return res.status(404).json({ error: 'האתר לא נמצא.' });
     const site = await getDb().collection('sites').findOne({ _id: new ObjectId(req.params.id) });
     if (!site) return res.status(404).json({ error: 'האתר לא נמצא.' });
     if (!req.body?.releaseId) return res.status(400).json({ error: 'יש לבחור ריליס.' });

@@ -56,7 +56,51 @@ function createFakeApi(identity, release) {
     completed: null,
     failed: null,
     leaseRejections: 0,
+    backup: null,
   };
+
+  const runtimeConfig = {
+    schemaVersion: 2,
+    storageBackend: identity.storageBackend,
+    host: identity.host,
+    siteCode: identity.siteCode,
+    siteDbFolder: identity.siteDbFolder,
+    siteDbRoot: identity.siteDbRoot,
+    usersDbFolder: identity.usersDbFolder,
+    usersDbRoot: identity.usersDbRoot,
+    siteAssetsFolder: identity.siteAssetsFolder,
+    siteAssetsRoot: identity.siteAssetsRoot,
+    widgetsDbTarget: identity.widgetsDbTarget,
+    targetDistPath: identity.targetDistPath,
+    finalAppUrl: identity.finalAppUrl,
+    deploymentGeneratedBy: 'site-release-manager',
+    deploymentJobId: 'job-1',
+    releaseId: 'release-1',
+    releaseVersion: '1.4.0',
+  };
+  const deploymentMetadata = {
+    kind: 'sitebuilder-deployment',
+    schemaVersion: 3,
+    generatedBy: 'site-release-manager',
+    storageBackend: identity.storageBackend,
+    host: identity.host,
+    siteCode: identity.siteCode,
+    siteDbRoot: identity.siteDbRoot,
+    usersDbRoot: identity.usersDbRoot,
+    siteAssetsRoot: identity.siteAssetsRoot,
+    targetDistPath: identity.targetDistPath,
+    finalAppUrl: identity.finalAppUrl,
+    deploymentJobId: 'job-1',
+    releaseId: 'release-1',
+    releaseVersion: '1.4.0',
+  };
+  const bytesByPath = new Map(release.bytesByPath);
+  bytesByPath.set('sitebuilder-runtime-config.json', encoder.encode(JSON.stringify(runtimeConfig)));
+  bytesByPath.set('sitebuilder-deployment.json', encoder.encode(JSON.stringify(deploymentMetadata)));
+  const deploymentFiles = release.files.map((file) => {
+    const bytes = bytesByPath.get(file.path);
+    return { ...file, size: bytes.length, sha256: sha256Hex(bytes) };
+  });
 
   const descriptor = {
     job: { id: 'job-1' },
@@ -70,7 +114,14 @@ function createFakeApi(identity, release) {
     folders: requiredFolders(identity, ['assets']),
     seedFiles: buildTxtSeedPlan(identity),
     permissionsMarker: `${identity.usersDbRoot}/.permissions-setup.json`,
-    manifest: { files: release.files, uploadOrder: release.uploadOrder },
+    runtimeVerification: {
+      runtimeConfigFile: 'sitebuilder-runtime-config.json',
+      deploymentMetadataFile: 'sitebuilder-deployment.json',
+      runtimeConfigUrl: `${identity.siteBaseUrl}/sitebuilder-runtime-config.json`,
+      deploymentMetadataUrl: `${identity.siteBaseUrl}/sitebuilder-deployment.json`,
+      expected: runtimeConfig,
+    },
+    manifest: { files: deploymentFiles, uploadOrder: release.uploadOrder },
     resume: { resumeFrom: STAGE.BROWSER_ACTIVATE, completedStages: [], verifiedAssets: [] },
   };
 
@@ -103,6 +154,15 @@ function createFakeApi(identity, release) {
     if (path.endsWith('/event')) { state.events.push(body); return { ok: true }; }
     if (path.endsWith('/progress')) { state.progress.push(body); return { ok: true }; }
     if (path.endsWith('/verified-asset')) { state.verifiedAssets.push(...body.paths); return { ok: true }; }
+    if (path.endsWith('/backup/start')) {
+      if (state.backup && state.backup.outcome !== 'IN_PROGRESS') return { reused: true, backup: state.backup };
+      state.backup = state.backup || { outcome: 'IN_PROGRESS' };
+      return { reused: false, backup: state.backup };
+    }
+    if (path.endsWith('/backup/finish')) {
+      state.backup = body;
+      return { ok: true, backup: body };
+    }
     if (path.endsWith('/heartbeat')) return { ok: true };
     if (path.endsWith('/release-lease')) { state.lease = null; return { ok: true }; }
     if (path.endsWith('/complete')) { state.completed = body; return { ok: true }; }
@@ -110,7 +170,7 @@ function createFakeApi(identity, release) {
     return descriptor;
   }
 
-  return { state, descriptor, apiCall };
+  return { state, descriptor, apiCall, bytesByPath };
 }
 
 function pipelineOptions(farm, api, release, overrides = {}) {
@@ -122,7 +182,7 @@ function pipelineOptions(farm, api, release, overrides = {}) {
     createLibraryExact: () => farm.createLibraryExact,
     hostname: 'portal.army.idf',
     clientId: 'worker-a',
-    downloadFile: async (file) => release.bytesByPath.get(file.path),
+    downloadFile: async (file) => api.bytesByPath.get(file.path),
     setTimer: null,
     clearTimer: null,
     retry: FAST_RETRY,
@@ -146,6 +206,8 @@ test('a FRESH logical site completes in one automatic run despite eventual consi
 
   assert.equal(result.ok, true);
   assert.equal(result.finalUrl, FRESH.finalAppUrl);
+  assert.equal(result.backup.outcome, 'SKIPPED_FRESH_TARGET');
+  assert.equal(result.runtimeConfig.ok, true);
   assert.ok(api.state.completed, 'the run must report completion');
   assert.equal(api.state.failed, null);
 
@@ -154,9 +216,9 @@ test('a FRESH logical site completes in one automatic run despite eventual consi
   for (const expected of [
     STAGE.BROWSER_ACTIVATE, STAGE.TARGET_VALIDATE, STAGE.SHAREPOINT_CONTEXTINFO,
     STAGE.LIBRARY_DISCOVERY, STAGE.CREATE_LIBRARIES, STAGE.LIBRARY_STABILIZE,
-    STAGE.CREATE_FOLDERS, STAGE.FOLDER_STABILIZE, STAGE.CREATE_TXT_SEEDS,
+    STAGE.PRE_DEPLOY_BACKUP, STAGE.CREATE_FOLDERS, STAGE.FOLDER_STABILIZE, STAGE.CREATE_TXT_SEEDS,
     STAGE.FINAL_ASSET_COPY, STAGE.FINAL_ASSET_VERIFY, STAGE.FINAL_INDEX_COMMIT,
-    STAGE.FINAL_INDEX_VERIFY, STAGE.FINAL_APP_SMOKE,
+    STAGE.FINAL_RUNTIME_CONFIG_VERIFY, STAGE.FINAL_INDEX_VERIFY, STAGE.FINAL_APP_SMOKE,
   ]) {
     assert.ok(stages.includes(expected), `missing successful stage ${expected}`);
   }
@@ -169,6 +231,7 @@ test('a FRESH logical site completes in one automatic run despite eventual consi
 
   // index.html is the last thing written.
   assert.equal(farm.state.uploadSequence.at(-1), `${FRESH.targetDistPath}/index.html`);
+  assert.ok(farm.state.uploadSequence.includes(`${FRESH.targetDistPath}/sitebuilder-runtime-config.json`));
   // The run genuinely waited through the not-ready window.
   assert.ok(api.state.events.some((event) => /ממתין/.test(event.message || '')), 'the run should have waited through a not-ready window');
 });
@@ -193,6 +256,7 @@ test('an EXISTING site update preserves TXT data and does not recreate libraries
 
   const result = await runDeploymentPipeline(pipelineOptions(farm, api, release));
   assert.equal(result.ok, true);
+  assert.equal(result.backup.outcome, 'PARTIAL');
 
   // Protected path: existing TXT content is byte-identical afterwards.
   assert.equal(Buffer.from(farm.state.files.get(`${EXISTING.siteAssetsRoot}/users_data.txt`).bytes).toString('utf8'), realUsers);
@@ -205,6 +269,9 @@ test('an EXISTING site update preserves TXT data and does not recreate libraries
   for (const preservedPath of [`${EXISTING.siteAssetsRoot}/users_data.txt`, `${EXISTING.siteAssetsRoot}/theme_data.txt`]) {
     assert.equal(farm.state.uploadSequence.includes(preservedPath), false, `existing TXT was overwritten: ${preservedPath}`);
   }
+  const firstBackupWrite = farm.state.uploadSequence.findIndex((entry) => entry.includes('/Backups/backup-'));
+  const firstReleaseWrite = farm.state.uploadSequence.findIndex((entry) => entry.startsWith(`${EXISTING.targetDistPath}/`));
+  assert.ok(firstBackupWrite >= 0 && firstBackupWrite < firstReleaseWrite, 'backup must run before release mutation');
 });
 
 test('deploying target A then target B from the same release leaks no identity', async () => {
@@ -222,6 +289,13 @@ test('deploying target A then target B from the same release leaks no identity',
   assert.ok(farm.state.files.has(`${EXISTING.targetDistPath}/index.html`));
   assert.ok(farm.state.files.has(`${FRESH.targetDistPath}/index.html`));
   assert.notEqual(EXISTING.targetDistPath, FRESH.targetDistPath);
+  const runtimeA = JSON.parse(Buffer.from(farm.state.files.get(`${EXISTING.targetDistPath}/sitebuilder-runtime-config.json`).bytes).toString('utf8'));
+  const runtimeB = JSON.parse(Buffer.from(farm.state.files.get(`${FRESH.targetDistPath}/sitebuilder-runtime-config.json`).bytes).toString('utf8'));
+  assert.equal(runtimeA.siteDbFolder, EXISTING.siteDbFolder);
+  assert.equal(runtimeA.usersDbFolder, EXISTING.usersDbFolder);
+  assert.equal(runtimeB.siteDbFolder, FRESH.siteDbFolder);
+  assert.equal(runtimeB.usersDbFolder, FRESH.usersDbFolder);
+  assert.notEqual(runtimeA.targetDistPath, runtimeB.targetDistPath);
 });
 
 test('a second worker without the lease cannot deploy the same job', async () => {
@@ -254,7 +328,7 @@ test('a run resumes without re-uploading assets already verified at the target',
   for (const folder of requiredFolders(FRESH, ['assets'])) farm.addFolder(folder);
   const resumedPaths = release.uploadOrder.filter((filePath) => filePath !== 'index.html');
   for (const filePath of resumedPaths) {
-    farm.state.files.set(`${FRESH.targetDistPath}/${filePath}`, { bytes: release.bytesByPath.get(filePath), contentType: 'application/octet-stream' });
+    farm.state.files.set(`${FRESH.targetDistPath}/${filePath}`, { bytes: api.bytesByPath.get(filePath), contentType: 'application/octet-stream' });
   }
   api.descriptor.resume = { resumeFrom: STAGE.FINAL_ASSET_COPY, completedStages: [STAGE.CREATE_LIBRARIES, STAGE.CREATE_FOLDERS, STAGE.CREATE_TXT_SEEDS], verifiedAssets: resumedPaths };
 
@@ -320,4 +394,117 @@ test('the permissions boundary is reported, never silently assumed', async () =>
   assert.equal(permissions[0].details.managedByReleaseManager, false);
   // Release Manager must not have written the marker itself.
   assert.equal(farm.state.files.has(`${EXISTING.usersDbRoot}/.permissions-setup.json`), false);
+});
+
+test('missing, malformed or wrong-target direct Runtime Config prevents COMPLETE and index activation', async (t) => {
+  const scenarios = [
+    {
+      name: 'missing',
+      response: () => ({
+        ok: false,
+        status: 404,
+        headers: { get: () => 'application/json' },
+        text: async () => JSON.stringify({ error: { message: { value: 'File Not Found.' } } }),
+      }),
+    },
+    {
+      name: 'malformed',
+      response: () => ({
+        ok: true,
+        status: 200,
+        headers: { get: () => 'application/json' },
+        text: async () => '{not-json',
+      }),
+    },
+    {
+      name: 'wrong-target',
+      response: (expected) => ({
+        ok: true,
+        status: 200,
+        headers: { get: () => 'application/json' },
+        text: async () => JSON.stringify({
+          ...expected,
+          siteDbFolder: 'siteDBOther',
+          siteDbRoot: '/sites/schedule/siteDBOther',
+          targetDistPath: '/sites/schedule/siteDBOther/dist',
+          finalAppUrl: 'https://portal.army.idf/sites/schedule/siteDBOther/dist/index.html',
+        }),
+      }),
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async () => {
+      const farm = createFakeSharePoint();
+      farm.state.folders.set(FRESH.siteRoot, { listItemId: 1 });
+      const release = releaseFiles();
+      const api = createFakeApi(FRESH, release);
+      const runtimeUrl = api.descriptor.runtimeVerification.runtimeConfigUrl;
+      const fetchImpl = async (url, init) => {
+        const clean = String(url).split('?')[0];
+        if (clean === runtimeUrl && !clean.includes('/_api/')) {
+          return scenario.response(api.descriptor.runtimeVerification.expected);
+        }
+        return farm.fetchImpl(url, init);
+      };
+
+      await assert.rejects(
+        runDeploymentPipeline(pipelineOptions({ ...farm, fetchImpl }, api, release)),
+        () => true,
+      );
+      assert.equal(api.state.completed, null);
+      assert.equal(api.state.failed.stage, STAGE.FINAL_RUNTIME_CONFIG_VERIFY);
+      assert.equal(farm.state.uploadSequence.includes(`${FRESH.targetDistPath}/index.html`), false);
+    });
+  }
+});
+
+test('a total pre-deploy backup failure is a warning and deployment still succeeds', async () => {
+  const farm = createFakeSharePoint();
+  farm.state.folders.set(EXISTING.siteRoot, { listItemId: 1 });
+  for (const library of requiredLibraries(EXISTING)) farm.addLibrary(library.title, library.rootFolder);
+  for (const folder of requiredFolders(EXISTING, ['assets'])) farm.addFolder(folder);
+  for (const source of buildTxtSeedPlan(EXISTING)) farm.addFile(source.path, `real-${source.fileName}`);
+  const release = releaseFiles();
+  const api = createFakeApi(EXISTING, release);
+  const fetchImpl = async (url, init) => {
+    if (String(url).includes('/Backups') && String(init?.method || 'GET').toUpperCase() === 'POST') {
+      return {
+        ok: false,
+        status: 500,
+        headers: { get: () => 'application/json' },
+        text: async () => JSON.stringify({ error: { message: { value: 'Temporary SharePoint error.' } } }),
+      };
+    }
+    return farm.fetchImpl(url, init);
+  };
+
+  const result = await runDeploymentPipeline(pipelineOptions({ ...farm, fetchImpl }, api, release));
+
+  assert.equal(result.ok, true);
+  assert.equal(result.backup.outcome, 'FAILED');
+  assert.ok(api.state.events.some((event) => event.stage === STAGE.PRE_DEPLOY_BACKUP
+    && event.status === 'warning'
+    && event.details?.backupOutcome === 'FAILED'));
+  assert.ok(api.state.completed);
+});
+
+test('Mongo targets skip the TXT backup strategy without creating a backup folder', async () => {
+  const identity = buildSiteIdentity({
+    host: 'portal.army.idf',
+    siteCode: 'schedule',
+    siteDbFolder: 'siteDBMongo',
+    usersDbFolder: 'siteUsersDbMongo',
+    storageBackend: 'mongo',
+  });
+  const farm = createFakeSharePoint();
+  farm.state.folders.set(identity.siteRoot, { listItemId: 1 });
+  const release = releaseFiles();
+  const api = createFakeApi(identity, release);
+
+  const result = await runDeploymentPipeline(pipelineOptions(farm, api, release));
+
+  assert.equal(result.ok, true);
+  assert.equal(result.backup.outcome, 'SKIPPED_UNSUPPORTED_BACKEND');
+  assert.equal([...farm.state.folders.keys()].some((folder) => folder.includes('/Backups/backup-')), false);
 });

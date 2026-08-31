@@ -26,4 +26,13 @@ export default defineConfig({
       '/api': 'http://localhost:4300',
     },
   },
+  test: {
+    environment: 'jsdom',
+    environmentOptions: {
+      jsdom: {
+        url: 'https://portal.army.idf/sites/schedule/siteDB/dist/index.html',
+      },
+    },
+    setupFiles: ['./test/setup.js'],
+  },
 });

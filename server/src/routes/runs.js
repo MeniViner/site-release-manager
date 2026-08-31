@@ -58,7 +58,16 @@ function runSummary(job, site, release) {
     finishedAt: job.finishedAt,
     updatedAt: job.updatedAt,
     durationMs: job.finishedAt && job.startedAt ? new Date(job.finishedAt) - new Date(job.startedAt) : null,
-    site: site ? { id: String(site._id), name: site.name, unit: site.unit, host: site.host, siteCode: site.siteCode, finalUrl: site.finalUrl } : null,
+    site: site ? {
+      id: String(site._id),
+      name: site.name,
+      unit: site.unit,
+      host: site.host,
+      siteCode: site.siteCode,
+      siteDbFolder: site.siteDbFolder,
+      usersDbFolder: site.usersDbFolder,
+      finalUrl: job.finalUrl || site.finalUrl,
+    } : null,
     release: release ? { id: String(release._id), version: release.version } : null,
     eventCount: events.length,
     stageSummary: summarizeStages(events, state),
@@ -103,7 +112,13 @@ runsRouter.get('/:id', async (req, res, next) => {
       ...runSummary(job, site, release),
       runEvents: events,
       logs: job.logs || [],
-      site: site ? { ...site, id: String(site._id), _id: undefined } : null,
+      site: site ? {
+        ...site,
+        finalUrl: job.finalUrl || site.finalUrl,
+        id: String(site._id),
+        _id: undefined,
+        identityEdit: undefined,
+      } : null,
       release: release ? { ...release, id: String(release._id), _id: undefined, releaseRoot: undefined, distDir: undefined } : null,
     });
   } catch (error) {

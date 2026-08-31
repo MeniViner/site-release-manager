@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { CheckCircle2, CircleAlert, LoaderCircle, Users } from 'lucide-react';
+import { CheckCircle2, CircleAlert, LoaderCircle, Users, X } from 'lucide-react';
 import { api } from './api.js';
 import { deploySharePointJob } from './sharepointDeploymentEngine.js';
 
@@ -18,11 +18,13 @@ import { deploySharePointJob } from './sharepointDeploymentEngine.js';
 const RESUMABLE = ['READY_FOR_SHAREPOINT', 'WAITING_FOR_BROWSER', 'DEPLOYING', 'PAUSED'];
 
 const inFlight = new Set();
+const notificationKey = (run) => `${run.id}:${Number(run.attempt || 1)}`;
 
 export default function SharePointDeploymentCoordinator() {
   const [status, setStatus] = useState(null);
   const timerRef = useRef(null);
   const busyRef = useRef(false);
+  const dismissedRef = useRef(new Set());
 
   useEffect(() => {
     let cancelled = false;
@@ -34,12 +36,14 @@ export default function SharePointDeploymentCoordinator() {
       try {
         const runs = await api.runs();
         const candidate = runs.find((run) => RESUMABLE.includes(run.state) && run.site?.host?.toLowerCase() === host);
-        if (!candidate || inFlight.has(candidate.id)) return;
+        const candidateNotificationKey = candidate ? notificationKey(candidate) : '';
+        if (!candidate || inFlight.has(candidate.id) || dismissedRef.current.has(candidateNotificationKey)) return;
 
         busyRef.current = true;
         inFlight.add(candidate.id);
         setStatus({
           jobId: candidate.id,
+          notificationKey: candidateNotificationKey,
           progress: Number(candidate.progress || 35),
           stage: candidate.currentStage || 'BROWSER_ACTIVATE',
           message: candidate.state === 'PAUSED'
@@ -51,22 +55,25 @@ export default function SharePointDeploymentCoordinator() {
         try {
           const result = await deploySharePointJob(candidate.id, {
             onProgress(next) {
-              if (!cancelled) setStatus((previous) => ({ ...previous, jobId: candidate.id, ...next, error: '' }));
+              if (!cancelled && !dismissedRef.current.has(candidateNotificationKey)) {
+                setStatus((previous) => ({ ...previous, jobId: candidate.id, ...next, error: '' }));
+              }
             },
           });
-          if (!cancelled) {
-            setStatus({ jobId: candidate.id, progress: 100, stage: 'COMPLETE', message: 'הפריסה הושלמה בהצלחה.', finalUrl: result.finalUrl, done: true, error: '' });
+          if (!cancelled && !dismissedRef.current.has(candidateNotificationKey)) {
+            setStatus({ jobId: candidate.id, notificationKey: candidateNotificationKey, progress: 100, stage: 'COMPLETE', message: 'הפריסה הושלמה בהצלחה.', finalUrl: result.finalUrl, done: true, error: '' });
           }
         } catch (error) {
-          if (cancelled) return;
+          if (cancelled || dismissedRef.current.has(candidateNotificationKey)) return;
           // Losing the lease is not a deployment failure: another tab owns it.
           if (error.apiCode === 'LEASE_HELD' || error.apiCode === 'LEASE_RACE' || error.apiCode === 'LEASE_LOST') {
-            setStatus({ jobId: candidate.id, progress: Number(candidate.progress || 0), stage: candidate.currentStage || '', message: 'הפריסה מתבצעת בלשונית אחרת של Release Manager.', foreign: true, error: '' });
+            setStatus({ jobId: candidate.id, notificationKey: candidateNotificationKey, progress: Number(candidate.progress || 0), stage: candidate.currentStage || '', message: 'הפריסה מתבצעת בלשונית אחרת של Release Manager.', foreign: true, error: '' });
             return;
           }
           if (error.apiCode === 'JOB_SETTLED') { setStatus(null); return; }
           setStatus({
             jobId: candidate.id,
+            notificationKey: candidateNotificationKey,
             progress: 100,
             stage: error.failureInfo?.stage || 'FAILED',
             message: 'פריסת SharePoint נכשלה.',
@@ -103,7 +110,13 @@ export default function SharePointDeploymentCoordinator() {
       : status.foreign ? 'הפריסה רצה בלשונית אחרת'
         : 'פריסת SharePoint רצה ברקע';
 
-  return <div className={`global-deployment-banner ${status.failed ? 'failed' : status.done ? 'done' : ''}`}>
+  const dismiss = () => {
+    if (status.notificationKey) dismissedRef.current.add(status.notificationKey);
+    setStatus(null);
+  };
+
+  return <div className={`global-deployment-banner ${status.failed ? 'failed' : status.done ? 'done' : ''}`} role={status.failed ? 'alert' : 'status'}>
+    <button className="global-deployment-close" type="button" aria-label="סגור התראת פריסה" onClick={dismiss}><X size={15} /></button>
     <div className="global-deployment-icon">{icon}</div>
     <div className="global-deployment-copy">
       <strong>{title}</strong>

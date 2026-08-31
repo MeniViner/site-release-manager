@@ -312,4 +312,11 @@ export const api = {
   cancelRun: (id, reason = '') => request(`/api/runs/${id}/cancel`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason }) }),
   retryRun: (id) => request(`/api/runs/${id}/retry`, { method: 'POST' }),
   activeRunForTarget: (targetKey) => request(`/api/runs/target/${encodeURIComponent(targetKey)}/active`),
+  backups: ({ siteId = '', backend = '', outcome = '' } = {}) => {
+    const query = new URLSearchParams();
+    if (siteId) query.set('siteId', siteId);
+    if (backend) query.set('backend', backend);
+    if (outcome) query.set('outcome', outcome);
+    return request(`/api/backups${query.size ? `?${query}` : ''}`);
+  },
 };
