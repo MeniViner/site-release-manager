@@ -15,11 +15,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { collectFiles, ensureDirectory, hashFile, removeDirectory, safeResolve } from '../utils/files.js';
 import {
-  MANIFEST_FILE, RUNTIME_CONFIG_FILE, DEPLOYMENT_METADATA_FILE,
+  MANIFEST_FILE, RUNTIME_CONFIG_FILE, DEPLOYMENT_METADATA_FILE, RUNTIME_BOOTSTRAP_FILE,
   TARGET_OVERLAY_FILES, CURRENT_MANIFEST_SCHEMA_VERSION, MANIFEST_KIND,
   UNIVERSAL_BUILD_MODE, UNIVERSAL_ARTIFACT_KIND, ENTRY_POINT, COMMIT_FILE,
   parseIndexReferencesFromHtml,
 } from '../../../shared/universalManifest.js';
+import {
+  buildRuntimeBootstrapSource, injectRuntimeBootstrapIntoIndexHtml,
+  findFirstModuleScriptIndex, findFirstForeignScriptIndex,
+  findRuntimeBootstrapIndex, countRuntimeBootstrapReferences,
+} from '../../../shared/runtimeBootstrap.js';
 
 /** Files regenerated per target. None of them may survive from the source artifact. */
 export const REGENERATED_FILES = Object.freeze([...TARGET_OVERLAY_FILES, MANIFEST_FILE]);
@@ -78,6 +83,11 @@ export function createStaging({ releaseDistDir, stagingRoot }) {
 /**
  * Write this target's runtime config and deployment metadata into staging.
  * `identity` comes from buildSiteIdentity, so nothing here re-derives a path.
+ *
+ * The same runtime config is also emitted as `sitebuilder-runtime-bootstrap.js`,
+ * because this farm does not reliably serve `.json` through a direct Document
+ * Library URL. The JSON files stay authoritative and are still verified, just
+ * not through a browser `.json` request.
  */
 export function writeTargetOverlay({ distDir, identity, release, jobId, deployedAt, backendApiUrl = '' }) {
   const runtimeConfig = {
@@ -138,7 +148,70 @@ export function writeTargetOverlay({ distDir, identity, release, jobId, deployed
 
   writeJson(path.join(distDir, RUNTIME_CONFIG_FILE), runtimeConfig);
   writeJson(path.join(distDir, DEPLOYMENT_METADATA_FILE), deploymentMetadata);
-  return { runtimeConfig, deploymentMetadata };
+
+  // Browser-loadable copy of the EXACT runtime config object written above.
+  // No secret is added here: it carries the same fields as the JSON overlay.
+  const runtimeBootstrapSource = buildRuntimeBootstrapSource(runtimeConfig);
+  const runtimeBootstrapPath = path.join(distDir, RUNTIME_BOOTSTRAP_FILE);
+  ensureDirectory(path.dirname(runtimeBootstrapPath));
+  fs.writeFileSync(runtimeBootstrapPath, runtimeBootstrapSource, 'utf8');
+
+  return {
+    runtimeConfig,
+    deploymentMetadata,
+    runtimeBootstrapFile: RUNTIME_BOOTSTRAP_FILE,
+    runtimeBootstrapBytes: Buffer.byteLength(runtimeBootstrapSource, 'utf8'),
+  };
+}
+
+/**
+ * Reference the generated bootstrap from the staged index.html.
+ *
+ * Runs AFTER the overlay is generated and BEFORE the manifest is regenerated,
+ * so the manifest describes the modified index.html and lists the bootstrap in
+ * `indexReferences`. The transformation is idempotent and never depends on a
+ * hashed bundle filename.
+ */
+export function injectRuntimeBootstrap({ distDir }) {
+  const indexPath = path.join(distDir, ENTRY_POINT);
+  if (!fs.existsSync(indexPath)) throw new StagingError(`Staging is missing ${ENTRY_POINT}.`);
+  if (!fs.existsSync(path.join(distDir, RUNTIME_BOOTSTRAP_FILE))) {
+    throw new StagingError(`${RUNTIME_BOOTSTRAP_FILE} must be generated before it is injected into ${ENTRY_POINT}.`);
+  }
+
+  const original = fs.readFileSync(indexPath, 'utf8');
+  const result = injectRuntimeBootstrapIntoIndexHtml(original);
+  if (result.injected) fs.writeFileSync(indexPath, result.html, 'utf8');
+
+  const finalHtml = fs.readFileSync(indexPath, 'utf8');
+  const bootstrapIndex = findRuntimeBootstrapIndex(finalHtml);
+  const moduleIndex = findFirstModuleScriptIndex(finalHtml);
+  // Every other script, not only `type="module"`: whichever script runs first
+  // is the one that could read the global before the bootstrap defines it.
+  const firstScriptIndex = findFirstForeignScriptIndex(finalHtml);
+  if (bootstrapIndex < 0) {
+    throw new StagingError(`${ENTRY_POINT} does not reference ${RUNTIME_BOOTSTRAP_FILE} after injection.`);
+  }
+  if (firstScriptIndex >= 0 && bootstrapIndex > firstScriptIndex) {
+    throw new StagingError(`${RUNTIME_BOOTSTRAP_FILE} must load before every other script in ${ENTRY_POINT}.`);
+  }
+  // Counted with comment awareness, so a tag hidden inside `<!-- -->` is not
+  // mistaken for a live reference.
+  if (countRuntimeBootstrapReferences(finalHtml) !== 1) {
+    throw new StagingError(`${ENTRY_POINT} must reference ${RUNTIME_BOOTSTRAP_FILE} exactly once.`);
+  }
+  if (!parseIndexReferencesFromHtml(finalHtml).includes(RUNTIME_BOOTSTRAP_FILE)) {
+    throw new StagingError(`${RUNTIME_BOOTSTRAP_FILE} is not a resolvable reference in ${ENTRY_POINT}.`);
+  }
+
+  return {
+    injected: result.injected,
+    anchor: result.anchor,
+    bootstrapIndex,
+    moduleIndex,
+    firstScriptIndex,
+    indexBytes: Buffer.byteLength(finalHtml, 'utf8'),
+  };
 }
 
 /**
@@ -162,6 +235,7 @@ export function regenerateManifest({ distDir, release, identity, jobId, sourcePr
     requiresRuntimeConfig: true,
     preservesRuntimeConfig: true,
     runtimeConfigFiles: [RUNTIME_CONFIG_FILE, DEPLOYMENT_METADATA_FILE],
+    runtimeBootstrapFile: RUNTIME_BOOTSTRAP_FILE,
     manifestFile: MANIFEST_FILE,
     entryPoint: ENTRY_POINT,
     commitFile: COMMIT_FILE,
@@ -211,6 +285,11 @@ export function verifyStaging({ distDir, manifest }) {
   if (!declared.has(ENTRY_POINT)) problems.push(`staging manifest is missing ${ENTRY_POINT}`);
   for (const overlay of TARGET_OVERLAY_FILES) {
     if (!declared.has(overlay)) problems.push(`staging manifest is missing the generated overlay ${overlay}`);
+  }
+  // The manifest must describe the MODIFIED index.html, so the bootstrap has to
+  // be one of its declared references.
+  if (!(manifest.indexReferences || []).includes(RUNTIME_BOOTSTRAP_FILE)) {
+    problems.push(`the regenerated manifest does not list ${RUNTIME_BOOTSTRAP_FILE} in indexReferences`);
   }
 
   if (problems.length) {

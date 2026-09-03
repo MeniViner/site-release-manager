@@ -437,18 +437,20 @@ export async function runDeploymentPipeline(options) {
         await reportEvent(STAGE.FINAL_ASSET_VERIFY, 'success', 'כל הקבצים שאינם index.html אומתו ביעד לפי גודל ו-SHA-256.');
         stage = STAGE.FINAL_RUNTIME_CONFIG_VERIFY;
         await reportProgress(90, 'מאמת Runtime Config סופי', descriptor.runtimeVerification.runtimeConfigFile, stage);
-        await reportEvent(stage, 'started', 'קורא את Runtime Config ו-Deployment Metadata מהכתובות המדויקות שהאפליקציה תבקש.');
-        runtimeVerification = await verifyFinalRuntimeConfig(fetchImpl, descriptor.runtimeVerification, {
+        await reportEvent(stage, 'started',
+          'קורא את Runtime Config ו-Deployment Metadata דרך SharePoint REST ($value), ואת קובץ ה-Bootstrap דרך הכתובת הישירה שהדפדפן יבקש.');
+        runtimeVerification = await verifyFinalRuntimeConfig(client, fetchImpl, descriptor.runtimeVerification, {
           retry,
           signal: effectiveSignal,
         });
-        await reportEvent(stage, 'success', 'Runtime Config הסופי קריא, תקין ושייך לריצה וליעד הלוגי הנוכחיים.', {
-          target: runtimeVerification.runtimeConfigUrl,
-          method: 'GET',
-          url: runtimeVerification.runtimeConfigUrl,
-          httpStatus: runtimeVerification.runtimeStatus,
-          details: runtimeVerification,
-        });
+        await reportEvent(stage, 'success',
+          'ה-JSON אומת דרך SharePoint REST, וקובץ ה-Bootstrap של הדפדפן אומת דרך הכתובת הישירה הסופית; הכול שייך לריצה וליעד הלוגי הנוכחיים.', {
+            target: runtimeVerification.runtimeBootstrapUrl,
+            method: 'GET',
+            url: runtimeVerification.runtimeBootstrapUrl,
+            httpStatus: runtimeVerification.bootstrapStatus,
+            details: runtimeVerification,
+          });
       },
     });
     await flushVerified();
@@ -468,12 +470,13 @@ export async function runDeploymentPipeline(options) {
       runtimeVerification,
     });
     if (!smoke.ok) {
-      const error = new Error('בדיקת ה-Smoke נכשלה: האפליקציה הסופית או Runtime Config שלה אינם ניתנים לטעינה.');
+      const error = new Error('בדיקת ה-Smoke נכשלה: האפליקציה הסופית, ה-Runtime Bootstrap שלה או Runtime Config שלה אינם ניתנים לטעינה.');
       error.stage = stage;
       error.errorClass = SP_ERROR.PERMANENT_FAILURE;
+      error.details = smoke;
       throw error;
     }
-    await reportEvent(stage, 'success', 'STATIC PASS — index.html הסופי נטען ומכיל את ההפניות הצפויות.', { details: smoke });
+    await reportEvent(stage, 'success', 'STATIC PASS — index.html הסופי נטען, מכיל את ההפניות הצפויות וטוען את Runtime Bootstrap שאומת.', { details: smoke });
 
     // --- COMPLETE ----------------------------------------------------------
     stage = STAGE.COMPLETE;

@@ -14,7 +14,7 @@ import path from 'node:path';
 
 import { validateUniversalArtifact, readUniversalProof, verifyStoredReleaseIntegrity, ReleaseValidationError, findTargetIdentityLeaks } from '../src/services/releaseValidation.js';
 import { collectFiles } from '../src/utils/files.js';
-import { MANIFEST_FILE, RUNTIME_CONFIG_FILE } from '../../shared/universalManifest.js';
+import { MANIFEST_FILE, RUNTIME_CONFIG_FILE, RUNTIME_BOOTSTRAP_FILE } from '../../shared/universalManifest.js';
 
 function artifact({ withManifest = true, manifestOverrides = {}, bundleBody = 'console.log("universal")', extraFiles = {} } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'srm-validate-'));
@@ -137,6 +137,18 @@ test('an artifact carrying a per-target overlay is rejected', () => {
   try {
     assert.throws(() => validateUniversalArtifact(root), (error) => {
       assert.ok(error.errors.some((problem) => problem.includes(RUNTIME_CONFIG_FILE)));
+      return true;
+    });
+  } finally { cleanup(root); }
+});
+
+test('an artifact carrying a stale runtime bootstrap is rejected', () => {
+  // A bootstrap belongs to exactly one target. If one ever leaked into a source
+  // artifact it would silently pin every future deployment to the wrong site.
+  const root = artifact({ extraFiles: { [RUNTIME_BOOTSTRAP_FILE]: 'window.SITE_BUILDER_RUNTIME_CONFIG={};' } });
+  try {
+    assert.throws(() => validateUniversalArtifact(root), (error) => {
+      assert.ok(error.errors.some((problem) => problem.includes(RUNTIME_BOOTSTRAP_FILE)));
       return true;
     });
   } finally { cleanup(root); }

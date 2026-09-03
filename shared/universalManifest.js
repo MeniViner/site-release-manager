@@ -13,8 +13,23 @@ export const MANIFEST_FILE = 'sharepoint-deploy-manifest.json';
 export const RUNTIME_CONFIG_FILE = 'sitebuilder-runtime-config.json';
 export const DEPLOYMENT_METADATA_FILE = 'sitebuilder-deployment.json';
 
+/**
+ * Browser-loadable form of the runtime config.
+ *
+ * The closed farm serves `.json` from a Document Library URL as HTML, so the
+ * application can never read its identity through a direct `.json` request.
+ * This JavaScript file carries the exact same generated runtime config and
+ * populates the globals Site Builder's `loadEmbeddedRuntimeConfig()` already
+ * checks. It is per-target, exactly like the two JSON overlays.
+ */
+export const RUNTIME_BOOTSTRAP_FILE = 'sitebuilder-runtime-bootstrap.js';
+
 /** Files Release Manager generates per target. They must never ship inside a release. */
-export const TARGET_OVERLAY_FILES = Object.freeze([RUNTIME_CONFIG_FILE, DEPLOYMENT_METADATA_FILE]);
+export const TARGET_OVERLAY_FILES = Object.freeze([
+  RUNTIME_CONFIG_FILE,
+  DEPLOYMENT_METADATA_FILE,
+  RUNTIME_BOOTSTRAP_FILE,
+]);
 
 export const MANIFEST_KIND = 'sitebuilder-release-manifest';
 export const UNIVERSAL_BUILD_MODE = 'universal';

@@ -6,7 +6,11 @@ import { getDb } from '../db.js';
 import { config, paths, rootDir } from '../config.js';
 import { buildSeedFiles } from './seedData.js';
 import { resolveDeploymentFile } from './deploymentService.js';
-import { MANIFEST_KIND, SUPPORTED_MANIFEST_SCHEMA_VERSIONS } from '../../../shared/universalManifest.js';
+import { MANIFEST_KIND, SUPPORTED_MANIFEST_SCHEMA_VERSIONS, RUNTIME_BOOTSTRAP_FILE } from '../../../shared/universalManifest.js';
+import {
+  RUNTIME_BOOTSTRAP_MARKER, parseRuntimeBootstrapConfig,
+  findFirstModuleScriptIndex, findFirstForeignScriptIndex, findRuntimeBootstrapIndex,
+} from '../../../shared/runtimeBootstrap.js';
 import {
   collectFiles,
   DEPLOYMENT_OVERLAY_FILES,
@@ -410,9 +414,11 @@ export async function runLocalDeploymentVerification(jobId) {
   const runtimePath = path.join(finalDistRoot, 'sitebuilder-runtime-config.json');
   const deploymentPath = path.join(finalDistRoot, 'sitebuilder-deployment.json');
   const releaseManifestPath = path.join(finalDistRoot, 'sharepoint-deploy-manifest.json');
-  const requiredDeploymentFiles = [runtimePath, deploymentPath, releaseManifestPath, path.join(finalDistRoot, 'index.html')];
+  const bootstrapPath = path.join(finalDistRoot, RUNTIME_BOOTSTRAP_FILE);
+  const finalIndexPath = path.join(finalDistRoot, 'index.html');
+  const requiredDeploymentFiles = [runtimePath, deploymentPath, releaseManifestPath, bootstrapPath, finalIndexPath];
   const missingRequired = requiredDeploymentFiles.filter((required) => !fs.existsSync(required));
-  if (!missingRequired.length) pass('קובצי deployment חובה קיימים', 'runtime config · deployment metadata · manifest · index.html');
+  if (!missingRequired.length) pass('קובצי deployment חובה קיימים', 'runtime config · deployment metadata · runtime bootstrap · manifest · index.html');
   else fail('קובצי deployment חובה קיימים', missingRequired.map((filePath) => path.basename(filePath)).join(', '));
 
   let runtime = null;
@@ -423,6 +429,31 @@ export async function runLocalDeploymentVerification(jobId) {
     if (!mismatches.length) pass('Runtime Config קנוני ותואם כולו לאתר', `${runtime.host}${runtime.siteRoot}`);
     else fail('Runtime Config קנוני ותואם כולו לאתר', mismatches.slice(0, 12).map((item) => `${item.key}: ${item.actual} != ${item.expected}`).join(' | '));
     auditLog.info(`runtimeConfig=${JSON.stringify(runtime)}`);
+  }
+
+  // The browser never reads the .json directly on the real farm; it reads this.
+  if (fs.existsSync(bootstrapPath) && runtime) {
+    const bootstrapSource = fs.readFileSync(bootstrapPath, 'utf8');
+    const bootstrapConfig = parseRuntimeBootstrapConfig(bootstrapSource);
+    if (bootstrapSource.includes(RUNTIME_BOOTSTRAP_MARKER) && bootstrapConfig
+      && JSON.stringify(bootstrapConfig) === JSON.stringify(runtime)) {
+      pass('Runtime Bootstrap JS נושא בדיוק את ה-Runtime Config של האתר', `${bootstrapConfig.targetDistPath}`);
+    } else {
+      fail('Runtime Bootstrap JS נושא בדיוק את ה-Runtime Config של האתר', bootstrapSource.slice(0, 200));
+    }
+  }
+
+  if (fs.existsSync(finalIndexPath)) {
+    const finalIndexHtml = fs.readFileSync(finalIndexPath, 'utf8');
+    const bootstrapIndex = findRuntimeBootstrapIndex(finalIndexHtml);
+    const moduleIndex = findFirstModuleScriptIndex(finalIndexHtml);
+    const firstScriptIndex = findFirstForeignScriptIndex(finalIndexHtml);
+    const where = `bootstrap@${bootstrapIndex} script@${firstScriptIndex} module@${moduleIndex}`;
+    if (bootstrapIndex >= 0 && (firstScriptIndex < 0 || bootstrapIndex < firstScriptIndex)) {
+      pass('index.html טוען את Runtime Bootstrap לפני כל שאר הסקריפטים', where);
+    } else {
+      fail('index.html טוען את Runtime Bootstrap לפני כל שאר הסקריפטים', where);
+    }
   }
 
   if (fs.existsSync(deploymentPath)) {

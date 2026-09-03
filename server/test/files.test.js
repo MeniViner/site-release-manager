@@ -30,6 +30,8 @@ test('safeResolve stays under the root', () => {
 test('per-target overlay files are excluded from universal releases', () => {
   assert.ok(distExclusionReason('sitebuilder-runtime-config.json'));
   assert.ok(distExclusionReason('sitebuilder-deployment.json'));
+  // A stale bootstrap from another target must never survive into a release.
+  assert.ok(distExclusionReason('sitebuilder-runtime-bootstrap.js'));
   assert.equal(distExclusionReason('index.html'), '');
 });
 

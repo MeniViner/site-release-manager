@@ -36,6 +36,37 @@ const bytesResponse = (status, bytes) => ({
   arrayBuffer: async () => Buffer.from(bytes),
 });
 
+/**
+ * The observed real-farm answer to a DIRECT browser GET of a `.json` file in a
+ * Document Library: HTTP 200 with an HTML page instead of the stored bytes.
+ */
+const htmlResponse = (status = 200) => {
+  const body = '<!DOCTYPE html><html><head><title>SharePoint</title></head>'
+    + '<body><form id="aspnetForm">Document library viewer</form></body></html>';
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: { get: (name) => (String(name).toLowerCase() === 'content-type' ? 'text/html; charset=utf-8' : null) },
+    json: async () => { throw new Error('not json'); },
+    text: async () => body,
+    clone() { return this; },
+    arrayBuffer: async () => Buffer.from(body),
+  };
+};
+
+const contentTypeForPath = (filePath) => {
+  if (/\.js$/i.test(filePath)) return 'application/x-javascript';
+  if (/\.json$/i.test(filePath)) return 'application/json';
+  if (/\.html?$/i.test(filePath)) return 'text/html';
+  if (/\.css$/i.test(filePath)) return 'text/css';
+  return 'application/octet-stream';
+};
+
+const staticResponse = (status, bytes, filePath) => ({
+  ...bytesResponse(status, bytes),
+  headers: { get: (name) => (String(name).toLowerCase() === 'content-type' ? contentTypeForPath(filePath) : null) },
+});
+
 /** The farm's "not there yet" answer: HTTP 400 carrying a FileNotFound payload. */
 export const notFoundPayload = (type = 'System.IO.FileNotFoundException', code = '-2147024894') => ({
   error: { code: `${code}, ${type}`, message: { lang: 'en-US', value: 'File Not Found.' } },
@@ -68,6 +99,12 @@ export function createFakeSharePoint(config = {}) {
     libraryCreateReportsError = false,
     /** SharePoint auto-suffixes the created root folder URL. */
     autoSuffixLibraryUrl = false,
+    /**
+     * Reproduce the proven Windows failure: a DIRECT browser GET of a `.json`
+     * file in a Document Library answers HTTP 200 with HTML, even though the
+     * REST `$value` endpoint returns the correct bytes.
+     */
+    directJsonReturnsHtml = false,
   } = config;
 
   const state = {
@@ -77,6 +114,10 @@ export function createFakeSharePoint(config = {}) {
     pending: new Map(), // path  -> remaining not-ready reads
     requests: [],
     uploadSequence: [],
+    /** Direct (non-REST) GETs the farm actually served. */
+    directReads: [],
+    /** Direct .json GETs the farm answered with HTML, as the real farm does. */
+    directJsonHtmlServed: [],
   };
 
   const base = webUrl.replace(/\/+$/, '');
@@ -216,14 +257,22 @@ export function createFakeSharePoint(config = {}) {
       return jsonResponse(200, { d: { ServerRelativeUrl: full } });
     }
 
-    // Direct static fetches mirror the URLs Site Builder itself requests from
+    // Direct static fetches mirror the URLs the browser itself requests from
     // beside index.html (not the SharePoint REST $value endpoint).
     if (method === 'GET' && clean.startsWith(`${base}/`) && !clean.includes('/_api/')) {
       const filePath = decodeURIComponent(new URL(clean).pathname);
+      // The farm serves .json from a Document Library URL as an HTML page. The
+      // stored bytes are irrelevant; this is why runtime JSON is read through
+      // REST `$value` and only the bootstrap .js is fetched directly.
+      if (directJsonReturnsHtml && /\.json$/i.test(filePath)) {
+        state.directJsonHtmlServed.push(filePath);
+        return htmlResponse(200);
+      }
       const file = state.files.get(filePath);
       if (!file) return notReadyShape === '404' ? jsonResponse(404, notFoundPayload()) : jsonResponse(400, notFoundPayload());
       if (consumePending(`file:${filePath}`)) return notReadyResponse();
-      return bytesResponse(200, file.bytes);
+      state.directReads.push(filePath);
+      return staticResponse(200, file.bytes, filePath);
     }
 
     return jsonResponse(404, notFoundPayload());

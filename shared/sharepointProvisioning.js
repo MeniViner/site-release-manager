@@ -18,8 +18,10 @@ import { SEED_CONTENT_TYPE, ASSET_CONTENT_TYPE, normalizePath } from './sharepoi
 import {
   DEPLOYMENT_METADATA_FILE,
   RUNTIME_CONFIG_FILE,
+  RUNTIME_BOOTSTRAP_FILE,
   parseIndexReferencesFromHtml,
 } from './universalManifest.js';
+import { RUNTIME_BOOTSTRAP_MARKER, RUNTIME_BOOTSTRAP_GLOBAL, parseRuntimeBootstrapConfig } from './runtimeBootstrap.js';
 
 export const LIBRARY_OUTCOME = Object.freeze({
   REUSED: 'REUSED_EXISTING_EXACT_LIBRARY',
@@ -40,6 +42,8 @@ export const PROVISIONING_ERROR = Object.freeze({
   RUNTIME_CONFIG_READ_FAILED: 'RUNTIME_CONFIG_READ_FAILED',
   RUNTIME_CONFIG_INVALID: 'RUNTIME_CONFIG_INVALID',
   RUNTIME_CONFIG_TARGET_MISMATCH: 'RUNTIME_CONFIG_TARGET_MISMATCH',
+  RUNTIME_BOOTSTRAP_READ_FAILED: 'RUNTIME_BOOTSTRAP_READ_FAILED',
+  RUNTIME_BOOTSTRAP_INVALID: 'RUNTIME_BOOTSTRAP_INVALID',
 });
 
 export const BACKUP_OUTCOME = Object.freeze({
@@ -737,58 +741,118 @@ function looksLikeHtml(text, contentType = '') {
     || prefix.includes('<head>');
 }
 
-async function fetchDirectJson(fetchImpl, url, options = {}) {
+/**
+ * Read one runtime JSON file through the SharePoint REST `$value` transport.
+ *
+ * This is the transport this farm is PROVEN to serve correctly. A direct
+ * browser GET of the same `.json` returns an HTML page, so it is never used.
+ * Bounded stabilization covers the eventual-consistency window between upload
+ * and first successful read.
+ */
+async function readRestJson(client, filePath, options = {}) {
   const { retry = {}, signal, kind = 'Runtime Config' } = options;
+
+  let read;
+  try {
+    read = await stabilize(async () => {
+      const readBack = await client.readFile(filePath);
+      if (!readBack.found) return { ready: false, reason: 'NOT_VISIBLE_YET' };
+      if (!readBack.bytes || readBack.bytes.length === 0) return { ready: false, reason: 'EMPTY_BODY' };
+      return { ready: true, value: { bytes: readBack.bytes, status: readBack.status } };
+    }, { ...STABILIZE_RETRY, ...retry, signal, describe: `rest-json:${filePath}` });
+  } catch (error) {
+    throw new ProvisioningError(
+      PROVISIONING_ERROR.RUNTIME_CONFIG_READ_FAILED,
+      `${kind} could not be read from ${filePath} through SharePoint REST: ${error.message}`,
+      {
+        errorClass: error.errorClass || SP_ERROR.TRANSIENT_NOT_READY,
+        target: filePath,
+        transport: 'sharepoint-rest-$value',
+      },
+    );
+  }
+
+  const text = new TextDecoder('utf-8').decode(read.value.bytes);
+  const fail = (message) => {
+    throw new ProvisioningError(
+      PROVISIONING_ERROR.RUNTIME_CONFIG_INVALID,
+      message,
+      { errorClass: SP_ERROR.PERMANENT_FAILURE, target: filePath, transport: 'sharepoint-rest-$value' },
+    );
+  };
+
+  // HTML is never acceptable, on any transport. It is not "valid enough".
+  if (looksLikeHtml(text)) fail(`${kind} at ${filePath} returned HTML instead of JSON.`);
+
+  let payload;
+  try {
+    payload = JSON.parse(text);
+  } catch (error) {
+    fail(`${kind} at ${filePath} is malformed JSON: ${error.message}`);
+  }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    fail(`${kind} at ${filePath} must contain a JSON object.`);
+  }
+
+  return {
+    payload,
+    status: read.value.status ?? 200,
+    bytes: read.value.bytes.length,
+    attempts: read.attempts,
+    path: filePath,
+  };
+}
+
+/**
+ * Fetch the runtime bootstrap through the EXACT direct browser URL index.html
+ * uses. This is the one runtime file that must work as a plain static request,
+ * and it is the file that actually carries the identity into the application.
+ */
+async function fetchDirectBootstrap(fetchImpl, url, options = {}) {
+  const { retry = {}, signal } = options;
+  const invalid = (message) => new ProvisioningError(
+    PROVISIONING_ERROR.RUNTIME_BOOTSTRAP_INVALID,
+    message,
+    { errorClass: SP_ERROR.PERMANENT_FAILURE, target: url, url, transport: 'direct-browser-url' },
+  );
+
   const fetched = await retryOperation(async () => {
     const response = await fetchImpl(url, {
       method: 'GET',
       credentials: 'include',
       cache: 'no-store',
-      headers: { Accept: 'application/json' },
+      headers: { Accept: 'application/javascript, text/javascript, */*' },
       signal,
     });
     const text = await response.text();
+    const contentType = response.headers?.get?.('content-type') || '';
     if (!response.ok) {
       throw sharePointError(classifySharePointError({
         httpStatus: response.status,
         body: text,
-        operation: `direct-${kind.toLowerCase().replace(/\s+/g, '-')}-read`,
+        operation: 'direct-runtime-bootstrap-read',
         target: url,
         url,
         method: 'GET',
       }));
     }
-    if (looksLikeHtml(text, response.headers?.get?.('content-type'))) {
-      throw new ProvisioningError(
-        PROVISIONING_ERROR.RUNTIME_CONFIG_INVALID,
-        `${kind} at ${url} returned HTML instead of JSON.`,
-        { errorClass: SP_ERROR.PERMANENT_FAILURE, target: url, url },
-      );
+    if (!String(text).trim()) throw invalid(`Runtime Bootstrap at ${url} returned an empty body.`);
+    // A legacy farm may answer with any JavaScript content type, so the MIME
+    // type is reported but never required. HTML, however, is always a failure.
+    if (looksLikeHtml(text, contentType)) {
+      throw invalid(`Runtime Bootstrap at ${url} returned HTML instead of JavaScript.`);
     }
-    let payload;
-    try {
-      payload = JSON.parse(text);
-    } catch (error) {
-      throw new ProvisioningError(
-        PROVISIONING_ERROR.RUNTIME_CONFIG_INVALID,
-        `${kind} at ${url} is malformed JSON: ${error.message}`,
-        { errorClass: SP_ERROR.PERMANENT_FAILURE, target: url, url },
-      );
-    }
-    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-      throw new ProvisioningError(
-        PROVISIONING_ERROR.RUNTIME_CONFIG_INVALID,
-        `${kind} at ${url} must contain a JSON object.`,
-        { errorClass: SP_ERROR.PERMANENT_FAILURE, target: url, url },
-      );
+    if (!text.includes(RUNTIME_BOOTSTRAP_MARKER)) {
+      throw invalid(`Runtime Bootstrap at ${url} does not define window.${RUNTIME_BOOTSTRAP_GLOBAL}.`);
     }
     return {
-      payload,
+      text,
       status: response.status,
-      contentType: response.headers?.get?.('content-type') || '',
+      contentType,
       bytes: new TextEncoder().encode(text).length,
     };
-  }, { ...DEFAULT_RETRY, ...retry, signal, describe: `direct-json:${url}` });
+  }, { ...DEFAULT_RETRY, ...retry, signal, describe: `direct-bootstrap:${url}` });
+
   return { ...fetched.value, attempts: fetched.attempts };
 }
 
@@ -814,62 +878,130 @@ function assertExpectedFields(payload, expected, fields, kind, url) {
   }
 }
 
+const RUNTIME_CONFIG_TARGET_FIELDS = Object.freeze([
+  'host', 'siteCode', 'siteDbFolder', 'siteDbRoot', 'usersDbFolder', 'usersDbRoot',
+  'siteAssetsFolder', 'siteAssetsRoot', 'widgetsDbTarget', 'storageBackend',
+  'targetDistPath', 'finalAppUrl', 'deploymentJobId', 'releaseId', 'releaseVersion',
+]);
+
+const DEPLOYMENT_METADATA_TARGET_FIELDS = Object.freeze([
+  'host', 'siteCode', 'siteDbRoot', 'usersDbRoot', 'siteAssetsRoot', 'storageBackend',
+  'targetDistPath', 'finalAppUrl', 'deploymentJobId', 'releaseId', 'releaseVersion',
+]);
+
 /**
- * Fetch exactly the two URLs Site Builder derives beside index.html, parse both
- * JSON files and reject stale/cross-target overlays before index.html is made
- * active for this run.
+ * Prove the deployed runtime identity before index.html is made active.
+ *
+ * TRANSPORT SPLIT — this is the whole point of the function:
+ *
+ *  - The two JSON files are read through SharePoint REST
+ *    `GetFileByServerRelativeUrl(...)/$value`. That transport is proven to
+ *    return the real bytes on this farm. A direct `.json` browser URL is NOT
+ *    used, because this farm answers it with an HTML page regardless of what
+ *    was uploaded. They remain authoritative and fully validated: nothing about
+ *    the structural or cross-target checking is weakened, and HTML is never
+ *    accepted as valid JSON.
+ *
+ *  - The runtime bootstrap JS is fetched through its EXACT direct browser URL,
+ *    because that is precisely how the deployed index.html will load it. If the
+ *    browser cannot read it, the application cannot obtain its identity, so the
+ *    run must fail before the new index is committed.
+ *
+ * @param {object} client authenticated SharePoint client (REST `$value` reads)
+ * @param {Function} fetchImpl browser fetch (direct bootstrap URL)
+ * @param {object} verification descriptor built by buildDeploymentDescriptor
+ * @param {object} [options] retry/cancellation options
  */
-export async function verifyFinalRuntimeConfig(fetchImpl, verification, options = {}) {
+export async function verifyFinalRuntimeConfig(client, fetchImpl, verification, options = {}) {
+  if (!client || typeof client.readFile !== 'function') {
+    throw new Error('verifyFinalRuntimeConfig requires an authenticated SharePoint client.');
+  }
   if (typeof fetchImpl !== 'function') throw new Error('verifyFinalRuntimeConfig requires fetchImpl.');
+
   const expected = verification?.expected || {};
-  const runtimeUrl = verification?.runtimeConfigUrl
-    || new URL(RUNTIME_CONFIG_FILE, expected.finalAppUrl).toString();
-  const deploymentUrl = verification?.deploymentMetadataUrl
-    || new URL(DEPLOYMENT_METADATA_FILE, expected.finalAppUrl).toString();
-  const exactRuntimeUrl = new URL(RUNTIME_CONFIG_FILE, expected.finalAppUrl).toString();
-  const exactDeploymentUrl = new URL(DEPLOYMENT_METADATA_FILE, expected.finalAppUrl).toString();
-  if (runtimeUrl !== exactRuntimeUrl || deploymentUrl !== exactDeploymentUrl) {
+  const distPath = String(verification?.expected?.targetDistPath || '');
+  const runtimeConfigPath = verification?.runtimeConfigPath || `${distPath}/${RUNTIME_CONFIG_FILE}`;
+  const deploymentMetadataPath = verification?.deploymentMetadataPath || `${distPath}/${DEPLOYMENT_METADATA_FILE}`;
+  const runtimeBootstrapPath = verification?.runtimeBootstrapPath || `${distPath}/${RUNTIME_BOOTSTRAP_FILE}`;
+  const runtimeBootstrapUrl = verification?.runtimeBootstrapUrl
+    || new URL(RUNTIME_BOOTSTRAP_FILE, expected.finalAppUrl).toString();
+
+  // Every path and URL must be the canonical one this target derives. A
+  // descriptor that points anywhere else is a cross-target hazard, not a typo.
+  const mismatched = [];
+  if (distPath) {
+    if (runtimeConfigPath !== `${distPath}/${RUNTIME_CONFIG_FILE}`) mismatched.push('runtimeConfigPath');
+    if (deploymentMetadataPath !== `${distPath}/${DEPLOYMENT_METADATA_FILE}`) mismatched.push('deploymentMetadataPath');
+    if (runtimeBootstrapPath !== `${distPath}/${RUNTIME_BOOTSTRAP_FILE}`) mismatched.push('runtimeBootstrapPath');
+  }
+  if (expected.finalAppUrl && runtimeBootstrapUrl !== new URL(RUNTIME_BOOTSTRAP_FILE, expected.finalAppUrl).toString()) {
+    mismatched.push('runtimeBootstrapUrl');
+  }
+  if (mismatched.length) {
     throw new ProvisioningError(
       PROVISIONING_ERROR.RUNTIME_CONFIG_TARGET_MISMATCH,
-      'Runtime verification URLs do not match the URLs Site Builder derives from index.html.',
-      { errorClass: SP_ERROR.PERMANENT_FAILURE, target: runtimeUrl },
+      `Runtime verification descriptor does not match the paths Site Builder derives from index.html: ${mismatched.join(', ')}.`,
+      { errorClass: SP_ERROR.PERMANENT_FAILURE, target: runtimeConfigPath, mismatched },
     );
   }
 
-  const runtime = await fetchDirectJson(fetchImpl, runtimeUrl, { ...options, kind: 'Runtime Config' });
+  // --- 1. Runtime Config JSON, through SharePoint REST --------------------
+  const runtime = await readRestJson(client, runtimeConfigPath, { ...options, kind: 'Runtime Config' });
   assertExpectedFields(runtime.payload, {
     schemaVersion: 2,
     deploymentGeneratedBy: 'site-release-manager',
-  }, ['schemaVersion', 'deploymentGeneratedBy'], 'Runtime Config', runtimeUrl);
-  assertExpectedFields(runtime.payload, expected, [
-    'host', 'siteCode', 'siteDbFolder', 'siteDbRoot', 'usersDbFolder', 'usersDbRoot',
-    'siteAssetsFolder', 'siteAssetsRoot', 'widgetsDbTarget', 'storageBackend',
-    'targetDistPath', 'finalAppUrl', 'deploymentJobId', 'releaseId', 'releaseVersion',
-  ], 'Runtime Config', runtimeUrl);
+  }, ['schemaVersion', 'deploymentGeneratedBy'], 'Runtime Config', runtimeConfigPath);
+  assertExpectedFields(runtime.payload, expected, RUNTIME_CONFIG_TARGET_FIELDS, 'Runtime Config', runtimeConfigPath);
 
-  const deployment = await fetchDirectJson(fetchImpl, deploymentUrl, { ...options, kind: 'Deployment Metadata' });
+  // --- 2. Deployment Metadata JSON, through SharePoint REST ---------------
+  const deployment = await readRestJson(client, deploymentMetadataPath, { ...options, kind: 'Deployment Metadata' });
   assertExpectedFields(deployment.payload, {
     kind: 'sitebuilder-deployment',
     schemaVersion: 3,
     generatedBy: 'site-release-manager',
-  }, ['kind', 'schemaVersion', 'generatedBy'], 'Deployment Metadata', deploymentUrl);
-  assertExpectedFields(deployment.payload, expected, [
-    'host', 'siteCode', 'siteDbRoot', 'usersDbRoot', 'siteAssetsRoot', 'storageBackend',
-    'targetDistPath', 'finalAppUrl', 'deploymentJobId', 'releaseId', 'releaseVersion',
-  ], 'Deployment Metadata', deploymentUrl);
+  }, ['kind', 'schemaVersion', 'generatedBy'], 'Deployment Metadata', deploymentMetadataPath);
+  assertExpectedFields(deployment.payload, expected, DEPLOYMENT_METADATA_TARGET_FIELDS, 'Deployment Metadata', deploymentMetadataPath);
+
+  // --- 3. Runtime Bootstrap JS, through its direct browser URL ------------
+  const bootstrap = await fetchDirectBootstrap(fetchImpl, runtimeBootstrapUrl, options);
+  const bootstrapConfig = parseRuntimeBootstrapConfig(bootstrap.text);
+  if (!bootstrapConfig) {
+    throw new ProvisioningError(
+      PROVISIONING_ERROR.RUNTIME_BOOTSTRAP_INVALID,
+      `Runtime Bootstrap at ${runtimeBootstrapUrl} does not carry a readable runtime config object.`,
+      { errorClass: SP_ERROR.PERMANENT_FAILURE, target: runtimeBootstrapUrl, url: runtimeBootstrapUrl },
+    );
+  }
+  // The identity the BROWSER will actually receive must be this run's identity.
+  assertExpectedFields(bootstrapConfig, expected, RUNTIME_CONFIG_TARGET_FIELDS, 'Runtime Bootstrap', runtimeBootstrapUrl);
 
   return {
     ok: true,
-    runtimeConfigUrl: runtimeUrl,
-    deploymentMetadataUrl: deploymentUrl,
+    bootstrapVerified: true,
+    // JSON: SharePoint REST `$value`. Bootstrap: direct browser URL.
+    jsonTransport: 'sharepoint-rest-$value',
+    bootstrapTransport: 'direct-browser-url',
+    runtimeConfigPath,
+    deploymentMetadataPath,
+    runtimeBootstrapPath,
+    runtimeBootstrapUrl,
+    runtimeBootstrapFile: RUNTIME_BOOTSTRAP_FILE,
+    // Retained for telemetry continuity; these URLs are documented, not fetched.
+    runtimeConfigUrl: verification?.runtimeConfigUrl || '',
+    deploymentMetadataUrl: verification?.deploymentMetadataUrl || '',
     runtimeStatus: runtime.status,
     deploymentStatus: deployment.status,
+    bootstrapStatus: bootstrap.status,
+    bootstrapContentType: bootstrap.contentType,
     runtimeBytes: runtime.bytes,
     deploymentBytes: deployment.bytes,
+    bootstrapBytes: bootstrap.bytes,
     runtimeAttempts: runtime.attempts,
     deploymentAttempts: deployment.attempts,
+    bootstrapAttempts: bootstrap.attempts,
     deploymentJobId: runtime.payload.deploymentJobId,
     releaseId: runtime.payload.releaseId,
+    releaseVersion: runtime.payload.releaseVersion,
     targetDistPath: runtime.payload.targetDistPath,
   };
 }
@@ -919,13 +1051,25 @@ export async function finalAppSmoke(client, distRoot, options = {}) {
   const references = parseIndexReferencesFromHtml(html);
   const hasScript = /<script\b/i.test(html);
   const runtimeConfigVerified = runtimeVerification?.ok === true;
+  // The deployed index must actually load the bootstrap; otherwise the browser
+  // would still be depending on a direct .json read this farm cannot serve.
+  const runtimeBootstrapVerified = runtimeVerification?.bootstrapVerified === true;
+  const indexLoadsRuntimeBootstrap = references.includes(RUNTIME_BOOTSTRAP_FILE);
   return {
-    ok: hasScript && references.length > 0 && runtimeConfigVerified,
+    ok: hasScript
+      && references.length > 0
+      && runtimeConfigVerified
+      && runtimeBootstrapVerified
+      && indexLoadsRuntimeBootstrap,
     bytes: new TextEncoder().encode(html).length,
     references: references.length,
     hasScript,
     directStatus,
     runtimeConfigVerified,
+    runtimeBootstrapVerified,
+    indexLoadsRuntimeBootstrap,
+    runtimeConfigPath: runtimeVerification?.runtimeConfigPath || '',
+    runtimeBootstrapUrl: runtimeVerification?.runtimeBootstrapUrl || '',
     runtimeConfigUrl: runtimeVerification?.runtimeConfigUrl || '',
   };
 }

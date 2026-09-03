@@ -13,6 +13,8 @@ import assert from 'node:assert/strict';
 import { runDeploymentPipeline } from '../../shared/deploymentPipeline.js';
 import { STAGE } from '../../shared/deploymentStages.js';
 import { buildSiteIdentity, buildTxtSeedPlan, requiredLibraries, requiredFolders } from '../../shared/siteRuntime.js';
+import { RUNTIME_BOOTSTRAP_FILE } from '../../shared/universalManifest.js';
+import { buildRuntimeBootstrapSource, RUNTIME_BOOTSTRAP_MARKER } from '../../shared/runtimeBootstrap.js';
 import { createFakeSharePoint, instantRetry, sha256Hex } from './helpers/fakeSharePoint.js';
 
 /** Real control flow, zero wall-clock cost. */
@@ -26,13 +28,21 @@ const EXISTING = buildSiteIdentity({ host: 'portal.army.idf', siteCode: 'schedul
 
 const encoder = new TextEncoder();
 
+/**
+ * The staged artifact as prepareDeploymentJob produces it: the two JSON
+ * overlays, the generated runtime bootstrap, and an index.html that loads the
+ * bootstrap BEFORE the Vite module entry.
+ */
 function releaseFiles() {
   const bodies = {
     'assets/app.js': 'console.log("site builder")',
     'assets/app.css': 'body{margin:0}',
     'sitebuilder-runtime-config.json': '{"host":"portal.army.idf"}',
     'sitebuilder-deployment.json': '{"kind":"sitebuilder-deployment"}',
-    'index.html': '<html><head><link href="./assets/app.css"><script src="./assets/app.js"></script></head><body></body></html>',
+    [RUNTIME_BOOTSTRAP_FILE]: `window.SITE_BUILDER_RUNTIME_CONFIG = Object.freeze({});\n`,
+    'index.html': '<html><head><link href="./assets/app.css">'
+      + `<script src="./${RUNTIME_BOOTSTRAP_FILE}"></script>`
+      + '<script type="module" src="./assets/app.js"></script></head><body></body></html>',
   };
   const bytesByPath = new Map();
   const files = Object.entries(bodies).map(([filePath, body]) => {
@@ -97,6 +107,9 @@ function createFakeApi(identity, release) {
   const bytesByPath = new Map(release.bytesByPath);
   bytesByPath.set('sitebuilder-runtime-config.json', encoder.encode(JSON.stringify(runtimeConfig)));
   bytesByPath.set('sitebuilder-deployment.json', encoder.encode(JSON.stringify(deploymentMetadata)));
+  // The bootstrap always carries the EXACT runtime config, exactly as staging
+  // generates it.
+  bytesByPath.set(RUNTIME_BOOTSTRAP_FILE, encoder.encode(buildRuntimeBootstrapSource(runtimeConfig)));
   const deploymentFiles = release.files.map((file) => {
     const bytes = bytesByPath.get(file.path);
     return { ...file, size: bytes.length, sha256: sha256Hex(bytes) };
@@ -117,8 +130,13 @@ function createFakeApi(identity, release) {
     runtimeVerification: {
       runtimeConfigFile: 'sitebuilder-runtime-config.json',
       deploymentMetadataFile: 'sitebuilder-deployment.json',
+      runtimeBootstrapFile: RUNTIME_BOOTSTRAP_FILE,
+      runtimeConfigPath: `${identity.targetDistPath}/sitebuilder-runtime-config.json`,
+      deploymentMetadataPath: `${identity.targetDistPath}/sitebuilder-deployment.json`,
+      runtimeBootstrapPath: `${identity.targetDistPath}/${RUNTIME_BOOTSTRAP_FILE}`,
       runtimeConfigUrl: `${identity.siteBaseUrl}/sitebuilder-runtime-config.json`,
       deploymentMetadataUrl: `${identity.siteBaseUrl}/sitebuilder-deployment.json`,
+      runtimeBootstrapUrl: `${identity.siteBaseUrl}/${RUNTIME_BOOTSTRAP_FILE}`,
       expected: runtimeConfig,
     },
     manifest: { files: deploymentFiles, uploadOrder: release.uploadOrder },
@@ -396,40 +414,97 @@ test('the permissions boundary is reported, never silently assumed', async () =>
   assert.equal(farm.state.files.has(`${EXISTING.usersDbRoot}/.permissions-setup.json`), false);
 });
 
-test('missing, malformed or wrong-target direct Runtime Config prevents COMPLETE and index activation', async (t) => {
+/**
+ * Fail-before-commit matrix.
+ *
+ * Every scenario must stop the run at FINAL_RUNTIME_CONFIG_VERIFY, before
+ * index.html is uploaded. Runtime/Deployment JSON is intercepted on the REST
+ * `$value` transport (the only one used for JSON now); the bootstrap is
+ * intercepted on its direct browser URL.
+ */
+test('a broken Runtime Config, Deployment Metadata or Bootstrap prevents COMPLETE and index activation', async (t) => {
+  const ok = (body, contentType = 'application/octet-stream') => () => ({
+    ok: true,
+    status: 200,
+    headers: { get: () => contentType },
+    text: async () => body,
+    arrayBuffer: async () => Buffer.from(body),
+    clone() { return this; },
+  });
+  const missing = () => ({
+    ok: false,
+    status: 404,
+    headers: { get: () => 'application/json' },
+    text: async () => JSON.stringify({ error: { message: { value: 'File Not Found.' } } }),
+    arrayBuffer: async () => Buffer.from(''),
+    clone() { return this; },
+  });
+
   const scenarios = [
+    { name: 'runtime json missing through REST', restFile: 'sitebuilder-runtime-config.json', response: missing },
     {
-      name: 'missing',
-      response: () => ({
-        ok: false,
-        status: 404,
-        headers: { get: () => 'application/json' },
-        text: async () => JSON.stringify({ error: { message: { value: 'File Not Found.' } } }),
-      }),
+      name: 'runtime json malformed through REST',
+      restFile: 'sitebuilder-runtime-config.json',
+      response: ok('{not-json'),
     },
     {
-      name: 'malformed',
-      response: () => ({
-        ok: true,
-        status: 200,
-        headers: { get: () => 'application/json' },
-        text: async () => '{not-json',
-      }),
+      name: 'runtime json served as HTML through REST',
+      restFile: 'sitebuilder-runtime-config.json',
+      response: ok('<!DOCTYPE html><html><head></head><body>nope</body></html>', 'text/html'),
     },
     {
-      name: 'wrong-target',
-      response: (expected) => ({
-        ok: true,
-        status: 200,
-        headers: { get: () => 'application/json' },
-        text: async () => JSON.stringify({
-          ...expected,
-          siteDbFolder: 'siteDBOther',
-          siteDbRoot: '/sites/schedule/siteDBOther',
-          targetDistPath: '/sites/schedule/siteDBOther/dist',
-          finalAppUrl: 'https://portal.army.idf/sites/schedule/siteDBOther/dist/index.html',
-        }),
-      }),
+      name: 'runtime json belongs to another target',
+      restFile: 'sitebuilder-runtime-config.json',
+      response: (expected) => ok(JSON.stringify({
+        ...expected,
+        siteDbFolder: 'siteDBOther',
+        siteDbRoot: '/sites/schedule/siteDBOther',
+        targetDistPath: '/sites/schedule/siteDBOther/dist',
+        finalAppUrl: 'https://portal.army.idf/sites/schedule/siteDBOther/dist/index.html',
+      }))(),
+    },
+    {
+      name: 'runtime json carries another run deploymentJobId',
+      restFile: 'sitebuilder-runtime-config.json',
+      response: (expected) => ok(JSON.stringify({ ...expected, deploymentJobId: 'job-999' }))(),
+    },
+    {
+      name: 'runtime json carries another release',
+      restFile: 'sitebuilder-runtime-config.json',
+      response: (expected) => ok(JSON.stringify({ ...expected, releaseId: 'release-999', releaseVersion: '9.9.9' }))(),
+    },
+    {
+      name: 'deployment metadata belongs to another target',
+      restFile: 'sitebuilder-deployment.json',
+      response: (expected) => ok(JSON.stringify({
+        kind: 'sitebuilder-deployment',
+        schemaVersion: 3,
+        generatedBy: 'site-release-manager',
+        ...expected,
+        targetDistPath: '/sites/schedule/siteDBOther/dist',
+      }))(),
+    },
+    {
+      name: 'bootstrap js is served as HTML through its direct URL',
+      directFile: RUNTIME_BOOTSTRAP_FILE,
+      response: ok('<!DOCTYPE html><html><head></head><body>nope</body></html>', 'text/html'),
+    },
+    { name: 'bootstrap js is missing at its direct URL', directFile: RUNTIME_BOOTSTRAP_FILE, response: missing },
+    {
+      name: 'bootstrap js does not define the runtime global',
+      directFile: RUNTIME_BOOTSTRAP_FILE,
+      response: ok('console.log("wrong file");', 'application/x-javascript'),
+    },
+    {
+      name: 'bootstrap js carries another target identity',
+      directFile: RUNTIME_BOOTSTRAP_FILE,
+      response: (expected) => ok(buildRuntimeBootstrapSource({
+        ...expected,
+        siteDbFolder: 'siteDBOther',
+        siteDbRoot: '/sites/schedule/siteDBOther',
+        targetDistPath: '/sites/schedule/siteDBOther/dist',
+        finalAppUrl: 'https://portal.army.idf/sites/schedule/siteDBOther/dist/index.html',
+      }), 'application/x-javascript')(),
     },
   ];
 
@@ -439,11 +514,23 @@ test('missing, malformed or wrong-target direct Runtime Config prevents COMPLETE
       farm.state.folders.set(FRESH.siteRoot, { listItemId: 1 });
       const release = releaseFiles();
       const api = createFakeApi(FRESH, release);
-      const runtimeUrl = api.descriptor.runtimeVerification.runtimeConfigUrl;
+      const expected = api.descriptor.runtimeVerification.expected;
+
+      // The same REST `$value` endpoint is used twice for each overlay: once at
+      // upload time for the size/SHA asset verification, and again at
+      // FINAL_RUNTIME_CONFIG_VERIFY. Only the second read is intercepted, so
+      // each scenario fails exactly at the runtime verification stage.
+      const restReads = new Map();
       const fetchImpl = async (url, init) => {
         const clean = String(url).split('?')[0];
-        if (clean === runtimeUrl && !clean.includes('/_api/')) {
-          return scenario.response(api.descriptor.runtimeVerification.expected);
+        const isRest = clean.includes('/_api/web/GetFileByServerRelativeUrl') && clean.endsWith('/$value');
+        if (scenario.restFile && isRest && clean.includes(scenario.restFile)) {
+          const seen = (restReads.get(scenario.restFile) || 0) + 1;
+          restReads.set(scenario.restFile, seen);
+          if (seen > 1) return scenario.response(expected);
+        }
+        if (scenario.directFile && !clean.includes('/_api/') && clean.endsWith(scenario.directFile)) {
+          return scenario.response(expected);
         }
         return farm.fetchImpl(url, init);
       };
@@ -454,9 +541,70 @@ test('missing, malformed or wrong-target direct Runtime Config prevents COMPLETE
       );
       assert.equal(api.state.completed, null);
       assert.equal(api.state.failed.stage, STAGE.FINAL_RUNTIME_CONFIG_VERIFY);
-      assert.equal(farm.state.uploadSequence.includes(`${FRESH.targetDistPath}/index.html`), false);
+      assert.equal(
+        farm.state.uploadSequence.includes(`${FRESH.targetDistPath}/index.html`),
+        false,
+        'index.html must never be committed when runtime verification fails',
+      );
     });
   }
+});
+
+/**
+ * MANDATORY real-farm regression.
+ *
+ * Reproduces the exact proven Windows behaviour: REST `$value` returns the real
+ * runtime JSON, a DIRECT browser GET of the same `.json` returns HTTP 200 with
+ * HTML, and the bootstrap `.js` is served correctly. The run must complete.
+ */
+test('the run completes on a farm that serves .json as HTML through direct URLs', async () => {
+  const farm = createFakeSharePoint({ directJsonReturnsHtml: true, notReadyReads: 2, notReadyShape: 'file' });
+  farm.state.folders.set(FRESH.siteRoot, { listItemId: 1 });
+  const release = releaseFiles();
+  const api = createFakeApi(FRESH, release);
+  const verification = api.descriptor.runtimeVerification;
+
+  // Prove the simulated farm really does answer a direct .json GET with HTML.
+  const probe = await farm.fetchImpl(verification.runtimeConfigUrl, { method: 'GET' });
+  assert.equal(probe.status, 200);
+  assert.match(await probe.text(), /^<!DOCTYPE html>/i);
+
+  const result = await runDeploymentPipeline(pipelineOptions(farm, api, release));
+
+  assert.equal(result.ok, true);
+  assert.equal(result.runtimeConfig.ok, true);
+  assert.equal(result.runtimeConfig.bootstrapVerified, true);
+  assert.equal(result.runtimeConfig.jsonTransport, 'sharepoint-rest-$value');
+  assert.equal(result.runtimeConfig.bootstrapTransport, 'direct-browser-url');
+  assert.equal(result.runtimeConfig.runtimeConfigPath, `${FRESH.targetDistPath}/sitebuilder-runtime-config.json`);
+  assert.equal(result.runtimeConfig.deploymentMetadataPath, `${FRESH.targetDistPath}/sitebuilder-deployment.json`);
+  assert.equal(result.runtimeConfig.runtimeBootstrapUrl, `${FRESH.siteBaseUrl}/${RUNTIME_BOOTSTRAP_FILE}`);
+  assert.equal(result.runtimeConfig.deploymentJobId, 'job-1');
+  assert.equal(result.runtimeConfig.releaseId, 'release-1');
+
+  const stages = successStages(api.state.events);
+  for (const expected of [STAGE.FINAL_RUNTIME_CONFIG_VERIFY, STAGE.FINAL_INDEX_COMMIT, STAGE.FINAL_APP_SMOKE]) {
+    assert.ok(stages.includes(expected), `missing successful stage ${expected}`);
+  }
+  assert.ok(api.state.completed, 'the run must reach COMPLETE');
+  assert.equal(api.state.failed, null);
+
+  // The direct .json URL WAS answered with HTML, and it did not matter.
+  assert.ok(
+    farm.state.directJsonHtmlServed.length > 0,
+    'the regression is only meaningful if a direct .json request was answered with HTML',
+  );
+  // The bootstrap was fetched through its direct browser URL and is real JS.
+  assert.ok(farm.state.directReads.includes(`${FRESH.targetDistPath}/${RUNTIME_BOOTSTRAP_FILE}`));
+  const bootstrapBytes = farm.state.files.get(`${FRESH.targetDistPath}/${RUNTIME_BOOTSTRAP_FILE}`).bytes;
+  assert.ok(Buffer.from(bootstrapBytes).toString('utf8').includes(RUNTIME_BOOTSTRAP_MARKER));
+
+  // index.html was still the last file written, and it loads the bootstrap.
+  assert.equal(farm.state.uploadSequence.at(-1), `${FRESH.targetDistPath}/index.html`);
+  const indexHtml = Buffer.from(farm.state.files.get(`${FRESH.targetDistPath}/index.html`).bytes).toString('utf8');
+  assert.ok(indexHtml.indexOf(RUNTIME_BOOTSTRAP_FILE) < indexHtml.indexOf('type="module"'));
+  assert.equal(api.state.completed.verification.smoke.indexLoadsRuntimeBootstrap, true);
+  assert.equal(api.state.completed.verification.smoke.runtimeBootstrapVerified, true);
 });
 
 test('a total pre-deploy backup failure is a warning and deployment still succeeds', async () => {

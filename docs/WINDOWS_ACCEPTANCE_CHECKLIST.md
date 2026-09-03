@@ -132,6 +132,7 @@ Deploy the same release to two logical targets in the same Web.
 - [ ] Both reach COMPLETE
 - [ ] A's `sitebuilder-runtime-config.json` names A's libraries
 - [ ] B's names B's libraries
+- [ ] A's `sitebuilder-runtime-bootstrap.js` embeds A's identity, B's embeds B's
 - [ ] Neither contains the other's paths
 - [ ] Both apps load and read their own data
 
@@ -259,6 +260,10 @@ faithfully reproduce.
 - [ ] The app does not show `missing_runtime_config`
 - [ ] `sitebuilder-runtime-config.json` is beside `index.html`
 - [ ] `sitebuilder-deployment.json` is beside `index.html`
+- [ ] `sitebuilder-runtime-bootstrap.js` is beside `index.html`
+- [ ] `index.html` loads `./sitebuilder-runtime-bootstrap.js` before the module bundle
+- [ ] The browser console reports `Loaded runtime config from window-runtime-config`
+- [ ] A direct GET of `sitebuilder-runtime-config.json` may return HTML on this farm; the app still loads
 - [ ] Runtime host, `siteCode`, library roots, `siteAssetsRoot`, backend and final path match `siteDB1`
 - [ ] Runtime deployment job/release metadata matches the completed Run
 

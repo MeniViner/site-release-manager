@@ -13,9 +13,12 @@ import { createSharePointClient, SEED_CONTENT_TYPE, ASSET_CONTENT_TYPE, escapeOD
 import {
   ensureExactLibrary, ensureFolderTree, ensureTxtSeeds, uploadReleaseAssets,
   orderParentFirst, LIBRARY_OUTCOME, PROVISIONING_ERROR, ProvisioningError, finalAppSmoke,
+  verifyFinalRuntimeConfig,
 } from '../../shared/sharepointProvisioning.js';
 import { SP_ERROR } from '../../shared/sharepointErrors.js';
 import { buildSiteIdentity, buildTxtSeedPlan, requiredLibraries, requiredFolders } from '../../shared/siteRuntime.js';
+import { RUNTIME_BOOTSTRAP_FILE, RUNTIME_CONFIG_FILE, DEPLOYMENT_METADATA_FILE } from '../../shared/universalManifest.js';
+import { buildRuntimeBootstrapSource } from '../../shared/runtimeBootstrap.js';
 import { createFakeSharePoint, instantRetry, sha256Hex } from './helpers/fakeSharePoint.js';
 
 const IDENTITY = buildSiteIdentity({ host: 'portal.army.idf', siteCode: 'schedule' });
@@ -481,4 +484,223 @@ test('target A and target B in the same Web are provisioned independently', asyn
   assert.notEqual(IDENTITY.siteAssetsRoot, FRESH.siteAssetsRoot);
   assert.ok(farm.state.files.has(`${IDENTITY.usersDbRoot}/widgets_data.txt`));
   assert.ok(farm.state.files.has(`${FRESH.usersDbRoot}/widgets_data.txt`));
+});
+
+// ---------------------------------------------------------------------------
+// Runtime verification transport split
+// ---------------------------------------------------------------------------
+
+function runtimeFixture(identity = IDENTITY) {
+  const runtimeConfig = {
+    schemaVersion: 2,
+    storageBackend: identity.storageBackend,
+    host: identity.host,
+    siteCode: identity.siteCode,
+    siteDbFolder: identity.siteDbFolder,
+    siteDbRoot: identity.siteDbRoot,
+    usersDbFolder: identity.usersDbFolder,
+    usersDbRoot: identity.usersDbRoot,
+    siteAssetsFolder: identity.siteAssetsFolder,
+    siteAssetsRoot: identity.siteAssetsRoot,
+    widgetsDbTarget: identity.widgetsDbTarget,
+    targetDistPath: identity.targetDistPath,
+    finalAppUrl: identity.finalAppUrl,
+    deploymentGeneratedBy: 'site-release-manager',
+    deploymentJobId: 'job-77',
+    releaseId: 'release-77',
+    releaseVersion: '2.1.0',
+  };
+  const deploymentMetadata = {
+    kind: 'sitebuilder-deployment',
+    schemaVersion: 3,
+    generatedBy: 'site-release-manager',
+    storageBackend: identity.storageBackend,
+    host: identity.host,
+    siteCode: identity.siteCode,
+    siteDbRoot: identity.siteDbRoot,
+    usersDbRoot: identity.usersDbRoot,
+    siteAssetsRoot: identity.siteAssetsRoot,
+    targetDistPath: identity.targetDistPath,
+    finalAppUrl: identity.finalAppUrl,
+    deploymentJobId: 'job-77',
+    releaseId: 'release-77',
+    releaseVersion: '2.1.0',
+  };
+  const verification = {
+    runtimeConfigFile: RUNTIME_CONFIG_FILE,
+    deploymentMetadataFile: DEPLOYMENT_METADATA_FILE,
+    runtimeBootstrapFile: RUNTIME_BOOTSTRAP_FILE,
+    runtimeConfigPath: `${identity.targetDistPath}/${RUNTIME_CONFIG_FILE}`,
+    deploymentMetadataPath: `${identity.targetDistPath}/${DEPLOYMENT_METADATA_FILE}`,
+    runtimeBootstrapPath: `${identity.targetDistPath}/${RUNTIME_BOOTSTRAP_FILE}`,
+    runtimeConfigUrl: `${identity.siteBaseUrl}/${RUNTIME_CONFIG_FILE}`,
+    deploymentMetadataUrl: `${identity.siteBaseUrl}/${DEPLOYMENT_METADATA_FILE}`,
+    runtimeBootstrapUrl: `${identity.siteBaseUrl}/${RUNTIME_BOOTSTRAP_FILE}`,
+    expected: runtimeConfig,
+  };
+  return { runtimeConfig, deploymentMetadata, verification };
+}
+
+/** A farm that has this target's three runtime files deployed. */
+function farmWithRuntimeFiles(identity, fixture, overrides = {}) {
+  const farm = createFakeSharePoint({ directJsonReturnsHtml: true, ...overrides });
+  farm.addFile(`${identity.targetDistPath}/${RUNTIME_CONFIG_FILE}`, JSON.stringify(fixture.runtimeConfig, null, 2));
+  farm.addFile(`${identity.targetDistPath}/${DEPLOYMENT_METADATA_FILE}`, JSON.stringify(fixture.deploymentMetadata, null, 2));
+  farm.addFile(`${identity.targetDistPath}/${RUNTIME_BOOTSTRAP_FILE}`, buildRuntimeBootstrapSource(fixture.runtimeConfig));
+  return farm;
+}
+
+test('runtime JSON is verified through REST while the bootstrap is verified through its direct URL', async () => {
+  const fixture = runtimeFixture();
+  const farm = farmWithRuntimeFiles(IDENTITY, fixture);
+  const client = clientFor(farm);
+
+  const result = await verifyFinalRuntimeConfig(client, farm.fetchImpl, fixture.verification, { retry });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.bootstrapVerified, true);
+  assert.equal(result.jsonTransport, 'sharepoint-rest-$value');
+  assert.equal(result.bootstrapTransport, 'direct-browser-url');
+  assert.equal(result.deploymentJobId, 'job-77');
+  assert.equal(result.releaseVersion, '2.1.0');
+  assert.equal(result.targetDistPath, IDENTITY.targetDistPath);
+
+  // No direct request was made for either .json file, and the bootstrap WAS
+  // fetched directly.
+  assert.deepEqual(farm.state.directJsonHtmlServed, []);
+  assert.deepEqual(farm.state.directReads, [`${IDENTITY.targetDistPath}/${RUNTIME_BOOTSTRAP_FILE}`]);
+});
+
+test('a direct .json request answered with HTML does not affect the verified result', async () => {
+  const fixture = runtimeFixture();
+  const farm = farmWithRuntimeFiles(IDENTITY, fixture);
+  const client = clientFor(farm);
+
+  // Exactly the Windows symptom, proven against the same farm instance.
+  const direct = await farm.fetchImpl(fixture.verification.runtimeConfigUrl, { method: 'GET' });
+  assert.equal(direct.status, 200);
+  assert.match(await direct.text(), /^<!DOCTYPE html>/i);
+
+  const result = await verifyFinalRuntimeConfig(client, farm.fetchImpl, fixture.verification, { retry });
+  assert.equal(result.ok, true);
+});
+
+test('HTML returned through REST is never accepted as valid Runtime Config', async () => {
+  const fixture = runtimeFixture();
+  const farm = farmWithRuntimeFiles(IDENTITY, fixture);
+  farm.addFile(
+    `${IDENTITY.targetDistPath}/${RUNTIME_CONFIG_FILE}`,
+    '<!DOCTYPE html><html><head></head><body>library viewer</body></html>',
+  );
+  const client = clientFor(farm);
+
+  await assert.rejects(
+    verifyFinalRuntimeConfig(client, farm.fetchImpl, fixture.verification, { retry }),
+    (error) => {
+      assert.ok(error instanceof ProvisioningError);
+      assert.equal(error.code, PROVISIONING_ERROR.RUNTIME_CONFIG_INVALID);
+      assert.equal(error.errorClass, SP_ERROR.PERMANENT_FAILURE);
+      return true;
+    },
+  );
+});
+
+test('a missing bootstrap fails runtime verification', async () => {
+  const fixture = runtimeFixture();
+  const farm = farmWithRuntimeFiles(IDENTITY, fixture);
+  farm.state.files.delete(`${IDENTITY.targetDistPath}/${RUNTIME_BOOTSTRAP_FILE}`);
+  const client = clientFor(farm);
+
+  await assert.rejects(
+    verifyFinalRuntimeConfig(client, farm.fetchImpl, fixture.verification, { retry }),
+    () => true,
+  );
+});
+
+test('a bootstrap served with a legacy JavaScript content type is accepted', async () => {
+  const fixture = runtimeFixture();
+  const farm = farmWithRuntimeFiles(IDENTITY, fixture);
+  const client = clientFor(farm);
+  const legacyFarmFetch = async (url, init) => {
+    const clean = String(url).split('?')[0];
+    if (!clean.includes('/_api/') && clean.endsWith(RUNTIME_BOOTSTRAP_FILE)) {
+      const body = buildRuntimeBootstrapSource(fixture.runtimeConfig);
+      return {
+        ok: true,
+        status: 200,
+        // A classic farm may answer with any of these; the MIME type is
+        // reported but never required.
+        headers: { get: () => 'application/x-javascript; charset=utf-8' },
+        text: async () => body,
+        arrayBuffer: async () => Buffer.from(body),
+        clone() { return this; },
+      };
+    }
+    return farm.fetchImpl(url, init);
+  };
+
+  const result = await verifyFinalRuntimeConfig(client, legacyFarmFetch, fixture.verification, { retry });
+  assert.equal(result.ok, true);
+  assert.equal(result.bootstrapContentType, 'application/x-javascript; charset=utf-8');
+});
+
+test('a verification descriptor pointing outside this target is rejected before any read', async () => {
+  const fixture = runtimeFixture();
+  const farm = farmWithRuntimeFiles(IDENTITY, fixture);
+  const client = clientFor(farm);
+  const tampered = {
+    ...fixture.verification,
+    runtimeBootstrapUrl: `https://portal.army.idf/sites/schedule/siteDBOther/dist/${RUNTIME_BOOTSTRAP_FILE}`,
+  };
+
+  await assert.rejects(
+    verifyFinalRuntimeConfig(client, farm.fetchImpl, tampered, { retry }),
+    (error) => {
+      assert.equal(error.code, PROVISIONING_ERROR.RUNTIME_CONFIG_TARGET_MISMATCH);
+      return true;
+    },
+  );
+  assert.deepEqual(farm.state.directReads, []);
+});
+
+test('runtime verification requires both an authenticated client and a browser fetch', async () => {
+  const fixture = runtimeFixture();
+  const farm = farmWithRuntimeFiles(IDENTITY, fixture);
+  await assert.rejects(
+    verifyFinalRuntimeConfig(null, farm.fetchImpl, fixture.verification, { retry }),
+    /authenticated SharePoint client/,
+  );
+  await assert.rejects(
+    verifyFinalRuntimeConfig(clientFor(farm), null, fixture.verification, { retry }),
+    /requires fetchImpl/,
+  );
+});
+
+test('the final app smoke requires a verified bootstrap that index.html actually loads', async () => {
+  const fixture = runtimeFixture();
+  const farm = farmWithRuntimeFiles(IDENTITY, fixture);
+  const client = clientFor(farm);
+  const withBootstrap = '<html><head>'
+    + `<script src="./${RUNTIME_BOOTSTRAP_FILE}"></script>`
+    + '<script type="module" src="./assets/app.js"></script></head><body></body></html>';
+  const withoutBootstrap = '<html><head><script type="module" src="./assets/app.js"></script></head><body></body></html>';
+
+  farm.addFile(`${IDENTITY.targetDistPath}/index.html`, withBootstrap);
+  const runtimeVerification = await verifyFinalRuntimeConfig(client, farm.fetchImpl, fixture.verification, { retry });
+  const good = await finalAppSmoke(client, IDENTITY.targetDistPath, { retry, runtimeVerification });
+  assert.equal(good.ok, true);
+  assert.equal(good.indexLoadsRuntimeBootstrap, true);
+  assert.equal(good.runtimeBootstrapVerified, true);
+
+  farm.addFile(`${IDENTITY.targetDistPath}/index.html`, withoutBootstrap);
+  const bad = await finalAppSmoke(client, IDENTITY.targetDistPath, { retry, runtimeVerification });
+  assert.equal(bad.ok, false, 'an index that does not load the bootstrap must not pass the smoke');
+  assert.equal(bad.indexLoadsRuntimeBootstrap, false);
+
+  // An unverified bootstrap can never pass either.
+  const unverified = await finalAppSmoke(client, IDENTITY.targetDistPath, {
+    retry,
+    runtimeVerification: { ...runtimeVerification, bootstrapVerified: false },
+  });
+  assert.equal(unverified.ok, false);
 });

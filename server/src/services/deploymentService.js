@@ -14,10 +14,10 @@ import { config, paths } from '../config.js';
 import { getDb } from '../db.js';
 import { STAGE } from '../../../shared/deploymentStages.js';
 import { buildSiteIdentity, buildTxtSeedPlan, requiredLibraries, requiredFolders, canonicalTargetKey } from '../../../shared/siteRuntime.js';
-import { RUNTIME_CONFIG_FILE, DEPLOYMENT_METADATA_FILE } from '../../../shared/universalManifest.js';
+import { RUNTIME_CONFIG_FILE, DEPLOYMENT_METADATA_FILE, RUNTIME_BOOTSTRAP_FILE } from '../../../shared/universalManifest.js';
 import { verifyStoredReleaseIntegrity } from './releaseValidation.js';
 import {
-  createStaging, writeTargetOverlay, regenerateManifest, verifyStaging,
+  createStaging, writeTargetOverlay, injectRuntimeBootstrap, regenerateManifest, verifyStaging,
   buildDeploymentFiles, buildUploadOrder, resolveStagedFile, destroyStaging,
 } from './stagingService.js';
 import { appendRunEvent } from './runTelemetry.js';
@@ -138,16 +138,37 @@ export async function prepareDeploymentJob(jobId) {
     stage: STAGE.RUNTIME_CONFIG_CREATE,
     status: 'success',
     source: 'server',
-    message: 'Runtime Config ו-Deployment Metadata נוצרו ונגזרו מהיעד הזה בלבד.',
+    message: 'Runtime Config, Deployment Metadata ו-Runtime Bootstrap נוצרו ונגזרו מהיעד הזה בלבד.',
     details: {
       host: overlay.runtimeConfig.host,
       siteCode: overlay.runtimeConfig.siteCode,
       targetDistPath: overlay.runtimeConfig.targetDistPath,
       finalAppUrl: overlay.runtimeConfig.finalAppUrl,
       storageBackend: overlay.runtimeConfig.storageBackend,
+      runtimeBootstrapFile: overlay.runtimeBootstrapFile,
+      runtimeBootstrapBytes: overlay.runtimeBootstrapBytes,
     },
   });
   logs.push(log(jobId, `runtime finalAppUrl=${overlay.runtimeConfig.finalAppUrl}`));
+
+  // --- 4b. Reference the bootstrap from index.html ------------------------
+  // Must happen BEFORE the manifest is regenerated so the manifest describes
+  // the modified index.html and carries the bootstrap's size and SHA-256.
+  const injection = injectRuntimeBootstrap({ distDir: staging.distDir });
+  await appendRunEvent(objectId, {
+    stage: STAGE.RUNTIME_CONFIG_CREATE,
+    status: 'success',
+    source: 'server',
+    message: `index.html טוען את ${RUNTIME_BOOTSTRAP_FILE} לפני חבילת המודולים של Site Builder.`,
+    details: {
+      runtimeBootstrapFile: RUNTIME_BOOTSTRAP_FILE,
+      injected: injection.injected,
+      anchor: injection.anchor,
+      bootstrapIndex: injection.bootstrapIndex,
+      moduleIndex: injection.moduleIndex,
+    },
+  });
+  logs.push(log(jobId, `bootstrap injected=${injection.injected} anchor=${injection.anchor} before module script at ${injection.moduleIndex}`));
 
   // --- 5. MANIFEST_CREATE -------------------------------------------------
   await appendRunEvent(objectId, { stage: STAGE.MANIFEST_CREATE, status: 'started', source: 'server', message: 'מייצר Manifest מחדש כולל ה-overlay.' });
@@ -270,8 +291,17 @@ export function buildDeploymentDescriptor({ job, site, release, manifest, upload
     runtimeVerification: {
       runtimeConfigFile: RUNTIME_CONFIG_FILE,
       deploymentMetadataFile: DEPLOYMENT_METADATA_FILE,
+      runtimeBootstrapFile: RUNTIME_BOOTSTRAP_FILE,
+      // Server-relative paths, read through SharePoint REST `$value`. This farm
+      // does not reliably serve .json through a direct Document Library URL.
+      runtimeConfigPath: `${identity.targetDistPath}/${RUNTIME_CONFIG_FILE}`,
+      deploymentMetadataPath: `${identity.targetDistPath}/${DEPLOYMENT_METADATA_FILE}`,
+      runtimeBootstrapPath: `${identity.targetDistPath}/${RUNTIME_BOOTSTRAP_FILE}`,
       runtimeConfigUrl: `${identity.siteBaseUrl}/${RUNTIME_CONFIG_FILE}`,
       deploymentMetadataUrl: `${identity.siteBaseUrl}/${DEPLOYMENT_METADATA_FILE}`,
+      // The one runtime file that MUST work through a direct browser request,
+      // because that is exactly how index.html loads it.
+      runtimeBootstrapUrl: `${identity.siteBaseUrl}/${RUNTIME_BOOTSTRAP_FILE}`,
       expected: {
         host: identity.host,
         siteCode: identity.siteCode,

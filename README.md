@@ -75,6 +75,7 @@ assets/*.js
 ```text
 sitebuilder-runtime-config.json
 sitebuilder-deployment.json
+sitebuilder-runtime-bootstrap.js
 sharepoint-deploy-manifest.json
 ```
 
@@ -107,6 +108,30 @@ sharepoint-deploy-manifest.json
 - `deployedAt`
 
 הקובץ נשלח לדפדפן יחד עם ה-dist ואינו משנה את קובצי JS/CSS של הריליס.
+
+## Runtime Bootstrap שנוצר לכל אתר
+
+בחוות SharePoint סגורות, בקשת דפדפן ישירה ל-`sitebuilder-runtime-config.json` עלולה לחזור עם HTTP 200 וגוף HTML במקום JSON. לכן לצד קובצי ה-JSON נוצר גם קובץ `sitebuilder-runtime-bootstrap.js` לכל אתר, שמכיל בדיוק את אותו Runtime Config:
+
+```js
+window.SITE_BUILDER_RUNTIME_CONFIG = Object.freeze({ /* ... */ });
+window.__SITE_BUILDER_RUNTIME_CONFIG__ = window.SITE_BUILDER_RUNTIME_CONFIG;
+```
+
+בשלב ה-Staging מוזרקת ל-`index.html` שורה אחת, לפני ה-script של ה-module:
+
+```html
+<script src="./sitebuilder-runtime-bootstrap.js"></script>
+```
+
+Site Builder כבר קורא את המשתנים הגלובליים האלה לפני כל fetch של JSON, ולכן האפליקציה עולה עם הזהות הנכונה גם כשה-JSON אינו נגיש דרך URL ישיר. Site Builder אינו משתנה כלל.
+
+האימות מפוצל לפי תעבורה:
+
+- שני קובצי ה-JSON נקראים דרך SharePoint REST `$value` (`/_api/web/GetFileByServerRelativeUrl('<path>')/$value`)
+- `sitebuilder-runtime-bootstrap.js` נקרא דרך ה-URL הישיר שלו בדפדפן
+
+תשובת HTML נדחית בשני המסלולים ולעולם אינה נחשבת תקינה.
 
 
 ## בדיקת פריסה מקומית לפני SharePoint

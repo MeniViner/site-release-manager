@@ -1,7 +1,7 @@
-const OVERLAY_FILES = new Set([
-  'sitebuilder-runtime-config.json',
-  'sitebuilder-deployment.json',
-]);
+import { TARGET_OVERLAY_FILES } from '../../shared/universalManifest.js';
+
+/** Regenerated per target at deploy time; never accepted from a source release. */
+const OVERLAY_FILES = new Set(TARGET_OVERLAY_FILES);
 const DIST_DIRECTORY_NAMES = ['dist-universal', 'dist'];
 const isDistDirectoryName = (value) => DIST_DIRECTORY_NAMES.includes(String(value || '').toLowerCase());
 const LOCAL_FILES = new Set(['.DS_Store', 'Thumbs.db']);

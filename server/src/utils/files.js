@@ -2,11 +2,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import AdmZip from 'adm-zip';
+import { TARGET_OVERLAY_FILES } from '../../../shared/universalManifest.js';
 
-export const DEPLOYMENT_OVERLAY_FILES = new Set([
-  'sitebuilder-runtime-config.json',
-  'sitebuilder-deployment.json',
-]);
+/**
+ * Per-target files Release Manager regenerates for every deployment. A stored
+ * Universal source release must never contain one, or a later run could ship a
+ * stale runtime identity belonging to a different target.
+ */
+export const DEPLOYMENT_OVERLAY_FILES = new Set(TARGET_OVERLAY_FILES);
 
 const LOCAL_FILES = new Set(['.DS_Store', 'Thumbs.db']);
 
