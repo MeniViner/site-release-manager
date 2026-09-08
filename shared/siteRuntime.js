@@ -49,7 +49,7 @@ export class SiteIdentityError extends Error {
 }
 
 const SEGMENT_PATTERN = /^[A-Za-z0-9._-]{1,80}$/;
-const SITE_CODE_PATTERN = /^[a-z0-9][a-z0-9-]{1,49}$/;
+const SITE_CODE_PATTERN = /^[\p{L}\p{N}][\p{L}\p{N}._-]{0,79}$/u;
 const HOST_PATTERN = /^[a-z0-9][a-z0-9.-]{1,120}$/;
 
 export function normalizeSegment(value, fallback, label) {
@@ -82,10 +82,6 @@ export function buildSiteIdentity(site = {}) {
   const bootstrapFolder = normalizeSegment(site.bootstrapFolder, RUNTIME_DEFAULTS.bootstrapFolder, 'bootstrapFolder');
   const widgetsDbTarget = text(site.widgetsDbTarget || RUNTIME_DEFAULTS.widgetsDbTarget).toLowerCase() === 'site' ? 'site' : 'users';
   const storageBackend = text(site.storageBackend || RUNTIME_DEFAULTS.storageBackend).toLowerCase() === 'mongo' ? 'mongo' : 'txt';
-
-  if (siteDbFolder.toLowerCase() === usersDbFolder.toLowerCase()) {
-    throw new SiteIdentityError('siteDbFolder and usersDbFolder must be two different Document Libraries.');
-  }
 
   const siteRoot = `/sites/${siteCode}`;
   const siteDbRoot = `${siteRoot}/${siteDbFolder}`;

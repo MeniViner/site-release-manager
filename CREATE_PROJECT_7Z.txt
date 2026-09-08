@@ -2,14 +2,15 @@ SITE RELEASE MANAGER — CREATE TRANSFER 7Z
 
 The archive name contains the project folder name plus the current date/time.
 All .env / .env.* files are INCLUDED.
-Every node_modules folder is EXCLUDED.
+Every node_modules and storage folder are EXCLUDED.
+
 
 ============================================================
 macOS / zsh
 ============================================================
 Run from the ROOT of the site-release-manager project:
 
-project="$(basename "$PWD")"; stamp="$(date '+%Y-%m-%d_%H-%M-%S')"; sevenzip="$(command -v 7zz || command -v 7z)"; if [ -z "$sevenzip" ]; then echo "7-Zip was not found (expected 7zz or 7z)"; return 1 2>/dev/null || exit 1; fi; "$sevenzip" a -t7z "../${project}_${stamp}.7z" . -xr'!node_modules' -xr'!node_modules/*' -xr'!*/node_modules' -xr'!*/node_modules/*'
+project="$(basename "$PWD")"; stamp="$(date '+%Y-%m-%d_%H-%M-%S')"; sevenzip="$(command -v 7zz || command -v 7z)"; if [ -z "$sevenzip" ]; then echo "7-Zip was not found (expected 7zz or 7z)"; return 1 2>/dev/null || exit 1; fi; "$sevenzip" a -t7z "../${project}_${stamp}.7z" . -xr'!node_modules' -xr'!node_modules/*' -xr'!*/node_modules' -xr'!*/node_modules/*' -xr'!storage' -xr'!storage/*'
 
 Example:
 site-release-manager_2026-08-10_15-30-45.7z

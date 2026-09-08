@@ -114,8 +114,8 @@ export async function ensureExactLibrary(client, spec, options = {}) {
       );
     }
     if (!library.id) return { ready: false, reason: 'LIBRARY_ID_NOT_READY' };
-    if (normalizePath(library.rootFolder) !== expectedRoot) {
-      throw new ProvisioningError(
+      if (normalizePath(library.rootFolder).toLowerCase() !== expectedRoot.toLowerCase()) {
+        throw new ProvisioningError(
         PROVISIONING_ERROR.LIBRARY_URL_ALLOCATION_FAILED,
         `"${spec.title}" resolved to root folder "${library.rootFolder}" instead of the configured "${expectedRoot}". `
         + 'SharePoint auto-suffixed the URL; Release Manager will not deploy to a different physical library.',
@@ -140,7 +140,9 @@ export async function ensureExactLibrary(client, spec, options = {}) {
 
   // Another list may already own the target root folder URL under a different title.
   const all = await client.readAllLibraries();
-  const occupier = all.find((item) => normalizePath(item.rootFolder) === expectedRoot);
+  const occupier = all.find(
+    (item) => normalizePath(item.rootFolder).toLowerCase() === expectedRoot.toLowerCase()
+  );
   if (occupier && String(occupier.title) !== String(spec.title)) {
     throw new ProvisioningError(
       PROVISIONING_ERROR.LIBRARY_URL_COLLISION,

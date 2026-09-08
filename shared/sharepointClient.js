@@ -195,7 +195,10 @@ export function createSharePointClient(options = {}) {
         return { ready: false, reason: 'LIBRARY_EXISTS_NOT_DOCUMENT_LIBRARY', exists: true, library };
       }
       if (!library.id) return { ready: false, reason: 'LIBRARY_ROOT_NOT_READY', exists: true, library };
-      if (normalizePath(library.rootFolder) !== normalizePath(folderPath)) {
+      if (
+        normalizePath(library.rootFolder).toLowerCase() !==
+        normalizePath(folderPath).toLowerCase()
+      ) {
         return { ready: false, reason: 'LIBRARY_ROOT_MISMATCH', exists: true, library };
       }
       return { ready: true, reason: 'LIBRARY_ROOT_READY', exists: true, library };
@@ -224,7 +227,10 @@ export function createSharePointClient(options = {}) {
       return { ready: false, reason: 'FOLDER_OBJECT_VISIBLE_WAITING_FOR_LIST_ITEM', exists: true };
     }
     if (fsType !== 1) return { ready: false, reason: 'FOLDER_METADATA_UNRECOGNIZED', exists: true };
-    if (fileRef && fileRef !== normalizePath(folderPath)) {
+    if (
+      fileRef &&
+      fileRef.toLowerCase() !== normalizePath(folderPath).toLowerCase()
+    ) {
       return { ready: false, reason: 'LIST_BACKED_FOLDER_NOT_READY', exists: true };
     }
     return { ready: true, reason: 'LIST_BACKED_FOLDER_READY', exists: true, listItemId: id };
