@@ -11,6 +11,8 @@ const { jobsRouter } = require("./routes/jobs.js");
 const { deploymentsRouter } = require("./routes/deployments.js");
 const { runsRouter } = require("./routes/runs.js");
 const { backupsRouter } = require("./routes/backups.js");
+const { deploymentBatchesRouter } = require("./routes/deploymentBatches.js");
+const { migrationsRouter } = require("./routes/migrations.js");
 /**
  * Headers the browser worker sends. X-SRM-Lease carries the exclusive write
  * lease; without it in the allow-list every cross-origin deployment request
@@ -93,6 +95,8 @@ function createApp() {
   app.use('/api/deployments', deploymentsRouter);
   app.use('/api/runs', runsRouter);
   app.use('/api/backups', backupsRouter);
+  app.use('/api/deployment-batches', deploymentBatchesRouter);
+  app.use('/api/migrations', migrationsRouter);
 
   // An unknown /api route must never fall through to the SPA fallback, which
   // would answer HTML and make a typo look like a broken API.
