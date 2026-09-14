@@ -13,7 +13,7 @@ Release Manager has two global operating modes: `txt` (the safe default) and `mo
 
 ## Release compatibility
 
-Universal releases are shared artifacts. `universalProof.storageCompatibility` must explicitly contain the active backend. Older artifacts without this field fail closed; they must be re-ingested from a current Universal build.
+Universal releases are shared artifacts. `universalProof.storageCompatibility` must explicitly contain Mongo before a Mongo deployment. Older artifacts without this field retain legacy TXT compatibility only, preserving the existing production path while failing closed for Mongo.
 
 ## Secrets
 
@@ -29,4 +29,3 @@ Universal releases are shared artifacts. `universalProof.storageCompatibility` m
 ```
 
 Sites store only `backendProfileId` and the matching public `backendApiUrl`. API keys are never returned by `/api/config`, written into runtime config, deployment metadata, SharePoint or logs.
-

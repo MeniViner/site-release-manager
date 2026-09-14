@@ -18,6 +18,7 @@ function backendQuery(value) {
 
 function releaseSupportsBackend(release, backend) {
   const supported = release?.universalProof?.storageCompatibility;
+  if (!Array.isArray(supported)) return backend === 'txt';
   return Array.isArray(supported) && supported.map((item) => String(item).toLowerCase()).includes(backend);
 }
 

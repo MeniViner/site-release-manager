@@ -17,9 +17,10 @@ test('backend validation accepts only the two operational modes', () => {
   assert.throws(() => normalizeBackend('mixed'), (error) => error.code === 'INVALID_BACKEND');
 });
 
-test('old or incompatible releases fail closed for a requested backend', () => {
+test('old releases remain TXT-compatible but fail closed for Mongo', () => {
   assert.equal(releaseSupportsBackend(universalRelease, 'mongo'), true);
-  assert.equal(releaseSupportsBackend({ universalProof: {} }, 'txt'), false);
+  assert.equal(releaseSupportsBackend({ universalProof: {} }, 'txt'), true);
+  assert.equal(releaseSupportsBackend({ universalProof: {} }, 'mongo'), false);
 });
 
 test('TXT profile preserves the canonical libraries, folders and ten seeds', () => {
