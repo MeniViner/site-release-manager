@@ -1,11 +1,9 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-
-import { createTxtBackup, BACKUP_OUTCOME } from '../../shared/sharepointProvisioning.js';
-import { createSharePointClient } from '../../shared/sharepointClient.js';
-import { buildSiteIdentity, buildTxtSeedPlan, requiredFolders, requiredLibraries } from '../../shared/siteRuntime.js';
-import { createFakeSharePoint, instantRetry, sha256Hex } from './helpers/fakeSharePoint.js';
-
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const { createTxtBackup, BACKUP_OUTCOME } = require("../src/shared/sharepointProvisioning.js");
+const { createSharePointClient } = require("../src/shared/sharepointClient.js");
+const { buildSiteIdentity, buildTxtSeedPlan, requiredFolders, requiredLibraries } = require("../src/shared/siteRuntime.js");
+const { createFakeSharePoint, instantRetry, sha256Hex } = require("./helpers/fakeSharePoint.js");
 const RETRY = { ...instantRetry, maxAttempts: 6, maxElapsedMs: 2000 };
 const FIXED_NOW = new Date('2026-08-31T11:09:26.000Z');
 

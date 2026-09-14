@@ -9,26 +9,14 @@
  * The Site Builder repository is an optional sibling checkout, so the tests
  * that need it skip (rather than fail) when it is absent.
  */
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import path from 'node:path';
-import { pathToFileURL } from 'node:url';
-
-import { validateUniversalManifest, MANIFEST_FILE, RUNTIME_BOOTSTRAP_FILE, parseIndexReferencesFromHtml } from '../../shared/universalManifest.js';
-import { buildSiteIdentity, buildTxtSeedPlan, TXT_DATA_FILES } from '../../shared/siteRuntime.js';
-import {
-  RUNTIME_BOOTSTRAP_GLOBAL,
-  RUNTIME_BOOTSTRAP_LEGACY_GLOBAL,
-  RUNTIME_BOOTSTRAP_SCRIPT_TAG,
-  buildRuntimeBootstrapSource,
-  parseRuntimeBootstrapConfig,
-  hasRuntimeBootstrapReference,
-  injectRuntimeBootstrapIntoIndexHtml,
-  findRuntimeBootstrapIndex,
-  findFirstModuleScriptIndex,
-} from '../../shared/runtimeBootstrap.js';
-
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const { pathToFileURL } = require("node:url");
+const { validateUniversalManifest, MANIFEST_FILE, RUNTIME_BOOTSTRAP_FILE, parseIndexReferencesFromHtml } = require("../src/shared/universalManifest.js");
+const { buildSiteIdentity, buildTxtSeedPlan, TXT_DATA_FILES } = require("../src/shared/siteRuntime.js");
+const { RUNTIME_BOOTSTRAP_GLOBAL, RUNTIME_BOOTSTRAP_LEGACY_GLOBAL, RUNTIME_BOOTSTRAP_SCRIPT_TAG, buildRuntimeBootstrapSource, parseRuntimeBootstrapConfig, hasRuntimeBootstrapReference, injectRuntimeBootstrapIntoIndexHtml, findRuntimeBootstrapIndex, findFirstModuleScriptIndex } = require("../src/shared/runtimeBootstrap.js");
 const SITE_BUILDER_ROOT = process.env.SITE_BUILDER_PATH
   || path.resolve(process.cwd(), '..', '..', 'site-builder');
 

@@ -6,16 +6,14 @@
  *    inside minified bundles;
  *  - an UNPROVEN artifact carrying target identity is rejected.
  */
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-
-import { validateUniversalArtifact, readUniversalProof, verifyStoredReleaseIntegrity, ReleaseValidationError, findTargetIdentityLeaks } from '../src/services/releaseValidation.js';
-import { collectFiles } from '../src/utils/files.js';
-import { MANIFEST_FILE, RUNTIME_CONFIG_FILE, RUNTIME_BOOTSTRAP_FILE } from '../../shared/universalManifest.js';
-
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { validateUniversalArtifact, readUniversalProof, verifyStoredReleaseIntegrity, ReleaseValidationError, findTargetIdentityLeaks } = require("../src/services/releaseValidation.js");
+const { collectFiles } = require("../src/utils/files.js");
+const { MANIFEST_FILE, RUNTIME_CONFIG_FILE, RUNTIME_BOOTSTRAP_FILE } = require("../src/shared/universalManifest.js");
 function artifact({ withManifest = true, manifestOverrides = {}, bundleBody = 'console.log("universal")', extraFiles = {} } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'srm-validate-'));
   fs.mkdirSync(path.join(root, 'assets'), { recursive: true });

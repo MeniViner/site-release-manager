@@ -7,22 +7,18 @@
  * JSOM. All SharePoint work belongs to the browser worker.
  */
 
-import fs from 'node:fs';
-import path from 'node:path';
-import { ObjectId } from 'mongodb';
-import { config, paths } from '../config.js';
-import { getDb } from '../db.js';
-import { STAGE } from '../../../shared/deploymentStages.js';
-import { buildSiteIdentity, buildTxtSeedPlan, requiredLibraries, requiredFolders, canonicalTargetKey } from '../../../shared/siteRuntime.js';
-import { RUNTIME_CONFIG_FILE, DEPLOYMENT_METADATA_FILE, RUNTIME_BOOTSTRAP_FILE } from '../../../shared/universalManifest.js';
-import { verifyStoredReleaseIntegrity } from './releaseValidation.js';
-import {
-  createStaging, writeTargetOverlay, injectRuntimeBootstrap, regenerateManifest, verifyStaging,
-  buildDeploymentFiles, buildUploadOrder, resolveStagedFile, destroyStaging,
-} from './stagingService.js';
-import { appendRunEvent } from './runTelemetry.js';
-import { JOB_STATE } from './jobState.js';
-
+const fs = require("node:fs");
+const path = require("node:path");
+const { ObjectId } = require("mongodb");
+const { config, paths } = require("../config.js");
+const { getDb } = require("../db.js");
+const { STAGE } = require("../shared/deploymentStages.js");
+const { buildSiteIdentity, buildTxtSeedPlan, requiredLibraries, requiredFolders, canonicalTargetKey } = require("../shared/siteRuntime.js");
+const { RUNTIME_CONFIG_FILE, DEPLOYMENT_METADATA_FILE, RUNTIME_BOOTSTRAP_FILE } = require("../shared/universalManifest.js");
+const { verifyStoredReleaseIntegrity } = require("./releaseValidation.js");
+const { createStaging, writeTargetOverlay, injectRuntimeBootstrap, regenerateManifest, verifyStaging, buildDeploymentFiles, buildUploadOrder, resolveStagedFile, destroyStaging } = require("./stagingService.js");
+const { appendRunEvent } = require("./runTelemetry.js");
+const { JOB_STATE } = require("./jobState.js");
 function log(jobId, message) {
   const line = `[${new Date().toISOString()}] [prepare] ${message}`;
   console.log(`[job ${jobId}] ${line}`);
@@ -30,7 +26,7 @@ function log(jobId, message) {
 }
 
 /** Canonical per-target runtime identity. Nothing downstream re-derives paths. */
-export function buildSiteRuntime(site, release, jobId, deployedAt) {
+function buildSiteRuntime(site, release, jobId, deployedAt) {
   const identity = buildSiteIdentity(site);
   return {
     schemaVersion: 2,
@@ -43,7 +39,7 @@ export function buildSiteRuntime(site, release, jobId, deployedAt) {
   };
 }
 
-export function stagingRootForJob(jobId) {
+function stagingRootForJob(jobId) {
   return path.join(paths.builds, String(jobId));
 }
 
@@ -52,7 +48,7 @@ export function stagingRootForJob(jobId) {
  * private staging directory, generate this target's overlay, regenerate the
  * manifest and re-verify every hash. Only then is the job handed to the browser.
  */
-export async function prepareDeploymentJob(jobId) {
+async function prepareDeploymentJob(jobId) {
   const db = getDb();
   const objectId = new ObjectId(jobId);
   const job = await db.collection('deployment_jobs').findOne({ _id: objectId });
@@ -263,7 +259,7 @@ export async function prepareDeploymentJob(jobId) {
  * The complete instruction set the browser worker needs. Derived fresh from the
  * job's own staging and identity so it can never carry another target's values.
  */
-export function buildDeploymentDescriptor({ job, site, release, manifest, uploadOrder }) {
+function buildDeploymentDescriptor({ job, site, release, manifest, uploadOrder }) {
   const identity = buildSiteIdentity(site);
   return {
     job: {
@@ -341,9 +337,16 @@ function distSubFolders(manifest) {
  * Files are always served from the job's own staging, never from the immutable
  * stored release directory.
  */
-export function resolveDeploymentFile(job, _release, relativePath) {
+function resolveDeploymentFile(job, _release, relativePath) {
   const distDir = job.stagingDistDir || path.join(stagingRootForJob(job._id), 'dist');
   return resolveStagedFile(distDir, relativePath);
 }
 
-export { destroyStaging };
+module.exports = {
+  buildSiteRuntime: buildSiteRuntime,
+  stagingRootForJob: stagingRootForJob,
+  prepareDeploymentJob: prepareDeploymentJob,
+  buildDeploymentDescriptor: buildDeploymentDescriptor,
+  resolveDeploymentFile: resolveDeploymentFile,
+  destroyStaging: destroyStaging,
+};

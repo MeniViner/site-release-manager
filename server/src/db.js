@@ -1,11 +1,10 @@
-import { MongoClient } from 'mongodb';
-import { config } from './config.js';
-import { buildSiteIdentity, canonicalTargetKey } from '../../shared/siteRuntime.js';
-
+const { MongoClient } = require("mongodb");
+const { config } = require("./config.js");
+const { buildSiteIdentity, canonicalTargetKey } = require("./shared/siteRuntime.js");
 let client;
 let database;
 
-export async function connectDb() {
+async function connectDb() {
   if (database) return database;
   client = new MongoClient(config.mongoUri, { serverSelectionTimeoutMS: 4000 });
   await client.connect();
@@ -23,7 +22,7 @@ export async function connectDb() {
  * siteUsersDBFinance, ...), which share host and siteCode but are separate
  * targets. Uniqueness now lives on the canonical target key.
  */
-export async function migrateIndexes(db) {
+async function migrateIndexes(db) {
   await backfillTargetKeys(db);
 
   const sites = db.collection('sites');
@@ -74,13 +73,20 @@ async function backfillTargetKeys(db) {
   if (updated) console.log(`[db] Backfilled targetKey on ${updated} site record(s).`);
 }
 
-export function getDb() {
+function getDb() {
   if (!database) throw new Error('MongoDB is not connected.');
   return database;
 }
 
-export async function closeDb() {
+async function closeDb() {
   if (client) await client.close();
   client = undefined;
   database = undefined;
 }
+
+module.exports = {
+  connectDb: connectDb,
+  migrateIndexes: migrateIndexes,
+  getDb: getDb,
+  closeDb: closeDb,
+};

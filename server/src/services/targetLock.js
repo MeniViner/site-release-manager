@@ -7,27 +7,26 @@
  * physical SharePoint target cannot deploy concurrently.
  */
 
-import { ObjectId } from 'mongodb';
-import { getDb } from '../db.js';
-import { buildSiteIdentity, canonicalTargetKey } from '../../../shared/siteRuntime.js';
-
+const { ObjectId } = require("mongodb");
+const { getDb } = require("../db.js");
+const { buildSiteIdentity, canonicalTargetKey } = require("../shared/siteRuntime.js");
 const COLLECTION = 'deployment_locks';
 
 /**
  * A lock older than this with no heartbeat is considered stale. It is never
  * silently stolen: it is reported so the caller can supersede it explicitly.
  */
-export const STALE_LOCK_MS = 15 * 60 * 1000;
+const STALE_LOCK_MS = 15 * 60 * 1000;
 
-export async function ensureLockIndexes(db = getDb()) {
+async function ensureLockIndexes(db = getDb()) {
   await db.collection(COLLECTION).createIndex({ targetKey: 1 }, { unique: true });
 }
 
-export function targetKeyForSite(site) {
+function targetKeyForSite(site) {
   return canonicalTargetKey(buildSiteIdentity(site));
 }
 
-export class TargetLockedError extends Error {
+class TargetLockedError extends Error {
   constructor(lock, stale) {
     super(stale
       ? 'קיימת ריצה תקועה על היעד הזה. אפשר להחליף אותה בריצה חדשה.'
@@ -53,7 +52,7 @@ export class TargetLockedError extends Error {
  * @param {boolean} [options.takeOver] supersede an existing lock on user request
  * @returns {Promise<{acquired:boolean, supersededJobId:string|null}>}
  */
-export async function acquireTargetLock({ targetKey, jobId, siteId, takeOver = false, now = new Date() }) {
+async function acquireTargetLock({ targetKey, jobId, siteId, takeOver = false, now = new Date() }) {
   const db = getDb();
   const collection = db.collection(COLLECTION);
   const document = {
@@ -97,13 +96,13 @@ export async function acquireTargetLock({ targetKey, jobId, siteId, takeOver = f
   return { acquired: true, supersededJobId: String(existing.jobId) };
 }
 
-export function isStale(lock, now = new Date()) {
+function isStale(lock, now = new Date()) {
   const last = new Date(lock.heartbeatAt || lock.acquiredAt || 0).getTime();
   return Number.isFinite(last) && (now.getTime() - last) > STALE_LOCK_MS;
 }
 
 /** Keep a long-running browser deployment from looking abandoned. */
-export async function heartbeatTargetLock(jobId, now = new Date()) {
+async function heartbeatTargetLock(jobId, now = new Date()) {
   await getDb().collection(COLLECTION).updateOne(
     { jobId: new ObjectId(jobId) },
     { $set: { heartbeatAt: now } },
@@ -111,15 +110,28 @@ export async function heartbeatTargetLock(jobId, now = new Date()) {
 }
 
 /** Release on success, failure, cancellation or supersede. */
-export async function releaseTargetLock(jobId) {
+async function releaseTargetLock(jobId) {
   const result = await getDb().collection(COLLECTION).deleteOne({ jobId: new ObjectId(jobId) });
   return result.deletedCount > 0;
 }
 
-export async function readTargetLock(targetKey) {
+async function readTargetLock(targetKey) {
   return getDb().collection(COLLECTION).findOne({ targetKey });
 }
 
-export async function readLockForJob(jobId) {
+async function readLockForJob(jobId) {
   return getDb().collection(COLLECTION).findOne({ jobId: new ObjectId(jobId) });
 }
+
+module.exports = {
+  ensureLockIndexes: ensureLockIndexes,
+  targetKeyForSite: targetKeyForSite,
+  TargetLockedError: TargetLockedError,
+  acquireTargetLock: acquireTargetLock,
+  isStale: isStale,
+  heartbeatTargetLock: heartbeatTargetLock,
+  releaseTargetLock: releaseTargetLock,
+  readTargetLock: readTargetLock,
+  readLockForJob: readLockForJob,
+  STALE_LOCK_MS: STALE_LOCK_MS,
+};

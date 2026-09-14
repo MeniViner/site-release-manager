@@ -4,29 +4,17 @@
  * These tests use the real Site Builder dist-universal when it is available, so
  * they exercise the actual artifact shape rather than a hand-made fixture.
  */
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import crypto from 'node:crypto';
-
-import {
-  createStaging, writeTargetOverlay, injectRuntimeBootstrap, regenerateManifest, verifyStaging,
-  buildUploadOrder, destroyStaging, REGENERATED_FILES, StagingError,
-} from '../src/services/stagingService.js';
-import { buildSiteIdentity } from '../../shared/siteRuntime.js';
-import {
-  RUNTIME_CONFIG_FILE, DEPLOYMENT_METADATA_FILE, RUNTIME_BOOTSTRAP_FILE, MANIFEST_FILE,
-  validateUniversalManifest, parseIndexReferencesFromHtml,
-} from '../../shared/universalManifest.js';
-import {
-  RUNTIME_BOOTSTRAP_MARKER, RUNTIME_BOOTSTRAP_LEGACY_GLOBAL, parseRuntimeBootstrapConfig,
-  findFirstModuleScriptIndex, findRuntimeBootstrapIndex, injectRuntimeBootstrapIntoIndexHtml,
-  hasRuntimeBootstrapReference, countRuntimeBootstrapReferences,
-} from '../../shared/runtimeBootstrap.js';
-import { hashDirectory } from '../src/utils/files.js';
-
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const crypto = require("node:crypto");
+const { createStaging, writeTargetOverlay, injectRuntimeBootstrap, regenerateManifest, verifyStaging, buildUploadOrder, destroyStaging, REGENERATED_FILES, StagingError } = require("../src/services/stagingService.js");
+const { buildSiteIdentity } = require("../src/shared/siteRuntime.js");
+const { RUNTIME_CONFIG_FILE, DEPLOYMENT_METADATA_FILE, RUNTIME_BOOTSTRAP_FILE, MANIFEST_FILE, validateUniversalManifest, parseIndexReferencesFromHtml } = require("../src/shared/universalManifest.js");
+const { RUNTIME_BOOTSTRAP_MARKER, RUNTIME_BOOTSTRAP_LEGACY_GLOBAL, parseRuntimeBootstrapConfig, findFirstModuleScriptIndex, findRuntimeBootstrapIndex, injectRuntimeBootstrapIntoIndexHtml, hasRuntimeBootstrapReference, countRuntimeBootstrapReferences } = require("../src/shared/runtimeBootstrap.js");
+const { hashDirectory } = require("../src/utils/files.js");
 const SITE_BUILDER_ROOT = process.env.SITE_BUILDER_PATH || path.resolve(process.cwd(), '..', '..', 'site-builder');
 const REAL_DIST = path.join(SITE_BUILDER_ROOT, 'dist-universal');
 const hasRealDist = fs.existsSync(path.join(REAL_DIST, 'index.html'));

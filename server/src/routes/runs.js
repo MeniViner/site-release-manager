@@ -3,15 +3,14 @@
  * raw logs available underneath it.
  */
 
-import { Router } from 'express';
-import { ObjectId } from 'mongodb';
-import { getDb } from '../db.js';
-import { stageLabel, canonicalStage, STAGE_ORDER } from '../../../shared/deploymentStages.js';
-import { summarizeStages, canonicalState, stateLabel, isTerminal, isResumable, JOB_STATE } from '../services/jobState.js';
-import { cancelDeploymentJob, retryDeploymentJob, findActiveJobForTarget } from '../services/jobQueue.js';
-import { TargetLockedError } from '../services/targetLock.js';
-
-export const runsRouter = Router();
+const { Router } = require("express");
+const { ObjectId } = require("mongodb");
+const { getDb } = require("../db.js");
+const { stageLabel, canonicalStage, STAGE_ORDER } = require("../shared/deploymentStages.js");
+const { summarizeStages, canonicalState, stateLabel, isTerminal, isResumable, JOB_STATE } = require("../services/jobState.js");
+const { cancelDeploymentJob, retryDeploymentJob, findActiveJobForTarget } = require("../services/jobQueue.js");
+const { TargetLockedError } = require("../services/targetLock.js");
+const runsRouter = Router();
 
 const publicJob = (job) => ({ ...job, id: String(job._id), _id: undefined });
 
@@ -166,3 +165,7 @@ runsRouter.get('/target/:targetKey/active', async (req, res, next) => {
     return next(error);
   }
 });
+
+module.exports = {
+  runsRouter: runsRouter,
+};

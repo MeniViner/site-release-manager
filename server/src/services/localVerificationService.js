@@ -1,26 +1,14 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import crypto from 'node:crypto';
-import { ObjectId } from 'mongodb';
-import { getDb } from '../db.js';
-import { config, paths, rootDir } from '../config.js';
-import { buildSeedFiles } from './seedData.js';
-import { resolveDeploymentFile } from './deploymentService.js';
-import { MANIFEST_KIND, SUPPORTED_MANIFEST_SCHEMA_VERSIONS, RUNTIME_BOOTSTRAP_FILE } from '../../../shared/universalManifest.js';
-import {
-  RUNTIME_BOOTSTRAP_MARKER, parseRuntimeBootstrapConfig,
-  findFirstModuleScriptIndex, findFirstForeignScriptIndex, findRuntimeBootstrapIndex,
-} from '../../../shared/runtimeBootstrap.js';
-import {
-  collectFiles,
-  DEPLOYMENT_OVERLAY_FILES,
-  ensureDirectory,
-  hashDirectory,
-  isSafeRelativePath,
-  normalizeRelativePath,
-  removeDirectory,
-} from '../utils/files.js';
-
+const fs = require("node:fs");
+const path = require("node:path");
+const crypto = require("node:crypto");
+const { ObjectId } = require("mongodb");
+const { getDb } = require("../db.js");
+const { config, paths, rootDir } = require("../config.js");
+const { buildSeedFiles } = require("./seedData.js");
+const { resolveDeploymentFile } = require("./deploymentService.js");
+const { MANIFEST_KIND, SUPPORTED_MANIFEST_SCHEMA_VERSIONS, RUNTIME_BOOTSTRAP_FILE } = require("../shared/universalManifest.js");
+const { RUNTIME_BOOTSTRAP_MARKER, parseRuntimeBootstrapConfig, findFirstModuleScriptIndex, findFirstForeignScriptIndex, findRuntimeBootstrapIndex } = require("../shared/runtimeBootstrap.js");
+const { collectFiles, DEPLOYMENT_OVERLAY_FILES, ensureDirectory, hashDirectory, isSafeRelativePath, normalizeRelativePath, removeDirectory } = require("../utils/files.js");
 const TEXT_EXTENSIONS = new Set(['.html', '.js', '.css', '.json', '.txt', '.svg', '.xml', '.webmanifest']);
 
 function hashFile(filePath) {
@@ -171,7 +159,7 @@ function makeLogger(jobId) {
   return { lines, info: (m) => add('INFO', m), pass: (m) => add('PASS', m), warn: (m) => add('WARN', m), fail: (m) => add('FAIL', m) };
 }
 
-export async function runLocalDeploymentVerification(jobId) {
+async function runLocalDeploymentVerification(jobId) {
   const db = getDb();
   const objectId = new ObjectId(jobId);
   const job = await db.collection('deployment_jobs').findOne({ _id: objectId });
@@ -573,3 +561,7 @@ export async function runLocalDeploymentVerification(jobId) {
 
   return report;
 }
+
+module.exports = {
+  runLocalDeploymentVerification: runLocalDeploymentVerification,
+};

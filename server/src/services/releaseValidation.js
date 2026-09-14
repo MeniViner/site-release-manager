@@ -9,15 +9,11 @@
  *  - An artifact WITHOUT that proof that contains target identity IS rejected.
  */
 
-import fs from 'node:fs';
-import path from 'node:path';
-import { collectFiles, hashFile } from '../utils/files.js';
-import {
-  MANIFEST_FILE, TARGET_OVERLAY_FILES, ENTRY_POINT,
-  validateUniversalManifest, parseIndexReferencesFromHtml,
-} from '../../../shared/universalManifest.js';
-
-export class ReleaseValidationError extends Error {
+const fs = require("node:fs");
+const path = require("node:path");
+const { collectFiles, hashFile } = require("../utils/files.js");
+const { MANIFEST_FILE, TARGET_OVERLAY_FILES, ENTRY_POINT, validateUniversalManifest, parseIndexReferencesFromHtml } = require("../shared/universalManifest.js");
+class ReleaseValidationError extends Error {
   constructor(message, details = {}) {
     super(message);
     this.name = 'ReleaseValidationError';
@@ -34,7 +30,7 @@ const IDENTITY_PATTERNS = [
   /https?:\/\/[a-z0-9.-]+\/(?:sites|teams)\/[a-z0-9][a-z0-9-]{1,80}\/[A-Za-z0-9._-]{1,80}\/dist/ig,
 ];
 
-export function findTargetIdentityLeaks(distDir, limit = 8) {
+function findTargetIdentityLeaks(distDir, limit = 8) {
   const hits = [];
   for (const file of collectFiles(distDir)) {
     if (!SCANNED_EXTENSIONS.has(path.extname(file.path).toLowerCase())) continue;
@@ -51,7 +47,7 @@ export function findTargetIdentityLeaks(distDir, limit = 8) {
 }
 
 /** Read and validate the Site Builder source manifest that proves a Universal build. */
-export function readUniversalProof(distDir) {
+function readUniversalProof(distDir) {
   const manifestPath = path.join(distDir, MANIFEST_FILE);
   if (!fs.existsSync(manifestPath)) {
     return { verified: false, reason: 'source-manifest-missing', errors: [`${MANIFEST_FILE} is not present in the artifact`], info: null };
@@ -77,7 +73,7 @@ export function readUniversalProof(distDir) {
  * Full validation of an ingested artifact directory.
  * Throws ReleaseValidationError listing every problem found.
  */
-export function validateUniversalArtifact(distDir, { sourceName = '' } = {}) {
+function validateUniversalArtifact(distDir, { sourceName = '' } = {}) {
   const errors = [];
   const warnings = [];
 
@@ -147,7 +143,7 @@ export function validateUniversalArtifact(distDir, { sourceName = '' } = {}) {
 }
 
 /** Confirm a stored release is still byte-identical to what was ingested. */
-export function verifyStoredReleaseIntegrity(release) {
+function verifyStoredReleaseIntegrity(release) {
   if (!release?.distDir || !fs.existsSync(release.distDir)) {
     throw new ReleaseValidationError('תיקיית הריליס השמור חסרה. יש להעלות את הריליס מחדש.', { statusCode: 409 });
   }
@@ -177,3 +173,11 @@ export function verifyStoredReleaseIntegrity(release) {
   }
   return { proof, fileCount: proof.manifest.files.length };
 }
+
+module.exports = {
+  ReleaseValidationError: ReleaseValidationError,
+  findTargetIdentityLeaks: findTargetIdentityLeaks,
+  readUniversalProof: readUniversalProof,
+  validateUniversalArtifact: validateUniversalArtifact,
+  verifyStoredReleaseIntegrity: verifyStoredReleaseIntegrity,
+};

@@ -7,22 +7,21 @@
  * open on the same SharePoint host.
  */
 
-import crypto from 'node:crypto';
-import fs from 'node:fs';
-import { Router } from 'express';
-import { ObjectId } from 'mongodb';
-import { getDb } from '../db.js';
-import { isSafeRelativePath, normalizeRelativePath } from '../utils/files.js';
-import { buildDeploymentDescriptor, resolveDeploymentFile } from '../services/deploymentService.js';
-import { runLocalDeploymentVerification } from '../services/localVerificationService.js';
-import { appendRunEvent } from '../services/runTelemetry.js';
-import { settleJob } from '../services/jobQueue.js';
-import { heartbeatTargetLock } from '../services/targetLock.js';
-import { STAGE } from '../../../shared/deploymentStages.js';
-import { JOB_STATE, canonicalState, isTerminal, resumeStage, completedStages, assertTransition } from '../services/jobState.js';
-import { finishBackupRecord, publicBackup, startBackupRecord } from '../services/backupService.js';
-
-export const deploymentsRouter = Router();
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const { Router } = require("express");
+const { ObjectId } = require("mongodb");
+const { getDb } = require("../db.js");
+const { isSafeRelativePath, normalizeRelativePath } = require("../utils/files.js");
+const { buildDeploymentDescriptor, resolveDeploymentFile } = require("../services/deploymentService.js");
+const { runLocalDeploymentVerification } = require("../services/localVerificationService.js");
+const { appendRunEvent } = require("../services/runTelemetry.js");
+const { settleJob } = require("../services/jobQueue.js");
+const { heartbeatTargetLock } = require("../services/targetLock.js");
+const { STAGE } = require("../shared/deploymentStages.js");
+const { JOB_STATE, canonicalState, isTerminal, resumeStage, completedStages, assertTransition } = require("../services/jobState.js");
+const { finishBackupRecord, publicBackup, startBackupRecord } = require("../services/backupService.js");
+const deploymentsRouter = Router();
 
 /** A lease is renewed on every reported event; this is how long silence is tolerated. */
 const LEASE_TTL_MS = 90 * 1000;
@@ -450,3 +449,7 @@ deploymentsRouter.post('/:jobId/fail', async (req, res, next) => {
     return next(error);
   }
 });
+
+module.exports = {
+  deploymentsRouter: deploymentsRouter,
+};

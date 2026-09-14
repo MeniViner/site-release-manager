@@ -1,4 +1,4 @@
-export function parseReleaseVersion(value) {
+function parseReleaseVersion(value) {
   const raw = String(value || '').trim();
   const match = raw.match(/^v?(\d+)\.(\d+)\.(\d+)$/i);
   if (!match) return null;
@@ -10,7 +10,7 @@ export function parseReleaseVersion(value) {
   };
 }
 
-export function nextReleaseVersions(value) {
+function nextReleaseVersions(value) {
   const parsed = parseReleaseVersion(value);
   const base = parsed || { major: 0, minor: 0, patch: 0, normalized: '0.0.0' };
   return {
@@ -21,3 +21,8 @@ export function nextReleaseVersions(value) {
     recommended: parsed ? `${base.major}.${base.minor}.${base.patch + 1}` : '0.1.0',
   };
 }
+
+module.exports = {
+  parseReleaseVersion: parseReleaseVersion,
+  nextReleaseVersions: nextReleaseVersions,
+};

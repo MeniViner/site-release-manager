@@ -1,7 +1,6 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { nextReleaseVersions, parseReleaseVersion } from '../src/utils/versioning.js';
-
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const { nextReleaseVersions, parseReleaseVersion } = require("../src/utils/versioning.js");
 test('parses semantic release versions', () => {
   assert.deepEqual(parseReleaseVersion('0.2.4'), { major: 0, minor: 2, patch: 4, normalized: '0.2.4' });
   assert.deepEqual(parseReleaseVersion('v1.5.9'), { major: 1, minor: 5, patch: 9, normalized: '1.5.9' });

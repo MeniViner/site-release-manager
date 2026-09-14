@@ -6,10 +6,12 @@
  * existing callers keep working against one source of truth.
  */
 
-import { buildSiteIdentity, buildTxtSeedPlan } from '../../../shared/siteRuntime.js';
-
-export function buildSeedFiles(site) {
+const { buildSiteIdentity, buildTxtSeedPlan } = require("../shared/siteRuntime.js");
+function buildSeedFiles(site) {
   return buildTxtSeedPlan(buildSiteIdentity(site));
 }
 
-export { buildTxtSeedPlan };
+module.exports = {
+  buildSeedFiles: buildSeedFiles,
+  buildTxtSeedPlan: buildTxtSeedPlan,
+};

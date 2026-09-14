@@ -8,9 +8,8 @@
  * rewriting stored documents.
  */
 
-import { STAGE, canonicalStage, stageLabel } from '../../../shared/deploymentStages.js';
-
-export const JOB_STATE = Object.freeze({
+const { STAGE, canonicalStage, stageLabel } = require("../shared/deploymentStages.js");
+const JOB_STATE = Object.freeze({
   QUEUED: 'QUEUED',
   PREPARING_RELEASE: 'PREPARING_RELEASE',
   READY_FOR_SHAREPOINT: 'READY_FOR_SHAREPOINT',
@@ -24,13 +23,13 @@ export const JOB_STATE = Object.freeze({
 });
 
 /** Values written by earlier versions that must keep resolving. */
-export const LEGACY_STATE_ALIASES = Object.freeze({
+const LEGACY_STATE_ALIASES = Object.freeze({
   INTERRUPTED: JOB_STATE.SUPERSEDED,
   PREPARING: JOB_STATE.PREPARING_RELEASE,
 });
 
 /** States in which the job still owns its target and may write to SharePoint. */
-export const ACTIVE_STATES = Object.freeze([
+const ACTIVE_STATES = Object.freeze([
   JOB_STATE.QUEUED,
   JOB_STATE.PREPARING_RELEASE,
   JOB_STATE.READY_FOR_SHAREPOINT,
@@ -39,9 +38,9 @@ export const ACTIVE_STATES = Object.freeze([
 ]);
 
 /** Held but not writing. A paused job still owns the target lock. */
-export const HELD_STATES = Object.freeze([JOB_STATE.PAUSED]);
+const HELD_STATES = Object.freeze([JOB_STATE.PAUSED]);
 
-export const TERMINAL_STATES = Object.freeze([
+const TERMINAL_STATES = Object.freeze([
   JOB_STATE.SUCCEEDED,
   JOB_STATE.FAILED,
   JOB_STATE.CANCELLED,
@@ -49,36 +48,36 @@ export const TERMINAL_STATES = Object.freeze([
 ]);
 
 /** Every value that must be matched when querying for a target's current owner. */
-export const ACTIVE_STATE_QUERY = Object.freeze([...ACTIVE_STATES, ...HELD_STATES]);
+const ACTIVE_STATE_QUERY = Object.freeze([...ACTIVE_STATES, ...HELD_STATES]);
 
 /** Terminal values including the legacy spelling, for history queries. */
-export const TERMINAL_STATE_QUERY = Object.freeze([...TERMINAL_STATES, 'INTERRUPTED']);
+const TERMINAL_STATE_QUERY = Object.freeze([...TERMINAL_STATES, 'INTERRUPTED']);
 
-export function canonicalState(state) {
+function canonicalState(state) {
   const key = String(state || '').trim().toUpperCase();
   if (JOB_STATE[key]) return key;
   return LEGACY_STATE_ALIASES[key] || key;
 }
 
-export const isActive = (state) => ACTIVE_STATES.includes(canonicalState(state));
-export const isHeld = (state) => HELD_STATES.includes(canonicalState(state));
-export const isTerminal = (state) => TERMINAL_STATES.includes(canonicalState(state));
+const isActive = (state) => ACTIVE_STATES.includes(canonicalState(state));
+const isHeld = (state) => HELD_STATES.includes(canonicalState(state));
+const isTerminal = (state) => TERMINAL_STATES.includes(canonicalState(state));
 /** A job that still owns its target: nothing else may deploy to it. */
-export const ownsTarget = (state) => isActive(state) || isHeld(state);
+const ownsTarget = (state) => isActive(state) || isHeld(state);
 
 /**
  * A job may be resumed when SharePoint work was already under way and the job
  * never reached a terminal state. Resuming continues at the first incomplete
  * stage; it never restarts from stage 1.
  */
-export const RESUMABLE_STATES = Object.freeze([
+const RESUMABLE_STATES = Object.freeze([
   JOB_STATE.READY_FOR_SHAREPOINT,
   JOB_STATE.WAITING_FOR_BROWSER,
   JOB_STATE.DEPLOYING,
   JOB_STATE.PAUSED,
 ]);
 
-export const isResumable = (state) => RESUMABLE_STATES.includes(canonicalState(state));
+const isResumable = (state) => RESUMABLE_STATES.includes(canonicalState(state));
 
 /**
  * The transitions the product actually performs.
@@ -107,14 +106,14 @@ const ALLOWED_TRANSITIONS = Object.freeze({
  * A terminal state is final, except that an explicit user retry may re-enter a
  * FAILED job. SUCCEEDED, CANCELLED and SUPERSEDED can never be left.
  */
-export function canTransition(from, to) {
+function canTransition(from, to) {
   const source = canonicalState(from);
   const target = canonicalState(to);
   if (source === target && ACTIVE_STATES.includes(source)) return true;
   return (ALLOWED_TRANSITIONS[source] || []).includes(target);
 }
 
-export function assertTransition(from, to) {
+function assertTransition(from, to) {
   if (!canTransition(from, to)) {
     const error = new Error(`Invalid job transition ${canonicalState(from)} -> ${canonicalState(to)}.`);
     error.statusCode = 409;
@@ -124,7 +123,7 @@ export function assertTransition(from, to) {
   return canonicalState(to);
 }
 
-export const STATE_LABELS = Object.freeze({
+const STATE_LABELS = Object.freeze({
   QUEUED: 'ממתין בתור',
   PREPARING_RELEASE: 'מכין ריליס',
   READY_FOR_SHAREPOINT: 'מוכן ל-SharePoint',
@@ -137,7 +136,7 @@ export const STATE_LABELS = Object.freeze({
   SUPERSEDED: 'הוחלף',
 });
 
-export const stateLabel = (state) => STATE_LABELS[canonicalState(state)] || canonicalState(state) || '—';
+const stateLabel = (state) => STATE_LABELS[canonicalState(state)] || canonicalState(state) || '—';
 
 /**
  * Collapse a job's event stream into a per-stage summary.
@@ -146,7 +145,7 @@ export const stateLabel = (state) => STATE_LABELS[canonicalState(state)] || cano
  * terminal, any stage still showing `started` is reported as abandoned so the
  * UI cannot show a permanently spinning stage.
  */
-export function summarizeStages(events = [], jobState = '') {
+function summarizeStages(events = [], jobState = '') {
   const settled = isTerminal(jobState);
   const byStage = new Map();
 
@@ -225,7 +224,7 @@ export function summarizeStages(events = [], jobState = '') {
 }
 
 /** Stages already verified complete — the resume point is the first one missing. */
-export function completedStages(events = []) {
+function completedStages(events = []) {
   const done = new Set();
   const failed = new Set();
   for (const raw of events) {
@@ -247,7 +246,7 @@ export function completedStages(events = []) {
  * idempotent, and the FormDigest is session-scoped and must be re-acquired.
  * Discovery finds the existing libraries, folders and TXT files and reuses them.
  */
-export function resumeStage(events = [], pipeline = null) {
+function resumeStage(events = [], pipeline = null) {
   const order = pipeline || [
     STAGE.BROWSER_ACTIVATE, STAGE.SHAREPOINT_CONTEXTINFO, STAGE.LIBRARY_DISCOVERY,
     STAGE.CREATE_LIBRARIES, STAGE.LIBRARY_STABILIZE, STAGE.PRE_DEPLOY_BACKUP, STAGE.CREATE_FOLDERS, STAGE.FOLDER_STABILIZE,
@@ -257,3 +256,27 @@ export function resumeStage(events = [], pipeline = null) {
   const { done } = completedStages(events);
   return order.find((stage) => !done.has(stage)) || STAGE.COMPLETE;
 }
+
+module.exports = {
+  canonicalState: canonicalState,
+  canTransition: canTransition,
+  assertTransition: assertTransition,
+  summarizeStages: summarizeStages,
+  completedStages: completedStages,
+  resumeStage: resumeStage,
+  JOB_STATE: JOB_STATE,
+  LEGACY_STATE_ALIASES: LEGACY_STATE_ALIASES,
+  ACTIVE_STATES: ACTIVE_STATES,
+  HELD_STATES: HELD_STATES,
+  TERMINAL_STATES: TERMINAL_STATES,
+  ACTIVE_STATE_QUERY: ACTIVE_STATE_QUERY,
+  TERMINAL_STATE_QUERY: TERMINAL_STATE_QUERY,
+  isActive: isActive,
+  isHeld: isHeld,
+  isTerminal: isTerminal,
+  ownsTarget: ownsTarget,
+  RESUMABLE_STATES: RESUMABLE_STATES,
+  isResumable: isResumable,
+  STATE_LABELS: STATE_LABELS,
+  stateLabel: stateLabel,
+};

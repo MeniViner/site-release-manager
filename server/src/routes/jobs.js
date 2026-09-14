@@ -1,8 +1,7 @@
-import { Router } from 'express';
-import { ObjectId } from 'mongodb';
-import { getDb } from '../db.js';
-
-export const jobsRouter = Router();
+const { Router } = require("express");
+const { ObjectId } = require("mongodb");
+const { getDb } = require("../db.js");
+const jobsRouter = Router();
 
 jobsRouter.get('/site/:siteId', async (req, res, next) => {
   try {
@@ -26,3 +25,7 @@ jobsRouter.get('/:id', async (req, res, next) => {
     return next(error);
   }
 });
+
+module.exports = {
+  jobsRouter: jobsRouter,
+};

@@ -1,9 +1,8 @@
-import { ObjectId } from 'mongodb';
-import { getDb } from '../db.js';
-import { buildSiteIdentity, buildTxtSeedPlan, canonicalTargetKey } from '../../../shared/siteRuntime.js';
-
-export const BACKUP_TRIGGER = 'PRE_DEPLOY';
-export const BACKUP_OUTCOMES = Object.freeze([
+const { ObjectId } = require("mongodb");
+const { getDb } = require("../db.js");
+const { buildSiteIdentity, buildTxtSeedPlan, canonicalTargetKey } = require("../shared/siteRuntime.js");
+const BACKUP_TRIGGER = 'PRE_DEPLOY';
+const BACKUP_OUTCOMES = Object.freeze([
   'IN_PROGRESS',
   'PASSED',
   'PARTIAL',
@@ -86,7 +85,7 @@ function snapshotDocument({ job, site, release, now = new Date() }) {
   };
 }
 
-export function publicBackup(record, site = null) {
+function publicBackup(record, site = null) {
   if (!record) return null;
   return {
     ...record,
@@ -110,7 +109,7 @@ export function publicBackup(record, site = null) {
   };
 }
 
-export async function startBackupRecord({ job, site, release, startedAt }) {
+async function startBackupRecord({ job, site, release, startedAt }) {
   const collection = getDb().collection('backups');
   const existing = await collection.findOne({ runId: job._id, trigger: BACKUP_TRIGGER });
   if (existing && existing.outcome !== 'IN_PROGRESS') {
@@ -131,7 +130,7 @@ export async function startBackupRecord({ job, site, release, startedAt }) {
   };
 }
 
-export async function finishBackupRecord({ job, site, release, payload = {} }) {
+async function finishBackupRecord({ job, site, release, payload = {} }) {
   const outcome = text(payload.outcome, 80);
   if (!BACKUP_OUTCOMES.includes(outcome) || outcome === 'IN_PROGRESS') {
     const error = new Error(`Unsupported backup outcome "${outcome || '(empty)'}".`);
@@ -179,6 +178,15 @@ export async function finishBackupRecord({ job, site, release, payload = {} }) {
   return collection.findOne({ runId: job._id, trigger: BACKUP_TRIGGER });
 }
 
-export function objectIdOrNull(value) {
+function objectIdOrNull(value) {
   return ObjectId.isValid(String(value || '')) ? new ObjectId(String(value)) : null;
 }
+
+module.exports = {
+  publicBackup: publicBackup,
+  startBackupRecord: startBackupRecord,
+  finishBackupRecord: finishBackupRecord,
+  objectIdOrNull: objectIdOrNull,
+  BACKUP_TRIGGER: BACKUP_TRIGGER,
+  BACKUP_OUTCOMES: BACKUP_OUTCOMES,
+};

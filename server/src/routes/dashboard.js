@@ -1,7 +1,6 @@
-import { Router } from 'express';
-import { getDb } from '../db.js';
-
-export const dashboardRouter = Router();
+const { Router } = require("express");
+const { getDb } = require("../db.js");
+const dashboardRouter = Router();
 
 dashboardRouter.get('/', async (_req, res, next) => {
   try {
@@ -32,3 +31,7 @@ dashboardRouter.get('/', async (_req, res, next) => {
     next(error);
   }
 });
+
+module.exports = {
+  dashboardRouter: dashboardRouter,
+};

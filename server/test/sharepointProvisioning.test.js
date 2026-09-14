@@ -6,21 +6,15 @@
  * but CREATE_TXT_SEEDS failed, and only a browser refresh plus a second manual
  * run succeeded.
  */
-import test from 'node:test';
-import assert from 'node:assert/strict';
-
-import { createSharePointClient, SEED_CONTENT_TYPE, ASSET_CONTENT_TYPE, escapeODataPath, assertServerRelativePath } from '../../shared/sharepointClient.js';
-import {
-  ensureExactLibrary, ensureFolderTree, ensureTxtSeeds, uploadReleaseAssets,
-  orderParentFirst, LIBRARY_OUTCOME, PROVISIONING_ERROR, ProvisioningError, finalAppSmoke,
-  verifyFinalRuntimeConfig,
-} from '../../shared/sharepointProvisioning.js';
-import { SP_ERROR } from '../../shared/sharepointErrors.js';
-import { buildSiteIdentity, buildTxtSeedPlan, requiredLibraries, requiredFolders } from '../../shared/siteRuntime.js';
-import { RUNTIME_BOOTSTRAP_FILE, RUNTIME_CONFIG_FILE, DEPLOYMENT_METADATA_FILE } from '../../shared/universalManifest.js';
-import { buildRuntimeBootstrapSource } from '../../shared/runtimeBootstrap.js';
-import { createFakeSharePoint, instantRetry, sha256Hex } from './helpers/fakeSharePoint.js';
-
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const { createSharePointClient, SEED_CONTENT_TYPE, ASSET_CONTENT_TYPE, escapeODataPath, assertServerRelativePath } = require("../src/shared/sharepointClient.js");
+const { ensureExactLibrary, ensureFolderTree, ensureTxtSeeds, uploadReleaseAssets, orderParentFirst, LIBRARY_OUTCOME, PROVISIONING_ERROR, ProvisioningError, finalAppSmoke, verifyFinalRuntimeConfig } = require("../src/shared/sharepointProvisioning.js");
+const { SP_ERROR } = require("../src/shared/sharepointErrors.js");
+const { buildSiteIdentity, buildTxtSeedPlan, requiredLibraries, requiredFolders } = require("../src/shared/siteRuntime.js");
+const { RUNTIME_BOOTSTRAP_FILE, RUNTIME_CONFIG_FILE, DEPLOYMENT_METADATA_FILE } = require("../src/shared/universalManifest.js");
+const { buildRuntimeBootstrapSource } = require("../src/shared/runtimeBootstrap.js");
+const { createFakeSharePoint, instantRetry, sha256Hex } = require("./helpers/fakeSharePoint.js");
 const IDENTITY = buildSiteIdentity({ host: 'portal.army.idf', siteCode: 'schedule' });
 const FRESH = buildSiteIdentity({
   host: 'portal.army.idf', siteCode: 'schedule',

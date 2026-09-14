@@ -1,28 +1,14 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import { Router } from 'express';
-import multer from 'multer';
-import { ObjectId } from 'mongodb';
-import { paths, config } from '../config.js';
-import { getDb } from '../db.js';
-import {
-  collectFiles,
-  copyDistWithoutDeploymentOverlay,
-  directoryStats,
-  distExclusionReason,
-  ensureDirectory,
-  extractReleaseZip,
-  findDistRoot,
-  hashDirectory,
-  isSafeRelativePath,
-  normalizeRelativePath,
-  removeDirectory,
-  safeResolve,
-} from '../utils/files.js';
-import { nextReleaseVersions, parseReleaseVersion } from '../utils/versioning.js';
-import { validateUniversalArtifact, ReleaseValidationError as ArtifactValidationError } from '../services/releaseValidation.js';
-import { MANIFEST_FILE } from '../../../shared/universalManifest.js';
-
+const fs = require("node:fs");
+const path = require("node:path");
+const { Router } = require("express");
+const multer = require("multer");
+const { ObjectId } = require("mongodb");
+const { paths, config } = require("../config.js");
+const { getDb } = require("../db.js");
+const { collectFiles, copyDistWithoutDeploymentOverlay, directoryStats, distExclusionReason, ensureDirectory, extractReleaseZip, findDistRoot, hashDirectory, isSafeRelativePath, normalizeRelativePath, removeDirectory, safeResolve } = require("../utils/files.js");
+const { nextReleaseVersions, parseReleaseVersion } = require("../utils/versioning.js");
+const { validateUniversalArtifact, ReleaseValidationError: ArtifactValidationError } = require("../services/releaseValidation.js");
+const { MANIFEST_FILE } = require("../shared/universalManifest.js");
 class ReleaseValidationError extends Error {
   constructor(message) {
     super(message);
@@ -54,7 +40,7 @@ const folderUpload = multer({
   },
 });
 
-export const releasesRouter = Router();
+const releasesRouter = Router();
 
 const publicRelease = (release) => ({
   ...release,
@@ -325,3 +311,7 @@ releasesRouter.delete('/:id', async (req, res, next) => {
     return next(error);
   }
 });
+
+module.exports = {
+  releasesRouter: releasesRouter,
+};

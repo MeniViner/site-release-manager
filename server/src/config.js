@@ -1,10 +1,8 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import dotenv from 'dotenv';
-
-const serverDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-export const rootDir = path.resolve(serverDir, '..');
+const fs = require("node:fs");
+const path = require("node:path");
+const dotenv = require("dotenv");
+const serverDir = path.resolve(__dirname, '..');
+const rootDir = path.resolve(serverDir, '..');
 dotenv.config({ path: path.join(rootDir, '.env') });
 const rootPackage = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
 const appVersion = String(rootPackage.version || 'unknown');
@@ -28,7 +26,7 @@ const clientOrigins = Array.from(new Set([
   ...sharePointHosts.map((host) => `https://${host}`),
 ]));
 
-export const config = Object.freeze({
+const config = Object.freeze({
   appVersion,
   port: Number(process.env.PORT || 4300),
   clientOrigins,
@@ -44,9 +42,15 @@ export const config = Object.freeze({
   maxReleaseFiles: Number(process.env.MAX_RELEASE_FILES || 12000),
 });
 
-export const paths = Object.freeze({
+const paths = Object.freeze({
   releases: path.join(config.storageRoot, 'releases'),
   builds: path.join(config.storageRoot, 'deployments'),
   localSimulations: path.join(config.storageRoot, 'local-simulations'),
   temp: path.join(config.storageRoot, 'temp'),
 });
+
+module.exports = {
+  rootDir: rootDir,
+  config: config,
+  paths: paths,
+};

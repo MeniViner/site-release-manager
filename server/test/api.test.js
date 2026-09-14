@@ -2,13 +2,12 @@
  * HTTP surface tests: CORS, preflight, health and the endpoints the Windows
  * workstation depends on when Release Manager is opened from SharePoint.
  */
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { MongoClient, ObjectId } from 'mongodb';
-
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { MongoClient, ObjectId } = require("mongodb");
 const TEST_URI = process.env.SRM_TEST_MONGO_URI || '';
 const TEST_DB = `srm_api_${Date.now()}`;
 process.env.MONGO_URI = TEST_URI || 'mongodb://127.0.0.1:1';
@@ -18,23 +17,25 @@ process.env.CLIENT_ORIGINS = 'http://localhost:5173,https://portal.army.idf';
 process.env.SHAREPOINT_HOSTS = 'portal.army.idf,mazi.army.idf';
 
 let available = false;
-if (TEST_URI) {
-  const probe = new MongoClient(TEST_URI, { serverSelectionTimeoutMS: 1500 });
-  try { await probe.connect(); await probe.db(TEST_DB).command({ ping: 1 }); available = true; } catch { available = false; }
-  finally { await probe.close().catch(() => {}); }
-}
-
-const { createApp, ALLOWED_REQUEST_HEADERS } = await import('../src/app.js');
+const { createApp, ALLOWED_REQUEST_HEADERS } = require("../src/app.js");
 let connectDb; let closeDb; let db;
-if (available) {
-  ({ connectDb, closeDb } = await import('../src/db.js'));
-  db = await connectDb();
-}
+let server;
+let base;
 
-const app = createApp();
-const server = app.listen(0);
-await new Promise((resolve) => server.once('listening', resolve));
-const base = `http://127.0.0.1:${server.address().port}`;
+test.before(async () => {
+  if (TEST_URI) {
+    const probe = new MongoClient(TEST_URI, { serverSelectionTimeoutMS: 1500 });
+    try { await probe.connect(); await probe.db(TEST_DB).command({ ping: 1 }); available = true; } catch { available = false; }
+    finally { await probe.close().catch(() => {}); }
+  }
+  if (available) {
+    ({ connectDb, closeDb } = require("../src/db.js"));
+    db = await connectDb();
+  }
+  server = createApp().listen(0);
+  await new Promise((resolve) => server.once('listening', resolve));
+  base = `http://127.0.0.1:${server.address().port}`;
+});
 
 const call = async (pathname, options = {}) => {
   const response = await fetch(`${base}${pathname}`, options);
@@ -167,13 +168,13 @@ test('an invalid target identity is rejected with a clear message', async (t) =>
   });
   assert.equal(badHost.status, 400);
 
-  const sameLibraries = await call('/api/sites', {
+  const invalidFolder = await call('/api/sites', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ unit: 'u', name: 'n', managerName: 'm', host: 'portal.army.idf', siteCode: 'schedule', siteDbFolder: 'shared', usersDbFolder: 'shared' }),
+    body: JSON.stringify({ unit: 'u', name: 'n', managerName: 'm', host: 'portal.army.idf', siteCode: 'schedule', siteDbFolder: '../shared', usersDbFolder: 'shared' }),
   });
-  assert.equal(sameLibraries.status, 400);
-  assert.ok(/different Document Libraries/i.test(sameLibraries.body.error));
+  assert.equal(invalidFolder.status, 400);
+  assert.ok(/single SharePoint folder name|traversal segment/i.test(invalidFolder.body.error));
 });
 
 test('two logical targets can be tracked inside one SharePoint Web', async (t) => {
