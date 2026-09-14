@@ -7,16 +7,14 @@
  * reading raw logs.
  */
 
-import { ObjectId } from 'mongodb';
-import { getDb } from '../db.js';
-import { STAGE, STAGE_LABELS, canonicalStage, stageLabel } from '../../../shared/deploymentStages.js';
-import { summarizeStages } from './jobState.js';
-
+const { ObjectId } = require("mongodb");
+const { getDb } = require("../db.js");
+const { STAGE, STAGE_LABELS, canonicalStage, stageLabel } = require("../shared/deploymentStages.js");
+const { summarizeStages } = require("./jobState.js");
 const MAX_EVENTS = 1500;
 
 /** Canonical stage keys. Kept under the historical export name for compatibility. */
-export const RUN_STAGES = STAGE;
-export { STAGE_LABELS, canonicalStage, stageLabel };
+const RUN_STAGES = STAGE;
 
 const text = (value, max = 2000) => String(value ?? '').slice(0, max);
 
@@ -34,7 +32,7 @@ function sanitizeDetails(details) {
 
 let eventCounter = 0;
 
-export function normalizeRunEvent(input = {}, defaults = {}) {
+function normalizeRunEvent(input = {}, defaults = {}) {
   const now = new Date();
   const stage = canonicalStage(input.stage || defaults.stage || 'UNKNOWN');
   const status = ['started', 'success', 'warning', 'failed', 'info'].includes(input.status)
@@ -68,7 +66,7 @@ export function normalizeRunEvent(input = {}, defaults = {}) {
   };
 }
 
-export async function appendRunEvent(jobId, input, defaults = {}) {
+async function appendRunEvent(jobId, input, defaults = {}) {
   const db = getDb();
   const objectId = jobId instanceof ObjectId ? jobId : new ObjectId(jobId);
   const event = normalizeRunEvent(input, defaults);
@@ -112,11 +110,22 @@ export async function appendRunEvent(jobId, input, defaults = {}) {
   return event;
 }
 
-export async function appendRunEvents(jobId, events, defaults = {}) {
+async function appendRunEvents(jobId, events, defaults = {}) {
   for (const event of events || []) await appendRunEvent(jobId, event, defaults);
 }
 
 /** Retained for compatibility with existing callers and tests. */
-export function summarizeEvents(events = [], jobState = '') {
+function summarizeEvents(events = [], jobState = '') {
   return summarizeStages(events.map((event) => normalizeRunEvent(event)), jobState);
 }
+
+module.exports = {
+  normalizeRunEvent: normalizeRunEvent,
+  appendRunEvent: appendRunEvent,
+  appendRunEvents: appendRunEvents,
+  summarizeEvents: summarizeEvents,
+  RUN_STAGES: RUN_STAGES,
+  STAGE_LABELS: STAGE_LABELS,
+  canonicalStage: canonicalStage,
+  stageLabel: stageLabel,
+};

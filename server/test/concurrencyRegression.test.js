@@ -4,19 +4,17 @@
  * Each test names the failure it prevents, because every one of these was a
  * real bug that produced a wrong final state rather than an obvious crash.
  */
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { MongoClient, ObjectId } from 'mongodb';
-
-import { ensureFolderTree, uploadReleaseAssets, PROVISIONING_ERROR, isFatalProvisioningError } from '../../shared/sharepointProvisioning.js';
-import { createSharePointClient } from '../../shared/sharepointClient.js';
-import { SP_ERROR } from '../../shared/sharepointErrors.js';
-import { buildSiteIdentity } from '../../shared/siteRuntime.js';
-import { createFakeSharePoint, instantRetry, sha256Hex } from './helpers/fakeSharePoint.js';
-
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { MongoClient, ObjectId } = require("mongodb");
+const { ensureFolderTree, uploadReleaseAssets, PROVISIONING_ERROR, isFatalProvisioningError } = require("../src/shared/sharepointProvisioning.js");
+const { createSharePointClient } = require("../src/shared/sharepointClient.js");
+const { SP_ERROR } = require("../src/shared/sharepointErrors.js");
+const { buildSiteIdentity } = require("../src/shared/siteRuntime.js");
+const { createFakeSharePoint, instantRetry, sha256Hex } = require("./helpers/fakeSharePoint.js");
 const IDENTITY = buildSiteIdentity({ host: 'portal.army.idf', siteCode: 'schedule' });
 const retry = { ...instantRetry, maxAttempts: 6, maxElapsedMs: 5000 };
 const sha256 = async (bytes) => sha256Hex(bytes);
@@ -120,25 +118,25 @@ const artifactRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'srm-regression-'));
 process.env.STORAGE_ROOT = path.join(artifactRoot, 'storage');
 
 let available = false;
-if (TEST_URI) {
+
+let db; let closeDb; let createDeploymentJob; let retryDeploymentJob; let settleJob; let JOB_STATE; let canonicalState; let readTargetLock;
+test.before(async () => {
+  if (!TEST_URI) return;
   const probe = new MongoClient(TEST_URI, { serverSelectionTimeoutMS: 1500 });
   try { await probe.connect(); await probe.db(TEST_DB).command({ ping: 1 }); available = true; } catch { available = false; }
   finally { await probe.close().catch(() => {}); }
-}
-
-let db; let closeDb; let createDeploymentJob; let retryDeploymentJob; let settleJob; let JOB_STATE; let canonicalState; let readTargetLock;
-if (available) {
-  const dbModule = await import('../src/db.js');
+  if (!available) return;
+  const dbModule = require("../src/db.js");
   closeDb = dbModule.closeDb;
   db = await dbModule.connectDb();
-  ({ createDeploymentJob, retryDeploymentJob, settleJob } = await import('../src/services/jobQueue.js'));
-  ({ JOB_STATE, canonicalState } = await import('../src/services/jobState.js'));
-  ({ readTargetLock } = await import('../src/services/targetLock.js'));
-}
+  ({ createDeploymentJob, retryDeploymentJob, settleJob } = require("../src/services/jobQueue.js"));
+  ({ JOB_STATE, canonicalState } = require("../src/services/jobState.js"));
+  ({ readTargetLock } = require("../src/services/targetLock.js"));
+});
 
 let counter = 0;
 async function makeRelease() {
-  const { collectFiles, hashDirectory, ensureDirectory } = await import('../src/utils/files.js');
+  const { collectFiles, hashDirectory, ensureDirectory } = require("../src/utils/files.js");
   counter += 1;
   const releaseRoot = path.join(artifactRoot, 'releases', `r${counter}`);
   const distDir = path.join(releaseRoot, 'dist');
@@ -162,7 +160,7 @@ async function makeRelease() {
 }
 
 async function makeSite() {
-  const { canonicalTargetKey } = await import('../../shared/siteRuntime.js');
+  const { canonicalTargetKey } = require("../src/shared/siteRuntime.js");
   counter += 1;
   const site = {
     _id: new ObjectId(), unit: 'u', name: `Site ${counter}`, managerName: 'm',

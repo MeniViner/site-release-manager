@@ -1,15 +1,9 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import {
-  distExclusionReason,
-  findDistRoot,
-  isSafeRelativePath,
-  safeResolve,
-} from '../src/utils/files.js';
-
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { distExclusionReason, findDistRoot, isSafeRelativePath, safeResolve } = require("../src/utils/files.js");
 test('accepts regular dist paths', () => {
   assert.equal(isSafeRelativePath('assets/index-123.js'), true);
   assert.equal(distExclusionReason('assets/index-123.js'), '');

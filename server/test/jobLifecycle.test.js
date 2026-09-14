@@ -5,13 +5,12 @@
  * a machine without Mongo. Point SRM_TEST_MONGO_URI at a scratch instance:
  *   mongod --dbpath <tmp> --port 27099
  */
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { MongoClient, ObjectId } from 'mongodb';
-
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { MongoClient, ObjectId } = require("mongodb");
 const TEST_URI = process.env.SRM_TEST_MONGO_URI || '';
 const TEST_DB = `srm_test_${Date.now()}`;
 
@@ -23,11 +22,6 @@ const artifactRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'srm-lifecycle-'));
 process.env.STORAGE_ROOT = path.join(artifactRoot, 'storage');
 
 let available = false;
-if (TEST_URI) {
-  const probe = new MongoClient(TEST_URI, { serverSelectionTimeoutMS: 1500 });
-  try { await probe.connect(); await probe.db(TEST_DB).command({ ping: 1 }); available = true; } catch { available = false; }
-  finally { await probe.close().catch(() => {}); }
-}
 
 const skipAll = (t) => {
   t.skip('Set SRM_TEST_MONGO_URI to a scratch MongoDB to run job lifecycle tests.');
@@ -39,19 +33,24 @@ let createDeploymentJob; let cancelDeploymentJob; let retryDeploymentJob; let fi
 let JOB_STATE; let canonicalState;
 let TargetLockedError; let readTargetLock;
 
-if (available) {
-  ({ connectDb, closeDb } = await import('../src/db.js'));
-  ({ createDeploymentJob, cancelDeploymentJob, retryDeploymentJob, findActiveJobForTarget, initializeQueue, settleJob } = await import('../src/services/jobQueue.js'));
-  ({ JOB_STATE, canonicalState } = await import('../src/services/jobState.js'));
-  ({ TargetLockedError, readTargetLock } = await import('../src/services/targetLock.js'));
+test.before(async () => {
+  if (!TEST_URI) return;
+  const probe = new MongoClient(TEST_URI, { serverSelectionTimeoutMS: 1500 });
+  try { await probe.connect(); await probe.db(TEST_DB).command({ ping: 1 }); available = true; } catch { available = false; }
+  finally { await probe.close().catch(() => {}); }
+  if (!available) return;
+  ({ connectDb, closeDb } = require("../src/db.js"));
+  ({ createDeploymentJob, cancelDeploymentJob, retryDeploymentJob, findActiveJobForTarget, initializeQueue, settleJob } = require("../src/services/jobQueue.js"));
+  ({ JOB_STATE, canonicalState } = require("../src/services/jobState.js"));
+  ({ TargetLockedError, readTargetLock } = require("../src/services/targetLock.js"));
   db = await connectDb();
-}
+});
 
 /** A minimal but genuinely valid Universal artifact on disk. */
 let releaseCounter = 0;
 
 async function makeRelease(version) {
-  const { collectFiles, hashDirectory, ensureDirectory } = await import('../src/utils/files.js');
+  const { collectFiles, hashDirectory, ensureDirectory } = require("../src/utils/files.js");
   // A stored release is immutable, so every fixture gets its own directory
   // rather than reusing (and therefore mutating) a previous one.
   releaseCounter += 1;
@@ -106,7 +105,7 @@ async function makeSite(overrides = {}) {
     firstPublishedAt: null, activeJobId: null, createdAt: new Date(), updatedAt: new Date(),
     ...overrides,
   };
-  const { buildSiteIdentity, canonicalTargetKey } = await import('../../shared/siteRuntime.js');
+  const { buildSiteIdentity, canonicalTargetKey } = require("../src/shared/siteRuntime.js");
   site.targetKey = canonicalTargetKey(buildSiteIdentity(site));
   await db.collection('sites').insertOne(site);
   return site;
@@ -300,7 +299,7 @@ test('one SharePoint Web can hold several tracked targets despite the legacy uni
   await reset();
   // Recreate the pre-migration index and prove the migration removes it.
   await db.collection('sites').createIndex({ host: 1, siteCode: 1 }, { unique: true, name: 'legacy_host_sitecode' }).catch(() => {});
-  const { migrateIndexes } = await import('../src/db.js');
+  const { migrateIndexes } = require("../src/db.js");
   await migrateIndexes(db);
 
   await makeSite({ name: 'A' });
@@ -323,7 +322,7 @@ test('the local deployment audit passes for a freshly prepared job', async (t) =
   const site = await makeSite();
   const job = await createDeploymentJob({ siteId: site._id, releaseId: release._id });
 
-  const { runLocalDeploymentVerification } = await import('../src/services/localVerificationService.js');
+  const { runLocalDeploymentVerification } = require("../src/services/localVerificationService.js");
   const report = await runLocalDeploymentVerification(String(job._id));
   const failures = (report.checks || []).filter((check) => check.status === 'fail');
   assert.deepEqual(

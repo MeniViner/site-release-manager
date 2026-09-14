@@ -1,25 +1,24 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import express from 'express';
-import cors from 'cors';
-import multer from 'multer';
-import { config, rootDir } from './config.js';
-import { dashboardRouter } from './routes/dashboard.js';
-import { sitesRouter } from './routes/sites.js';
-import { releasesRouter } from './routes/releases.js';
-import { jobsRouter } from './routes/jobs.js';
-import { deploymentsRouter } from './routes/deployments.js';
-import { runsRouter } from './routes/runs.js';
-import { backupsRouter } from './routes/backups.js';
-
+const fs = require("node:fs");
+const path = require("node:path");
+const express = require("express");
+const cors = require("cors");
+const multer = require("multer");
+const { config, rootDir } = require("./config.js");
+const { dashboardRouter } = require("./routes/dashboard.js");
+const { sitesRouter } = require("./routes/sites.js");
+const { releasesRouter } = require("./routes/releases.js");
+const { jobsRouter } = require("./routes/jobs.js");
+const { deploymentsRouter } = require("./routes/deployments.js");
+const { runsRouter } = require("./routes/runs.js");
+const { backupsRouter } = require("./routes/backups.js");
 /**
  * Headers the browser worker sends. X-SRM-Lease carries the exclusive write
  * lease; without it in the allow-list every cross-origin deployment request
  * from SharePoint would be blocked by the preflight.
  */
-export const ALLOWED_REQUEST_HEADERS = Object.freeze(['Content-Type', 'Accept', 'X-SRM-Lease']);
+const ALLOWED_REQUEST_HEADERS = Object.freeze(['Content-Type', 'Accept', 'X-SRM-Lease']);
 
-export function createApp() {
+function createApp() {
   const app = express();
   const allowedOrigins = new Set(config.clientOrigins);
 
@@ -124,3 +123,8 @@ export function createApp() {
 }
 
 const startedAt = new Date();
+
+module.exports = {
+  createApp: createApp,
+  ALLOWED_REQUEST_HEADERS: ALLOWED_REQUEST_HEADERS,
+};

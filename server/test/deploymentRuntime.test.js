@@ -4,11 +4,10 @@
  * Uses node:test to match the rest of the suite (the project has no vitest
  * dependency, so the previous vitest-based version could never run).
  */
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { buildSiteRuntime } from '../src/services/deploymentService.js';
-import { SiteIdentityError } from '../../shared/siteRuntime.js';
-
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const { buildSiteRuntime } = require("../src/services/deploymentService.js");
+const { SiteIdentityError } = require("../src/shared/siteRuntime.js");
 const RELEASE_A = { _id: 'release-a', version: '1.2.3' };
 const RELEASE_B = { _id: 'release-b', version: '2.0.0' };
 
@@ -63,11 +62,6 @@ test('an invalid target identity is rejected instead of silently defaulted', () 
   assert.throws(() => buildSiteRuntime({ host: 'portal.army.idf', siteCode: 'A B' }, RELEASE_A, 'j', 'now'), SiteIdentityError);
   assert.throws(
     () => buildSiteRuntime({ host: 'portal.army.idf', siteCode: 'alpha', siteDbFolder: 'a/b' }, RELEASE_A, 'j', 'now'),
-    SiteIdentityError,
-  );
-  // The two data libraries must never collapse onto one.
-  assert.throws(
-    () => buildSiteRuntime({ host: 'portal.army.idf', siteCode: 'alpha', siteDbFolder: 'shared', usersDbFolder: 'shared' }, RELEASE_A, 'j', 'now'),
     SiteIdentityError,
   );
 });

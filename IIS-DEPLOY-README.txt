@@ -4,7 +4,7 @@ This package follows the IISNode layout that previously worked on the closed ser
 
 Browser / IIS
   -> web.config URL Rewrite
-  -> index.js
+  -> index.cjs
   -> IISNode named pipe
   -> bundled runtime\node.exe
   -> Express API + client/dist
@@ -16,7 +16,9 @@ Before creating the final IIS archive on the closed Windows workstation:
 3. Make sure server/node_modules is the Windows copy that already works locally.
 4. Double-click CREATE_IIS_PACKAGE.cmd.
 
-The generated archive contains only what IIS/runtime needs plus storage and .env. It does NOT include client/node_modules, root node_modules, or SharePoint-deployer node_modules.
+`index.cjs` is the native CommonJS IIS entrypoint. It directly requires the CommonJS server runtime under `server/src`; it is not an ESM bridge. The former root ESM `index.js` was removed and is never packaged or referenced by IIS.
+
+The generated archive contains only what IIS/runtime needs plus storage and .env. It does NOT include client/node_modules, root node_modules, root shared ESM contracts, or SharePoint-deployer node_modules.
 
 IIS prerequisites on the server:
 - IISNode installed.

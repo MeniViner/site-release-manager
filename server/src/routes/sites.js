@@ -9,18 +9,17 @@
  * that boundary is reported explicitly rather than being attempted silently.
  */
 
-import { Router } from 'express';
-import { ObjectId } from 'mongodb';
-import { config } from '../config.js';
-import { getDb } from '../db.js';
-import { createDeploymentJob, findActiveJobForTarget, SITE_IDENTITY_EDIT_TTL_MS } from '../services/jobQueue.js';
-import { TargetLockedError } from '../services/targetLock.js';
-import { buildSiteIdentity, canonicalTargetKey, SiteIdentityError, requiredLibraries, requiredFolders, buildTxtSeedPlan } from '../../../shared/siteRuntime.js';
-import { canonicalState, isResumable, stateLabel } from '../services/jobState.js';
-import { publicBackup } from '../services/backupService.js';
-import { parseReleaseVersion } from '../utils/versioning.js';
-
-export const sitesRouter = Router();
+const { Router } = require("express");
+const { ObjectId } = require("mongodb");
+const { config } = require("../config.js");
+const { getDb } = require("../db.js");
+const { createDeploymentJob, findActiveJobForTarget, SITE_IDENTITY_EDIT_TTL_MS } = require("../services/jobQueue.js");
+const { TargetLockedError } = require("../services/targetLock.js");
+const { buildSiteIdentity, canonicalTargetKey, SiteIdentityError, requiredLibraries, requiredFolders, buildTxtSeedPlan } = require("../shared/siteRuntime.js");
+const { canonicalState, isResumable, stateLabel } = require("../services/jobState.js");
+const { publicBackup } = require("../services/backupService.js");
+const { parseReleaseVersion } = require("../utils/versioning.js");
+const sitesRouter = Router();
 
 const toDateOrNull = (value) => (value ? new Date(value) : null);
 
@@ -56,7 +55,7 @@ function identityChanged(before, after) {
  * SharePoint Web. Creating the Web itself is out of scope and is surfaced to
  * the UI rather than attempted.
  */
-export const PROVISIONING_BOUNDARY = Object.freeze({
+const PROVISIONING_BOUNDARY = Object.freeze({
   createsDocumentLibraries: true,
   createsFolders: true,
   createsTxtSeeds: true,
@@ -450,3 +449,8 @@ sitesRouter.post('/:id/deploy', async (req, res, next) => {
     return next(error);
   }
 });
+
+module.exports = {
+  sitesRouter: sitesRouter,
+  PROVISIONING_BOUNDARY: PROVISIONING_BOUNDARY,
+};

@@ -6,27 +6,22 @@
  * superseded explicitly. History never blocks a deployment.
  */
 
-import { ObjectId } from 'mongodb';
-import { getDb } from '../db.js';
-import { prepareDeploymentJob, destroyStaging, stagingRootForJob } from './deploymentService.js';
-import { appendRunEvent } from './runTelemetry.js';
-import { STAGE } from '../../../shared/deploymentStages.js';
-import { buildSiteIdentity, canonicalTargetKey } from '../../../shared/siteRuntime.js';
-import {
-  JOB_STATE, ACTIVE_STATE_QUERY, canonicalState, isTerminal, isResumable, ownsTarget, assertTransition,
-} from './jobState.js';
-import {
-  acquireTargetLock, releaseTargetLock, readTargetLock, isStale, TargetLockedError, ensureLockIndexes,
-} from './targetLock.js';
-
+const { ObjectId } = require("mongodb");
+const { getDb } = require("../db.js");
+const { prepareDeploymentJob, destroyStaging, stagingRootForJob } = require("./deploymentService.js");
+const { appendRunEvent } = require("./runTelemetry.js");
+const { STAGE } = require("../shared/deploymentStages.js");
+const { buildSiteIdentity, canonicalTargetKey } = require("../shared/siteRuntime.js");
+const { JOB_STATE, ACTIVE_STATE_QUERY, canonicalState, isTerminal, isResumable, ownsTarget, assertTransition } = require("./jobState.js");
+const { acquireTargetLock, releaseTargetLock, readTargetLock, isStale, TargetLockedError, ensureLockIndexes } = require("./targetLock.js");
 const JOBS = 'deployment_jobs';
 const SITES = 'sites';
 
 /** Mirrors the browser lease TTL enforced by the deployments routes. */
-export const BROWSER_LEASE_TTL_MS = 90 * 1000;
-export const SITE_IDENTITY_EDIT_TTL_MS = 90 * 1000;
+const BROWSER_LEASE_TTL_MS = 90 * 1000;
+const SITE_IDENTITY_EDIT_TTL_MS = 90 * 1000;
 
-export const isBrowserLeaseLive = (lease, now = Date.now()) =>
+const isBrowserLeaseLive = (lease, now = Date.now()) =>
   Boolean(lease?.leaseId) && (now - new Date(lease.heartbeatAt || lease.acquiredAt || 0).getTime()) < BROWSER_LEASE_TTL_MS;
 
 function siteIdentityEditError(message = 'זהות היעד מתעדכנת כעת. נסה להפעיל את הפריסה שוב בעוד רגע.') {
@@ -43,7 +38,7 @@ function identityEditIsLive(site, now = Date.now()) {
 }
 
 /** Roll a job into a terminal state and release everything it holds. */
-export async function settleJob(jobId, state, { message = '', error = null, stage = null } = {}) {
+async function settleJob(jobId, state, { message = '', error = null, stage = null } = {}) {
   const db = getDb();
   const objectId = jobId instanceof ObjectId ? jobId : new ObjectId(jobId);
   const job = await db.collection(JOBS).findOne({ _id: objectId });
@@ -133,7 +128,7 @@ function nextSiteStatus(site, jobState) {
  * Returns null when the only runs for that target are finished — history must
  * never block a redeployment.
  */
-export async function findActiveJobForTarget(targetKey) {
+async function findActiveJobForTarget(targetKey) {
   const db = getDb();
   const lock = await readTargetLock(targetKey);
   if (!lock) return null;
@@ -152,7 +147,7 @@ export async function findActiveJobForTarget(targetKey) {
  * @param {object} options
  * @param {boolean} [options.force] supersede the run that currently holds the target
  */
-export async function createDeploymentJob({ siteId, releaseId, type = 'UPDATE', force = false }) {
+async function createDeploymentJob({ siteId, releaseId, type = 'UPDATE', force = false }) {
   const db = getDb();
   await ensureLockIndexes(db);
 
@@ -304,7 +299,7 @@ export async function createDeploymentJob({ siteId, releaseId, type = 'UPDATE', 
 }
 
 /** Cancel a run at the user's request. Verified SharePoint state is left alone. */
-export async function cancelDeploymentJob(jobId, reason = 'בוטל על ידי המשתמש.') {
+async function cancelDeploymentJob(jobId, reason = 'בוטל על ידי המשתמש.') {
   return settleJob(jobId, JOB_STATE.CANCELLED, { message: reason });
 }
 
@@ -314,7 +309,7 @@ export async function cancelDeploymentJob(jobId, reason = 'בוטל על ידי 
  * The job keeps its staging and its verified-stage history, so the browser
  * resumes at the first incomplete stage instead of redoing verified work.
  */
-export async function retryDeploymentJob(jobId) {
+async function retryDeploymentJob(jobId) {
   const db = getDb();
   const objectId = new ObjectId(jobId);
   const job = await db.collection(JOBS).findOne({ _id: objectId });
@@ -432,7 +427,7 @@ export async function retryDeploymentJob(jobId) {
  * failed deployment: the target may be fully deployed and merely unverified.
  * Such a job is parked as PAUSED so it can be resumed and re-verified.
  */
-export async function initializeQueue() {
+async function initializeQueue() {
   const db = getDb();
   await ensureLockIndexes(db);
   const now = new Date();
@@ -486,4 +481,16 @@ export async function initializeQueue() {
   }
 }
 
-export { assertTransition, ACTIVE_STATE_QUERY };
+module.exports = {
+  settleJob: settleJob,
+  findActiveJobForTarget: findActiveJobForTarget,
+  createDeploymentJob: createDeploymentJob,
+  cancelDeploymentJob: cancelDeploymentJob,
+  retryDeploymentJob: retryDeploymentJob,
+  initializeQueue: initializeQueue,
+  BROWSER_LEASE_TTL_MS: BROWSER_LEASE_TTL_MS,
+  SITE_IDENTITY_EDIT_TTL_MS: SITE_IDENTITY_EDIT_TTL_MS,
+  isBrowserLeaseLive: isBrowserLeaseLive,
+  assertTransition: assertTransition,
+  ACTIVE_STATE_QUERY: ACTIVE_STATE_QUERY,
+};

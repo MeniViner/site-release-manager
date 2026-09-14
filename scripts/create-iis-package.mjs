@@ -2,16 +2,18 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import dotenv from 'dotenv';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(scriptDir, '..');
+const require = createRequire(import.meta.url);
+const dotenv = require(path.join(root, 'server', 'node_modules', 'dotenv'));
 const envPath = path.join(root, '.env');
 dotenv.config({ path: envPath });
 
 const required = [
-  'index.js',
+  'index.cjs',
   'web.config',
   'package.json',
   '.env',
@@ -82,7 +84,7 @@ const tempBase = fs.mkdtempSync(path.join(os.tmpdir(), 'site-release-manager-iis
 const packageRoot = path.join(tempBase, 'site-release-manager-iis');
 fs.mkdirSync(packageRoot, { recursive: true });
 
-for (const rel of ['index.js', 'web.config', 'package.json', '.env', '.env.example', '.env.iis.example']) {
+for (const rel of ['index.cjs', 'web.config', 'package.json', '.env', '.env.example', '.env.iis.example']) {
   if (fs.existsSync(path.join(root, rel))) copyFile(rel, packageRoot);
 }
 
@@ -97,11 +99,11 @@ const runtimeDir = path.join(packageRoot, 'runtime');
 fs.mkdirSync(runtimeDir, { recursive: true });
 fs.copyFileSync(process.execPath, path.join(runtimeDir, 'node.exe'));
 
-const readme = `SITE RELEASE MANAGER — IIS PACKAGE\n\nGenerated: ${new Date().toISOString()}\nSource project: ${root}\nNode runtime copied from: ${process.execPath}\nPUBLIC_API_URL at packaging time: ${publicApiUrl || '(empty)'}\n\nIIS METHOD (same topology that worked previously):\n1. Extract this package to the final IIS physical folder.\n2. IIS must have IISNode + URL Rewrite installed.\n3. Point the IIS Site/Application physical path at this folder.\n4. Application Pool: No Managed Code.\n5. web.config maps index.js to IISNode and rewrites non-file requests to index.js.\n6. web.config uses bundled runtime\\node.exe, so IIS does not depend on PATH.\n7. .env stays in the root and is loaded by server/src/config.js.\n8. Ensure MongoDB is reachable using MONGO_URI from .env.\n9. For SharePoint-hosted UI, PUBLIC_API_URL must be the HTTPS IIS URL reachable by the browser.\n10. Upload sharepoint-deployer\\client\\dist to the configured SharePoint deployer location.\n\nQuick checks after IIS start:\n- <IIS-URL>/api/health -> {\\"ok\\":true}\n- <IIS-URL>/api/config -> JSON\n- <IIS-URL>/ -> Release Manager UI (if using IIS-hosted UI)\n\nDo not expose .env/server/storage/node_modules directly; web.config hides them.\n`;
+const readme = `SITE RELEASE MANAGER — IIS PACKAGE\n\nGenerated: ${new Date().toISOString()}\nSource project: ${root}\nNode runtime copied from: ${process.execPath}\nPUBLIC_API_URL at packaging time: ${publicApiUrl || '(empty)'}\n\nIIS METHOD (same topology that worked previously):\n1. Extract this package to the final IIS physical folder.\n2. IIS must have IISNode + URL Rewrite installed.\n3. Point the IIS Site/Application physical path at this folder.\n4. Application Pool: No Managed Code.\n5. web.config maps index.cjs to IISNode and rewrites non-file requests to index.cjs.\n6. web.config uses bundled runtime\\node.exe, so IIS does not depend on PATH.\n7. .env stays in the root and is loaded by server/src/config.js.\n8. Ensure MongoDB is reachable using MONGO_URI from .env.\n9. For SharePoint-hosted UI, PUBLIC_API_URL must be the HTTPS IIS URL reachable by the browser.\n10. Upload sharepoint-deployer\\client\\dist to the configured SharePoint deployer location.\n\nQuick checks after IIS start:\n- <IIS-URL>/api/health -> {\\"ok\\":true}\n- <IIS-URL>/api/config -> JSON\n- <IIS-URL>/ -> Release Manager UI (if using IIS-hosted UI)\n\nDo not expose .env/server/storage/node_modules directly; web.config hides them.\n`;
 fs.writeFileSync(path.join(packageRoot, 'IIS-DEPLOY-README.txt'), readme, 'utf8');
 
 const verifyRequired = [
-  'index.js',
+  'index.cjs',
   'web.config',
   '.env',
   'runtime/node.exe',

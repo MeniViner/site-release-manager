@@ -7,16 +7,14 @@
  * on a developer machine: same pipeline module, same provisioning code, same
  * error classifier, same stage vocabulary.
  */
-import test from 'node:test';
-import assert from 'node:assert/strict';
-
-import { runDeploymentPipeline } from '../../shared/deploymentPipeline.js';
-import { STAGE } from '../../shared/deploymentStages.js';
-import { buildSiteIdentity, buildTxtSeedPlan, requiredLibraries, requiredFolders } from '../../shared/siteRuntime.js';
-import { RUNTIME_BOOTSTRAP_FILE } from '../../shared/universalManifest.js';
-import { buildRuntimeBootstrapSource, RUNTIME_BOOTSTRAP_MARKER } from '../../shared/runtimeBootstrap.js';
-import { createFakeSharePoint, instantRetry, sha256Hex } from './helpers/fakeSharePoint.js';
-
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const { runDeploymentPipeline } = require("../src/shared/deploymentPipeline.js");
+const { STAGE } = require("../src/shared/deploymentStages.js");
+const { buildSiteIdentity, buildTxtSeedPlan, requiredLibraries, requiredFolders } = require("../src/shared/siteRuntime.js");
+const { RUNTIME_BOOTSTRAP_FILE } = require("../src/shared/universalManifest.js");
+const { buildRuntimeBootstrapSource, RUNTIME_BOOTSTRAP_MARKER } = require("../src/shared/runtimeBootstrap.js");
+const { createFakeSharePoint, instantRetry, sha256Hex } = require("./helpers/fakeSharePoint.js");
 /** Real control flow, zero wall-clock cost. */
 const FAST_RETRY = { ...instantRetry, maxAttempts: 14, maxElapsedMs: 20_000 };
 

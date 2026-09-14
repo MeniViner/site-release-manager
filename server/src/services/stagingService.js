@@ -11,25 +11,15 @@
  * identity, no matter what a previous run left behind.
  */
 
-import fs from 'node:fs';
-import path from 'node:path';
-import { collectFiles, ensureDirectory, hashFile, removeDirectory, safeResolve } from '../utils/files.js';
-import {
-  MANIFEST_FILE, RUNTIME_CONFIG_FILE, DEPLOYMENT_METADATA_FILE, RUNTIME_BOOTSTRAP_FILE,
-  TARGET_OVERLAY_FILES, CURRENT_MANIFEST_SCHEMA_VERSION, MANIFEST_KIND,
-  UNIVERSAL_BUILD_MODE, UNIVERSAL_ARTIFACT_KIND, ENTRY_POINT, COMMIT_FILE,
-  parseIndexReferencesFromHtml,
-} from '../../../shared/universalManifest.js';
-import {
-  buildRuntimeBootstrapSource, injectRuntimeBootstrapIntoIndexHtml,
-  findFirstModuleScriptIndex, findFirstForeignScriptIndex,
-  findRuntimeBootstrapIndex, countRuntimeBootstrapReferences,
-} from '../../../shared/runtimeBootstrap.js';
-
+const fs = require("node:fs");
+const path = require("node:path");
+const { collectFiles, ensureDirectory, hashFile, removeDirectory, safeResolve } = require("../utils/files.js");
+const { MANIFEST_FILE, RUNTIME_CONFIG_FILE, DEPLOYMENT_METADATA_FILE, RUNTIME_BOOTSTRAP_FILE, TARGET_OVERLAY_FILES, CURRENT_MANIFEST_SCHEMA_VERSION, MANIFEST_KIND, UNIVERSAL_BUILD_MODE, UNIVERSAL_ARTIFACT_KIND, ENTRY_POINT, COMMIT_FILE, parseIndexReferencesFromHtml } = require("../shared/universalManifest.js");
+const { buildRuntimeBootstrapSource, injectRuntimeBootstrapIntoIndexHtml, findFirstModuleScriptIndex, findFirstForeignScriptIndex, findRuntimeBootstrapIndex, countRuntimeBootstrapReferences } = require("../shared/runtimeBootstrap.js");
 /** Files regenerated per target. None of them may survive from the source artifact. */
-export const REGENERATED_FILES = Object.freeze([...TARGET_OVERLAY_FILES, MANIFEST_FILE]);
+const REGENERATED_FILES = Object.freeze([...TARGET_OVERLAY_FILES, MANIFEST_FILE]);
 
-export class StagingError extends Error {
+class StagingError extends Error {
   constructor(message, details = {}) {
     super(message);
     this.name = 'StagingError';
@@ -47,7 +37,7 @@ function writeJson(filePath, payload) {
  * Copy the immutable release artifact into a private staging directory,
  * excluding every per-target file.
  */
-export function createStaging({ releaseDistDir, stagingRoot }) {
+function createStaging({ releaseDistDir, stagingRoot }) {
   if (!releaseDistDir || !fs.existsSync(releaseDistDir)) {
     throw new StagingError(`Release artifact directory is missing: ${releaseDistDir}`);
   }
@@ -89,7 +79,7 @@ export function createStaging({ releaseDistDir, stagingRoot }) {
  * Library URL. The JSON files stay authoritative and are still verified, just
  * not through a browser `.json` request.
  */
-export function writeTargetOverlay({ distDir, identity, release, jobId, deployedAt, backendApiUrl = '' }) {
+function writeTargetOverlay({ distDir, identity, release, jobId, deployedAt, backendApiUrl = '' }) {
   const runtimeConfig = {
     schemaVersion: 2,
     storageBackend: identity.storageBackend,
@@ -172,7 +162,7 @@ export function writeTargetOverlay({ distDir, identity, release, jobId, deployed
  * `indexReferences`. The transformation is idempotent and never depends on a
  * hashed bundle filename.
  */
-export function injectRuntimeBootstrap({ distDir }) {
+function injectRuntimeBootstrap({ distDir }) {
   const indexPath = path.join(distDir, ENTRY_POINT);
   if (!fs.existsSync(indexPath)) throw new StagingError(`Staging is missing ${ENTRY_POINT}.`);
   if (!fs.existsSync(path.join(distDir, RUNTIME_BOOTSTRAP_FILE))) {
@@ -218,7 +208,7 @@ export function injectRuntimeBootstrap({ distDir }) {
  * Regenerate the deployment manifest over the complete staging tree, including
  * the freshly written overlays, and preserve the source build's provenance.
  */
-export function regenerateManifest({ distDir, release, identity, jobId, sourceProof = null }) {
+function regenerateManifest({ distDir, release, identity, jobId, sourceProof = null }) {
   const files = collectFiles(distDir).filter((file) => file.path !== MANIFEST_FILE);
   const indexHtml = fs.readFileSync(path.join(distDir, ENTRY_POINT), 'utf8');
   const indexReferences = parseIndexReferencesFromHtml(indexHtml).sort();
@@ -265,7 +255,7 @@ export function regenerateManifest({ distDir, release, identity, jobId, sourcePr
  * file must exist with the declared size and SHA-256, and every reference in
  * index.html must be present.
  */
-export function verifyStaging({ distDir, manifest }) {
+function verifyStaging({ distDir, manifest }) {
   const problems = [];
   const declared = new Set();
 
@@ -307,7 +297,7 @@ export function verifyStaging({ distDir, manifest }) {
  * three of runtime config, deployment metadata and the manifest. So the
  * deployment plan carries one more entry than the manifest does.
  */
-export function buildDeploymentFiles(distDir, manifest) {
+function buildDeploymentFiles(distDir, manifest) {
   const manifestPath = path.join(distDir, MANIFEST_FILE);
   return [
     ...manifest.files,
@@ -316,16 +306,30 @@ export function buildDeploymentFiles(distDir, manifest) {
 }
 
 /** Upload order: every asset first, the commit file last. */
-export function buildUploadOrder(files) {
+function buildUploadOrder(files) {
   const paths = (Array.isArray(files) ? files : files.files).map((file) => file.path);
   return [...paths.filter((filePath) => filePath !== COMMIT_FILE).sort(), COMMIT_FILE];
 }
 
 /** Resolve one staged file for serving to the browser worker. */
-export function resolveStagedFile(distDir, relativePath) {
+function resolveStagedFile(distDir, relativePath) {
   return safeResolve(distDir, relativePath);
 }
 
-export function destroyStaging(stagingRoot) {
+function destroyStaging(stagingRoot) {
   removeDirectory(stagingRoot);
 }
+
+module.exports = {
+  StagingError: StagingError,
+  createStaging: createStaging,
+  writeTargetOverlay: writeTargetOverlay,
+  injectRuntimeBootstrap: injectRuntimeBootstrap,
+  regenerateManifest: regenerateManifest,
+  verifyStaging: verifyStaging,
+  buildDeploymentFiles: buildDeploymentFiles,
+  buildUploadOrder: buildUploadOrder,
+  resolveStagedFile: resolveStagedFile,
+  destroyStaging: destroyStaging,
+  REGENERATED_FILES: REGENERATED_FILES,
+};

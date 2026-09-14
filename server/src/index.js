@@ -1,9 +1,8 @@
-import fs from 'node:fs';
-import { config, paths } from './config.js';
-import { connectDb, closeDb } from './db.js';
-import { createApp } from './app.js';
-import { initializeQueue } from './services/jobQueue.js';
-
+const fs = require("node:fs");
+const { config, paths } = require("./config.js");
+const { connectDb, closeDb } = require("./db.js");
+const { createApp } = require("./app.js");
+const { initializeQueue } = require("./services/jobQueue.js");
 let server;
 
 async function start() {
@@ -52,4 +51,7 @@ async function shutdown() {
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
-await start();
+start().catch((error) => {
+  console.error('[server] Startup failed:', error);
+  process.exitCode = 1;
+});

@@ -8,11 +8,10 @@
  * provisioning code unchanged.
  */
 
-import crypto from 'node:crypto';
-
+const crypto = require("node:crypto");
 const ODATA = 'application/json;odata=verbose';
 
-export function sha256Hex(bytes) {
+function sha256Hex(bytes) {
   return crypto.createHash('sha256').update(Buffer.from(bytes)).digest('hex');
 }
 
@@ -68,15 +67,15 @@ const staticResponse = (status, bytes, filePath) => ({
 });
 
 /** The farm's "not there yet" answer: HTTP 400 carrying a FileNotFound payload. */
-export const notFoundPayload = (type = 'System.IO.FileNotFoundException', code = '-2147024894') => ({
+const notFoundPayload = (type = 'System.IO.FileNotFoundException', code = '-2147024894') => ({
   error: { code: `${code}, ${type}`, message: { lang: 'en-US', value: 'File Not Found.' } },
 });
 
-export const directoryNotFoundPayload = () => ({
+const directoryNotFoundPayload = () => ({
   error: { code: '-2147024893, System.IO.DirectoryNotFoundException', message: { lang: 'en-US', value: 'Could not find a part of the path.' } },
 });
 
-export const alreadyExistsPayload = () => ({
+const alreadyExistsPayload = () => ({
   error: { code: '-2130575342, Microsoft.SharePoint.SPException', message: { lang: 'en-US', value: 'A list, survey, discussion board, or document library with the specified title already exists in this Web site.' } },
 });
 
@@ -88,7 +87,7 @@ const decodeODataArg = (value) => String(value)
 
 const stripQuery = (url) => url.split('?')[0];
 
-export function createFakeSharePoint(config = {}) {
+function createFakeSharePoint(config = {}) {
   const {
     webUrl = 'https://portal.army.idf/sites/schedule',
     /** How many reads of a freshly created object answer "not ready" first. */
@@ -300,8 +299,17 @@ export function createFakeSharePoint(config = {}) {
 }
 
 /** Fast, deterministic substitutes so tests never spend real wall-clock time. */
-export const instantRetry = {
+const instantRetry = {
   sleep: async () => {},
   now: (() => { let t = 0; return () => { t += 10; return t; }; })(),
   random: () => 0.5,
+};
+
+module.exports = {
+  sha256Hex: sha256Hex,
+  createFakeSharePoint: createFakeSharePoint,
+  notFoundPayload: notFoundPayload,
+  directoryNotFoundPayload: directoryNotFoundPayload,
+  alreadyExistsPayload: alreadyExistsPayload,
+  instantRetry: instantRetry,
 };

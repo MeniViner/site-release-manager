@@ -1,8 +1,8 @@
-import fs from 'node:fs';
-import { config, paths } from './server/src/config.js';
-import { connectDb, closeDb } from './server/src/db.js';
-import { createApp } from './server/src/app.js';
-import { initializeQueue } from './server/src/services/jobQueue.js';
+const fs = require('node:fs');
+const { config, paths } = require('./server/src/config.js');
+const { connectDb, closeDb } = require('./server/src/db.js');
+const { createApp } = require('./server/src/app.js');
+const { initializeQueue } = require('./server/src/services/jobQueue.js');
 
 let server;
 

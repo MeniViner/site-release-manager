@@ -1,35 +1,34 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import crypto from 'node:crypto';
-import AdmZip from 'adm-zip';
-import { TARGET_OVERLAY_FILES } from '../../../shared/universalManifest.js';
-
+const fs = require("node:fs");
+const path = require("node:path");
+const crypto = require("node:crypto");
+const AdmZip = require("adm-zip");
+const { TARGET_OVERLAY_FILES } = require("../shared/universalManifest.js");
 /**
  * Per-target files Release Manager regenerates for every deployment. A stored
  * Universal source release must never contain one, or a later run could ship a
  * stale runtime identity belonging to a different target.
  */
-export const DEPLOYMENT_OVERLAY_FILES = new Set(TARGET_OVERLAY_FILES);
+const DEPLOYMENT_OVERLAY_FILES = new Set(TARGET_OVERLAY_FILES);
 
 const LOCAL_FILES = new Set(['.DS_Store', 'Thumbs.db']);
 
-export function ensureDirectory(directory) {
+function ensureDirectory(directory) {
   fs.mkdirSync(directory, { recursive: true });
 }
 
-export function removeDirectory(directory) {
+function removeDirectory(directory) {
   if (!directory) return;
   fs.rmSync(directory, { recursive: true, force: true });
 }
 
-export function normalizeRelativePath(value) {
+function normalizeRelativePath(value) {
   return String(value || '')
     .replace(/\\/g, '/')
     .replace(/^\/+/, '')
     .replace(/\/{2,}/g, '/');
 }
 
-export function isSafeRelativePath(value) {
+function isSafeRelativePath(value) {
   const raw = String(value || '').replace(/\\/g, '/');
   if (!raw || raw.startsWith('/') || raw.startsWith('\\') || /^[A-Za-z]:[\\/]/.test(raw)) return false;
   const normalized = normalizeRelativePath(raw);
@@ -38,7 +37,7 @@ export function isSafeRelativePath(value) {
   return !parts.some((part) => part === '..' || part === '.');
 }
 
-export function distExclusionReason(value) {
+function distExclusionReason(value) {
   const normalized = normalizeRelativePath(value);
   if (!normalized) return 'נתיב ריק';
   const leaf = normalized.split('/').filter(Boolean).at(-1) || '';
@@ -47,7 +46,7 @@ export function distExclusionReason(value) {
   return '';
 }
 
-export function safeResolve(root, relativePath) {
+function safeResolve(root, relativePath) {
   if (!isSafeRelativePath(relativePath)) throw new Error('Unsafe relative path.');
   const resolvedRoot = path.resolve(root);
   const resolved = path.resolve(resolvedRoot, normalizeRelativePath(relativePath));
@@ -57,7 +56,7 @@ export function safeResolve(root, relativePath) {
   return resolved;
 }
 
-export function extractReleaseZip(zipPath, destination) {
+function extractReleaseZip(zipPath, destination) {
   ensureDirectory(destination);
   const zip = new AdmZip(zipPath);
   const entries = zip.getEntries();
@@ -84,7 +83,7 @@ function hasBuiltDistShape(directory) {
   return collectFiles(assets).some((file) => /\.js$/i.test(file.path));
 }
 
-export function findDistRoot(root) {
+function findDistRoot(root) {
   const candidates = [root, path.join(root, 'dist-universal'), path.join(root, 'dist')];
   if (fs.existsSync(root)) {
     for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
@@ -105,7 +104,7 @@ export function findDistRoot(root) {
   }
   return found;
 }
-export function copyDistWithoutDeploymentOverlay(source, destination) {
+function copyDistWithoutDeploymentOverlay(source, destination) {
   ensureDirectory(destination);
   for (const file of collectFiles(source)) {
     if (distExclusionReason(file.path)) continue;
@@ -115,13 +114,13 @@ export function copyDistWithoutDeploymentOverlay(source, destination) {
   }
 }
 
-export function hashFile(filePath) {
+function hashFile(filePath) {
   const hash = crypto.createHash('sha256');
   hash.update(fs.readFileSync(filePath));
   return hash.digest('hex');
 }
 
-export function directoryStats(root) {
+function directoryStats(root) {
   let fileCount = 0;
   let totalBytes = 0;
   const walk = (directory) => {
@@ -138,7 +137,7 @@ export function directoryStats(root) {
   return { fileCount, totalBytes };
 }
 
-export function collectFiles(root) {
+function collectFiles(root) {
   const files = [];
   const walk = (directory) => {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
@@ -157,7 +156,7 @@ export function collectFiles(root) {
   return files.sort((a, b) => a.path.localeCompare(b.path));
 }
 
-export function hashDirectory(root) {
+function hashDirectory(root) {
   const hash = crypto.createHash('sha256');
   for (const file of collectFiles(root)) {
     hash.update(file.path);
@@ -169,3 +168,20 @@ export function hashDirectory(root) {
   }
   return hash.digest('hex');
 }
+
+module.exports = {
+  ensureDirectory: ensureDirectory,
+  removeDirectory: removeDirectory,
+  normalizeRelativePath: normalizeRelativePath,
+  isSafeRelativePath: isSafeRelativePath,
+  distExclusionReason: distExclusionReason,
+  safeResolve: safeResolve,
+  extractReleaseZip: extractReleaseZip,
+  findDistRoot: findDistRoot,
+  copyDistWithoutDeploymentOverlay: copyDistWithoutDeploymentOverlay,
+  hashFile: hashFile,
+  directoryStats: directoryStats,
+  collectFiles: collectFiles,
+  hashDirectory: hashDirectory,
+  DEPLOYMENT_OVERLAY_FILES: DEPLOYMENT_OVERLAY_FILES,
+};

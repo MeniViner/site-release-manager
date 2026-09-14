@@ -1,7 +1,6 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { summarizeEvents } from '../src/services/runTelemetry.js';
-
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const { summarizeEvents } = require("../src/services/runTelemetry.js");
 test('summarizeEvents groups stage start/success and calculates duration', () => {
   const result = summarizeEvents([
     { eventId: '1', stage: 'FORM_DIGEST', stageLabel: 'Digest', status: 'started', source: 'deployer', at: new Date('2026-01-01T00:00:00.000Z') },

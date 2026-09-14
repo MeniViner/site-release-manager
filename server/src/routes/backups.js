@@ -1,8 +1,7 @@
-import { Router } from 'express';
-import { getDb } from '../db.js';
-import { BACKUP_OUTCOMES, objectIdOrNull, publicBackup } from '../services/backupService.js';
-
-export const backupsRouter = Router();
+const { Router } = require("express");
+const { getDb } = require("../db.js");
+const { BACKUP_OUTCOMES, objectIdOrNull, publicBackup } = require("../services/backupService.js");
+const backupsRouter = Router();
 
 backupsRouter.get('/', async (req, res, next) => {
   try {
@@ -44,3 +43,7 @@ backupsRouter.get('/:id', async (req, res, next) => {
     return next(error);
   }
 });
+
+module.exports = {
+  backupsRouter: backupsRouter,
+};
