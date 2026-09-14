@@ -94,7 +94,7 @@ function buildSiteIdentity(site = {}) {
   return Object.freeze({
     host,
     siteCode,
-    siteId: text(site.siteId) || siteCode,
+    siteId: storageBackend === 'mongo' ? text(site.builderSiteId) : (text(site.siteId) || siteCode),
     siteRoot,
     siteApiRoot: siteRoot,
     siteDbFolder,

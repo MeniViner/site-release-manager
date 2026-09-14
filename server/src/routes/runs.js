@@ -10,6 +10,7 @@ const { stageLabel, canonicalStage, STAGE_ORDER } = require("../shared/deploymen
 const { summarizeStages, canonicalState, stateLabel, isTerminal, isResumable, JOB_STATE } = require("../services/jobState.js");
 const { cancelDeploymentJob, retryDeploymentJob, findActiveJobForTarget } = require("../services/jobQueue.js");
 const { TargetLockedError } = require("../services/targetLock.js");
+const { backendQuery } = require("../utils/backendMode.js");
 const runsRouter = Router();
 
 const publicJob = (job) => ({ ...job, id: String(job._id), _id: undefined });
@@ -49,6 +50,7 @@ function runSummary(job, site, release) {
     failureStage: job.failureStage || job.failureInfo?.stage || '',
     failureInfo: job.failureInfo || null,
     targetKey: job.targetKey || '',
+    storageBackend: job.storageBackend || site?.storageBackend || 'txt',
     canCancel: !isTerminal(state),
     canRetry: state === JOB_STATE.FAILED || isResumable(state),
     canResume: isResumable(state),
@@ -81,7 +83,7 @@ runsRouter.get('/', async (req, res, next) => {
   try {
     const limit = Math.max(1, Math.min(200, Number(req.query.limit || 60)));
     const db = getDb();
-    const jobs = await db.collection('deployment_jobs').find({}).sort({ createdAt: -1 }).limit(limit).toArray();
+    const jobs = await db.collection('deployment_jobs').find(backendQuery(req.query.backend)).sort({ createdAt: -1 }).limit(limit).toArray();
     const siteIds = [...new Set(jobs.map((job) => String(job.siteId || '')).filter(Boolean))].map((id) => new ObjectId(id));
     const releaseIds = [...new Set(jobs.map((job) => String(job.releaseId || '')).filter(Boolean))].map((id) => new ObjectId(id));
     const [sites, releases] = await Promise.all([

@@ -12,6 +12,8 @@ const { prepareDeploymentJob, destroyStaging, stagingRootForJob } = require("./d
 const { appendRunEvent } = require("./runTelemetry.js");
 const { STAGE } = require("../shared/deploymentStages.js");
 const { buildSiteIdentity, canonicalTargetKey } = require("../shared/siteRuntime.js");
+const { normalizeBackend } = require("../utils/backendMode.js");
+const { assertReleaseCompatibility } = require("./deploymentProfiles.js");
 const { JOB_STATE, ACTIVE_STATE_QUERY, canonicalState, isTerminal, isResumable, ownsTarget, assertTransition } = require("./jobState.js");
 const { acquireTargetLock, releaseTargetLock, readTargetLock, isStale, TargetLockedError, ensureLockIndexes } = require("./targetLock.js");
 const JOBS = 'deployment_jobs';
@@ -171,6 +173,8 @@ async function createDeploymentJob({ siteId, releaseId, type = 'UPDATE', force =
   }
 
   const identity = buildSiteIdentity(site);
+  const storageBackend = normalizeBackend(identity.storageBackend);
+  assertReleaseCompatibility(release, storageBackend);
   const targetKey = canonicalTargetKey(identity);
 
   const active = await findActiveJobForTarget(targetKey);
@@ -187,6 +191,7 @@ async function createDeploymentJob({ siteId, releaseId, type = 'UPDATE', force =
     siteId: normalizedSiteId,
     releaseId: normalizedReleaseId,
     targetKey,
+    storageBackend,
     type,
     state: JOB_STATE.QUEUED,
     progress: 5,

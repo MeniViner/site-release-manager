@@ -274,7 +274,7 @@ async function runDeploymentPipeline(options) {
 
     let backup = existingBackup;
     if (!backup) {
-      if (site.storageBackend !== 'txt') {
+      if (descriptor.capabilities?.txtBackup === false || (!descriptor.capabilities && site.storageBackend !== 'txt')) {
         const now = new Date().toISOString();
         backup = {
           outcome: BACKUP_OUTCOME.SKIPPED_UNSUPPORTED_BACKEND,
@@ -373,30 +373,40 @@ async function runDeploymentPipeline(options) {
     await reportEvent(STAGE.FOLDER_STABILIZE, 'success', 'כל התיקיות אומתו ככתיבות מול SharePoint.');
 
     // --- CREATE_TXT_SEEDS --------------------------------------------------
-    stage = STAGE.CREATE_TXT_SEEDS;
-    await reportProgress(60, 'בודק קובצי TXT', '', stage);
-    await reportEvent(stage, 'started', 'בודק קובצי TXT; קבצים קיימים לא ישונו.');
-    const seedResults = await ensureTxtSeeds(client, descriptor.seedFiles, { log, signal: effectiveSignal, retry, sha256 });
-    const preserved = seedResults.filter((entry) => entry.action === 'preserved').length;
-    const created = seedResults.filter((entry) => entry.action === 'created').length;
-    await reportEvent(stage, 'success', `קובצי TXT: ${preserved} נשמרו ללא שינוי, ${created} נוצרו ואומתו.`, {
-      details: { preserved, created, files: seedResults.map((entry) => `${entry.action}:${entry.path}`).join(' | ') },
-    });
+    let preserved = 0;
+    let created = 0;
+    if (descriptor.capabilities?.txtSeeds !== false && (descriptor.capabilities || site.storageBackend === 'txt')) {
+      stage = STAGE.CREATE_TXT_SEEDS;
+      await reportProgress(60, 'בודק קובצי TXT', '', stage);
+      await reportEvent(stage, 'started', 'בודק קובצי TXT; קבצים קיימים לא ישונו.');
+      const seedResults = await ensureTxtSeeds(client, descriptor.seedFiles, { log, signal: effectiveSignal, retry, sha256 });
+      preserved = seedResults.filter((entry) => entry.action === 'preserved').length;
+      created = seedResults.filter((entry) => entry.action === 'created').length;
+      await reportEvent(stage, 'success', `קובצי TXT: ${preserved} נשמרו ללא שינוי, ${created} נוצרו ואומתו.`, {
+        details: { preserved, created, files: seedResults.map((entry) => `${entry.action}:${entry.path}`).join(' | ') },
+      });
+    } else {
+      await reportEvent(STAGE.CREATE_TXT_SEEDS, 'skipped', 'לא רלוונטי ל-Mongo; נתוני האתר מנוהלים על ידי Site Builder API.');
+    }
 
     // --- PERMISSIONS_SETUP -------------------------------------------------
     // Release Manager deliberately does NOT change SharePoint role assignments.
     // The boundary is reported instead of being silently assumed.
     stage = STAGE.PERMISSIONS_SETUP;
-    const marker = await client.readFile(descriptor.permissionsMarker).catch(() => ({ found: false }));
-    await reportEvent(stage, marker.found ? 'success' : 'warning',
-      marker.found
-        ? 'הגדרת ההרשאות של Site Builder כבר בוצעה ליעד הזה.'
-        : 'הרשאות Site Builder טרם הוגדרו ליעד הזה. Release Manager אינו משנה הרשאות SharePoint; יש להריץ את מסך ההרשאות ב-Site Builder.',
-      {
-        target: descriptor.permissionsMarker,
-        nextAction: marker.found ? '' : 'הרץ את הגדרת ההרשאות מתוך Site Builder לאחר הפריסה.',
-        details: { markerPresent: marker.found, managedByReleaseManager: false },
-      });
+    if (descriptor.capabilities?.permissionsMarker !== false && (descriptor.capabilities || site.storageBackend === 'txt')) {
+      const marker = await client.readFile(descriptor.permissionsMarker).catch(() => ({ found: false }));
+      await reportEvent(stage, marker.found ? 'success' : 'warning',
+        marker.found
+          ? 'הגדרת ההרשאות של Site Builder כבר בוצעה ליעד הזה.'
+          : 'הרשאות Site Builder טרם הוגדרו ליעד הזה. Release Manager אינו משנה הרשאות SharePoint; יש להריץ את מסך ההרשאות ב-Site Builder.',
+        {
+          target: descriptor.permissionsMarker,
+          nextAction: marker.found ? '' : 'הרץ את הגדרת ההרשאות מתוך Site Builder לאחר הפריסה.',
+          details: { markerPresent: marker.found, managedByReleaseManager: false },
+        });
+    } else {
+      await reportEvent(stage, 'skipped', 'לא נדרש marker הרשאות TXT בפרופיל Mongo.');
+    }
 
     // --- FINAL_ASSET_COPY .. FINAL_INDEX_VERIFY ---------------------------
     stage = STAGE.FINAL_ASSET_COPY;

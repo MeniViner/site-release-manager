@@ -1,6 +1,7 @@
 const { Router } = require("express");
 const { getDb } = require("../db.js");
 const { BACKUP_OUTCOMES, objectIdOrNull, publicBackup } = require("../services/backupService.js");
+const { normalizeBackend } = require("../utils/backendMode.js");
 const backupsRouter = Router();
 
 backupsRouter.get('/', async (req, res, next) => {
@@ -11,7 +12,7 @@ backupsRouter.get('/', async (req, res, next) => {
       if (!siteId) return res.status(400).json({ error: 'מזהה האתר אינו תקין.' });
       query.siteId = siteId;
     }
-    if (req.query.backend) query.storageBackend = String(req.query.backend).toLowerCase();
+    if (req.query.backend) query.storageBackend = normalizeBackend(req.query.backend);
     if (req.query.outcome) {
       const outcome = String(req.query.outcome).toUpperCase();
       if (!BACKUP_OUTCOMES.includes(outcome)) return res.status(400).json({ error: 'תוצאת הגיבוי אינה תקינה.' });
