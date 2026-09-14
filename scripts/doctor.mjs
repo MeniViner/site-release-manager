@@ -12,6 +12,7 @@ const requiredFiles = [
   'scripts/verify-system.mjs',
   'scripts/write-client-runtime-config.mjs',
   'server/package.json',
+  'index.cjs',
   'server/src/index.js',
   'server/src/app.js',
   'server/src/config.js',

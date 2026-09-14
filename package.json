@@ -14,7 +14,7 @@
     "build": "npm --prefix client run build && npm --prefix sharepoint-deployer run build",
     "build:client": "npm --prefix client run build",
     "build:deployer": "npm --prefix sharepoint-deployer run build",
-    "start": "npm --prefix server run start",
+    "start": "node index.cjs",
     "test": "npm --prefix server run test",
     "test:client": "npm --prefix client test",
     "verify:transfer": "node scripts/verify-transfer.mjs",

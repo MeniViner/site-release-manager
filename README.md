@@ -327,7 +327,7 @@ When the Node API later moves to the permanent internal server, change only `PUB
 The project now includes an IISNode packaging path matching the layout that previously worked reliably on the closed server:
 
 - root `web.config`
-- root `index.js` IISNode entry
+- root `index.cjs` native CommonJS IISNode entry
 - bundled `runtime/node.exe` copied from the working Windows workstation at packaging time
 - `server/src` + Windows `server/node_modules`
 - `client/dist`
@@ -338,7 +338,7 @@ The project now includes an IISNode packaging path matching the layout that prev
 On the working Windows workstation, after local verification, double-click `CREATE_IIS_PACKAGE.cmd` or run `npm run package:iis`.
 The generated timestamped `.7z` next to the project is the package to extract into the IIS physical folder.
 
-IIS prerequisites remain IISNode + URL Rewrite. Use an Application Pool with **No Managed Code**. The generated `web.config` rewrites non-file requests to `index.js` and uses the bundled `runtime\\node.exe`, avoiding reliance on the server PATH.
+IIS prerequisites remain IISNode + URL Rewrite. Use an Application Pool with **No Managed Code**. The generated `web.config` rewrites non-file requests to `index.cjs` and uses the bundled `runtime\\node.exe`, avoiding reliance on the server PATH. The IIS entry requires `server/src` directly; it does not dynamically import the root ESM entrypoint.
 
 If the Release Manager UI remains hosted inside SharePoint, set `PUBLIC_API_URL` / `client/dist/release-manager-runtime-config.json` to the final HTTPS IIS URL before packaging/uploading the UI.
 
