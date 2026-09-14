@@ -10,4 +10,3 @@ The API rejects same-record, wrong-backend, same-target and same-Mongo-ID pairs.
 Future cutover is expected to freeze TXT writes, make a final TXT backup, invoke Site Builder-owned migration tooling, verify counts and hashes, deploy the Mongo runtime frontend, run acceptance smoke, promote the destination, and retain TXT for rollback. None of those destructive operations are implemented here.
 
 If Site Builder migration tooling cannot be exposed without widening privileges, execution remains operator-only while Release Manager stores inventory, warnings, validation and rehearsal tracking.
-
