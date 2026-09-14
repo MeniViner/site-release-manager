@@ -3,7 +3,7 @@ import { Link, NavLink, Route, Routes, useNavigate } from 'react-router-dom';
 import {
   Activity, Archive, Box, Building2, CheckCircle2, ChevronLeft, CircleAlert, CloudUpload,
   ClipboardCopy, ExternalLink, Eye, EyeOff, FileArchive, FileCode2, Folder, Gauge, History, LayoutDashboard, LoaderCircle, Menu, Plus,
-  PencilLine, RefreshCw, Rocket, Trash2, X, ListChecks,
+  PencilLine, RefreshCw, Rocket, Trash2, X, ListChecks, ArrowRightLeft,
 } from 'lucide-react';
 import { api } from './api.js';
 import RunsPage from './RunsPage.jsx';
@@ -12,6 +12,7 @@ import BackupsPage from './BackupsPage.jsx';
 import SharePointDeploymentCoordinator from './SharePointDeploymentCoordinator.jsx';
 import { collectDirectoryHandle, collectDroppedFolder, collectSelectedFolder, folderPickerDiagnostics, formatBytes, summarizeSource, validateDistSource } from './releaseFolder.js';
 import clientPackage from '../package.json';
+import { useBackendMode } from './context/BackendModeContext.jsx';
 
 const APP_VERSION = clientPackage.version;
 
@@ -34,6 +35,19 @@ function StatusBadge({ status }) {
   return <span className={`status status-${String(status || 'DRAFT').toLowerCase()}`}>{STATUS_LABELS[status] || status || '—'}</span>;
 }
 
+function BackendBadge({ backend }) {
+  const value = backend === 'mongo' ? 'mongo' : 'txt';
+  return <span className={`backend-badge backend-${value}`}>{value.toUpperCase()}</span>;
+}
+
+function BackendModeSwitch({ compact = false }) {
+  const { backendMode, setBackendMode } = useBackendMode();
+  return <div className={`backend-mode-switch ${compact ? 'compact' : ''}`} role="group" aria-label="מצב Backend">
+    <button aria-pressed={backendMode === 'txt'} className={backendMode === 'txt' ? 'active' : ''} onClick={() => setBackendMode('txt')}>TXT</button>
+    <button aria-pressed={backendMode === 'mongo'} className={backendMode === 'mongo' ? 'active' : ''} onClick={() => setBackendMode('mongo')}>MONGO</button>
+  </div>;
+}
+
 function Modal({ title, children, onClose, wide = false }) {
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
@@ -47,20 +61,23 @@ function Modal({ title, children, onClose, wide = false }) {
 
 function Layout() {
   const [open, setOpen] = useState(true);
+  const { backendMode } = useBackendMode();
   const links = [
     { to: '/', label: 'דשבורד', icon: LayoutDashboard },
     { to: '/sites', label: 'אתרים', icon: Building2 },
     { to: '/releases', label: 'ריליסים', icon: FileArchive },
     { to: '/runs', label: 'ריצות SharePoint', icon: ListChecks },
     { to: '/backups', label: 'גיבויים', icon: Archive },
+    { to: '/migrations', label: 'מיגרציות', icon: ArrowRightLeft },
   ];
   return (
     <div className="app-shell" dir="rtl">
       <aside className={`sidebar ${open ? 'sidebar-open' : 'sidebar-closed'}`}>
         <div className="sidebar-header">
           <button className="icon-button" onClick={() => setOpen((value) => !value)}><Menu size={24} /></button>
-          {open && <div><strong>ניהול אתרים</strong><small>TXT Release Manager</small></div>}
+          {open && <div><strong>Site Release Manager</strong><small>{backendMode === 'txt' ? 'SharePoint TXT Production' : 'Mongo Data Backend'}</small></div>}
         </div>
+        <BackendModeSwitch compact={!open} />
         <nav>
           {links.map(({ to, label, icon: Icon }) => (
             <NavLink key={to} to={to} end={to === '/'} className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
@@ -68,10 +85,10 @@ function Layout() {
             </NavLink>
           ))}
         </nav>
-        <div className="sidebar-footer">{open ? `Site Release Manager ${APP_VERSION}` : APP_VERSION}</div>
+        <div className="sidebar-footer">{open ? `${backendMode.toUpperCase()} · Site Release Manager ${APP_VERSION}` : backendMode.toUpperCase()}</div>
       </aside>
       <SharePointDeploymentCoordinator />
-      <main className="main-content"><Routes><Route path="/" element={<DashboardPage />} /><Route path="/sites" element={<SitesPage />} /><Route path="/sites/:siteId" element={<SitePage />} /><Route path="/releases" element={<ReleasesPage />} /><Route path="/runs" element={<RunsPage />} /><Route path="/backups" element={<BackupsPage />} /></Routes></main>
+      <main className="main-content"><Routes><Route path="/" element={<DashboardPage />} /><Route path="/sites" element={<SitesPage />} /><Route path="/sites/:siteId" element={<SitePage />} /><Route path="/releases" element={<ReleasesPage />} /><Route path="/runs" element={<RunsPage />} /><Route path="/backups" element={<BackupsPage />} /><Route path="/migrations" element={<MigrationsPage />} /></Routes></main>
     </div>
   );
 }
@@ -81,16 +98,17 @@ function PageHeader({ title, subtitle, actions }) {
 }
 
 function DashboardPage() {
+  const { backendMode } = useBackendMode();
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
-  const load = () => api.dashboard().then(setData).catch((e) => setError(e.message));
-  useEffect(() => { load(); }, []);
+  const load = () => api.dashboard(backendMode).then(setData).catch((e) => setError(e.message));
+  useEffect(() => { load(); }, [backendMode]);
   if (!data) return <Loading error={error} />;
   const cards = [
     ['סה״כ אתרים', data.totals.all, Building2], ['אתרים פעילים', data.totals.active, CheckCircle2],
     ['לא בריליס האחרון', data.totals.outdated, RefreshCw], ['ממתינים להשלמה', data.totals.waiting, Activity],
   ];
-  return <div className="page"><PageHeader title="דשבורד" subtitle="תמונה פשוטה של מצב האתרים והריליסים" actions={<button className="secondary-button" onClick={load}><RefreshCw size={17} />רענן</button>} />
+  return <div className="page"><PageHeader title="דשבורד" subtitle={`תמונת מצב תפעולית · ${backendMode.toUpperCase()}`} actions={<button className="secondary-button" onClick={load}><RefreshCw size={17} />רענן</button>} />
     <section className="metric-grid">{cards.map(([label, value, Icon]) => <article className="metric-card" key={label}><div className="metric-icon"><Icon size={22} /></div><div><strong>{value}</strong><span>{label}</span></div></article>)}</section>
     <section className="dashboard-grid">
       <Card title="עדכונים אחרונים"><SimpleSiteTable sites={data.recentSites} /></Card>
@@ -107,6 +125,7 @@ function SimpleSiteTable({ sites = [] }) { return sites.length ? <div className=
 
 function SitesPage() {
   const navigate = useNavigate();
+  const { backendMode } = useBackendMode();
   const [sites, setSites] = useState([]);
   const [releases, setReleases] = useState([]);
   const [config, setConfig] = useState(null);
@@ -114,10 +133,13 @@ function SitesPage() {
   const [selectedRelease, setSelectedRelease] = useState({});
   const [job, setJob] = useState(null);
   const [error, setError] = useState('');
+  const [selectedSites, setSelectedSites] = useState([]);
+  const [bulkReleaseId, setBulkReleaseId] = useState('');
+  const [search, setSearch] = useState('');
 
   const load = async () => {
     try {
-      const [s, r, c] = await Promise.all([api.sites(), api.releases(), api.config()]);
+      const [s, r, c] = await Promise.all([api.sites(backendMode), api.releases(backendMode), api.config()]);
       setSites(s);
       setReleases(r);
       setConfig(c);
@@ -131,7 +153,8 @@ function SitesPage() {
       setError('');
     } catch (e) { setError(e.message); }
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => { setSelectedSites([]); load(); }, [backendMode]);
+  const visibleSites = sites.filter((site) => `${site.name} ${site.unit} ${site.managerName}`.toLowerCase().includes(search.toLowerCase()));
 
   const monitorJob = async (createdJob) => {
     // Every state the job can settle into. A missing value here would poll forever.
@@ -208,38 +231,52 @@ function SitesPage() {
     } catch (e) { setError(e.message); }
   };
 
+  const deployBatch = async () => {
+    if (!bulkReleaseId) return setError('יש לבחור ריליס לפריסה מרובה.');
+    if (!window.confirm(`לפרוס את הריליס הנבחר ל-${selectedSites.length} אתרים במצב ${backendMode.toUpperCase()}?`)) return;
+    try {
+      const batch = await api.createDeploymentBatch({ backend: backendMode, releaseId: bulkReleaseId, siteIds: selectedSites });
+      setSelectedSites([]);
+      window.location.hash = `#/runs?batchId=${batch.id}`;
+    } catch (e) { setError(e.message); }
+  };
+
   return <div className="page">
-    <PageHeader title="אתרים" subtitle="מעקב, התקנה ועדכון ריליסים" actions={<><button className="secondary-button" onClick={load}><RefreshCw size={17} />רענן</button><button className="primary-button" onClick={() => setShowAdd(true)}><Plus size={18} />הוסף אתר</button></>} />
+    <PageHeader title="אתרים" subtitle={`מעקב, התקנה ועדכון ריליסים · ${backendMode.toUpperCase()}`} actions={<><button className="secondary-button" onClick={load}><RefreshCw size={17} />רענן</button><button className="primary-button" onClick={() => setShowAdd(true)}><Plus size={18} />הוסף אתר</button></>} />
     {error && <div className="alert"><CircleAlert size={18} />{error}<button onClick={() => setError('')}><X size={16} /></button></div>}
-    <div className="table-card"><table><thead><tr><th>יחידה</th><th>שם האתר</th><th>Host</th><th>תאריך העלאה</th><th>עדכון אחרון</th><th>גרסה</th><th>מנהל אתר</th><th>מצב</th><th>פעולה</th></tr></thead><tbody>
-      {sites.map((site) => <tr key={site.id} className="site-row">
+    <div className="sites-toolbar"><input aria-label="חיפוש אתרים" placeholder="חיפוש לפי אתר, יחידה או מנהל" value={search} onChange={(event) => setSearch(event.target.value)} /><BackendBadge backend={backendMode} /></div>
+    <div className="table-card"><table><thead><tr><th><input type="checkbox" aria-label="בחר את כל האתרים המוצגים" checked={visibleSites.length > 0 && visibleSites.every((site) => selectedSites.includes(site.id))} onChange={(event) => setSelectedSites(event.target.checked ? visibleSites.map((site) => site.id) : [])} /></th><th>יחידה</th><th>שם האתר</th><th>Backend</th><th>Host</th><th>תאריך העלאה</th><th>עדכון אחרון</th><th>גרסה</th><th>מנהל אתר</th><th>מצב</th><th>פעולה</th></tr></thead><tbody>
+      {visibleSites.map((site) => <tr key={site.id} className={selectedSites.includes(site.id) ? 'site-row selected' : 'site-row'}>
+        <td><input type="checkbox" aria-label={`בחר ${site.name}`} checked={selectedSites.includes(site.id)} onChange={(event) => setSelectedSites((current) => event.target.checked ? [...current, site.id] : current.filter((id) => id !== site.id))} /></td>
         <td>{site.unit}</td>
         <td><Link className="site-name-button" to={`/sites/${site.id}`}>{site.name}<Eye size={14} /></Link></td>
-        <td dir="ltr">{site.host}</td><td>{formatDate(site.firstPublishedAt)}</td><td>{formatDate(site.lastPublishedAt)}</td><td>{site.currentVersion || '—'}</td><td>{site.managerName}</td><td><StatusBadge status={site.status} /></td>
+        <td><BackendBadge backend={site.storageBackend} /></td><td dir="ltr">{site.host}</td><td>{formatDate(site.firstPublishedAt)}</td><td>{formatDate(site.lastPublishedAt)}</td><td>{site.currentVersion || '—'}</td><td>{site.managerName}</td><td><StatusBadge status={site.status} /></td>
         <td><div className="site-actions"><div className="inline-actions"><select value={selectedRelease[site.id] || ''} onChange={(e) => setSelectedRelease((p) => ({ ...p, [site.id]: e.target.value }))}><option value="">בחר ריליס</option>{releases.map((release) => <option key={release.id} value={release.id}>{release.version}</option>)}</select><button className="small-primary" onClick={() => beginDeploy(site, selectedRelease[site.id])}><Rocket size={15} />עדכן</button></div><div className="site-action-icons"><button className="icon-button compact" title="פרטי אתר" onClick={() => navigate(`/sites/${site.id}`)}><Eye size={17} /></button><button className="icon-button compact" title="ערוך אתר" onClick={() => navigate(`/sites/${site.id}?section=edit`)}><PencilLine size={17} /></button><button className="danger-icon compact" title="מחק אתר" onClick={() => deleteSite(site)}><Trash2 size={17} /></button></div></div></td>
       </tr>)}
-      {!sites.length && <tr><td colSpan="9"><Empty /></td></tr>}
+      {!visibleSites.length && <tr><td colSpan="11"><Empty /></td></tr>}
     </tbody></table></div>
-    {showAdd && <AddSiteModal hosts={config?.sharePointHosts || []} releases={releases} onSave={createSite} onClose={() => setShowAdd(false)} />}
+    {selectedSites.length > 0 && <div className="bulk-action-bar"><strong>{selectedSites.length} אתרים נבחרו</strong><BackendBadge backend={backendMode} /><select value={bulkReleaseId} onChange={(event) => setBulkReleaseId(event.target.value)}><option value="">בחר ריליס</option>{releases.map((release) => <option key={release.id} value={release.id}>{release.version}</option>)}</select><button className="primary-button" onClick={deployBatch}><Rocket size={17} />פרוס ריליס ל-{selectedSites.length} אתרים</button></div>}
+    {showAdd && <AddSiteModal backendMode={backendMode} hosts={config?.sharePointHosts || []} releases={releases} onSave={createSite} onClose={() => setShowAdd(false)} />}
     {job && <JobModal job={job} onClose={() => setJob(null)} onLocalVerify={async (currentJob) => { const report = await api.verifyLocalDeployment(jobIdOf(currentJob)); const refreshed = await api.job(jobIdOf(currentJob)); setJob(refreshed); return report; }} />}
   </div>;
 }
 
-function AddSiteModal({ hosts, releases, onSave, onClose }) {
-  const [form, setForm] = useState({ mode: 'existing', unit: '', name: '', host: hosts[0] || '', siteCode: '', managerName: '', currentVersion: '', firstPublishedAt: '', lastPublishedAt: '', releaseId: '', siteDbFolder: 'siteDB', usersDbFolder: 'siteUsersDb', siteAssetsFolder: 'siteAssets', imagesFolder: 'images', widgetsDbTarget: 'users' });
+function AddSiteModal({ backendMode, hosts, releases, onSave, onClose }) {
+  const [form, setForm] = useState({ mode: 'existing', storageBackend: backendMode, unit: '', name: '', host: hosts[0] || '', siteCode: '', managerName: '', currentVersion: '', firstPublishedAt: '', lastPublishedAt: '', releaseId: '', siteDbFolder: 'siteDB', usersDbFolder: 'siteUsersDb', siteAssetsFolder: 'siteAssets', imagesFolder: 'images', widgetsDbTarget: 'users', builderSiteId: '', backendProfileId: '', backendApiUrl: '', rehearsal: false });
   const set = (key, value) => setForm((prev) => ({ ...prev, [key]: value }));
   return <Modal title="הוסף אתר" onClose={onClose} wide><div className="mode-switch"><button className={form.mode === 'existing' ? 'active' : ''} onClick={() => set('mode', 'existing')}>הוסף אתר קיים למעקב</button><button className={form.mode === 'install' ? 'active' : ''} onClick={() => set('mode', 'install')}>התקן Site Builder</button></div>
     <div className="form-grid"><Field label="יחידה"><input value={form.unit} onChange={(e) => set('unit', e.target.value)} /></Field><Field label="שם האתר"><input value={form.name} onChange={(e) => set('name', e.target.value)} /></Field><Field label="Host"><select value={form.host} onChange={(e) => set('host', e.target.value)}>{hosts.map((host) => <option key={host}>{host}</option>)}</select></Field><Field label="קוד אתר"><input dir="ltr" value={form.siteCode} onChange={(e) => set('siteCode', e.target.value.toLowerCase())} placeholder="schedule" /></Field><Field label="מנהל אתר"><input value={form.managerName} onChange={(e) => set('managerName', e.target.value)} /></Field>
       {form.mode === 'existing' ? <><Field label="גרסה נוכחית — אופציונלי"><input dir="ltr" value={form.currentVersion} onChange={(e) => set('currentVersion', e.target.value)} /></Field><Field label="תאריך העלאה — אופציונלי"><input type="datetime-local" value={form.firstPublishedAt} onChange={(e) => set('firstPublishedAt', e.target.value)} /></Field><Field label="עדכון אחרון — אופציונלי"><input type="datetime-local" value={form.lastPublishedAt} onChange={(e) => set('lastPublishedAt', e.target.value)} /></Field></> : <Field label="ריליס להתקנה"><select value={form.releaseId} onChange={(e) => set('releaseId', e.target.value)}><option value="">בחר ריליס</option>{releases.map((release) => <option value={release.id} key={release.id}>{release.version}</option>)}</select></Field>}
     </div>
+    {backendMode === 'mongo' && <div className="form-grid"><Field label="Mongo Site ID"><input dir="ltr" value={form.builderSiteId} onChange={(e) => set('builderSiteId', e.target.value)} /></Field><Field label="Backend profile"><input dir="ltr" value={form.backendProfileId} onChange={(e) => set('backendProfileId', e.target.value)} /></Field><Field label="Backend API URL"><input dir="ltr" value={form.backendApiUrl} onChange={(e) => set('backendApiUrl', e.target.value)} /></Field><Field label="יעד חזרה"><input type="checkbox" checked={form.rehearsal} onChange={(e) => set('rehearsal', e.target.checked)} /></Field></div>}
     <details className="advanced-site-settings">
       <summary>הגדרות SharePoint מתקדמות</summary>
       <div className="form-grid">
         <Field label="ספריית האתר"><input dir="ltr" value={form.siteDbFolder} onChange={(e) => set('siteDbFolder', e.target.value)} /></Field>
-        <Field label="ספריית משתמשים"><input dir="ltr" value={form.usersDbFolder} onChange={(e) => set('usersDbFolder', e.target.value)} /></Field>
-        <Field label="תיקיית siteAssets"><input dir="ltr" value={form.siteAssetsFolder} onChange={(e) => set('siteAssetsFolder', e.target.value)} /></Field>
+        {backendMode === 'txt' && <Field label="ספריית משתמשים"><input dir="ltr" value={form.usersDbFolder} onChange={(e) => set('usersDbFolder', e.target.value)} /></Field>}
+        {backendMode === 'txt' && <Field label="תיקיית siteAssets"><input dir="ltr" value={form.siteAssetsFolder} onChange={(e) => set('siteAssetsFolder', e.target.value)} /></Field>}
         <Field label="תיקיית images"><input dir="ltr" value={form.imagesFolder} onChange={(e) => set('imagesFolder', e.target.value)} /></Field>
-        <Field label="יעד widgets_data.txt"><select value={form.widgetsDbTarget} onChange={(e) => set('widgetsDbTarget', e.target.value)}><option value="users">ספריית משתמשים</option><option value="site">ספריית האתר</option></select></Field>
+        {backendMode === 'txt' && <Field label="יעד widgets_data.txt"><select value={form.widgetsDbTarget} onChange={(e) => set('widgetsDbTarget', e.target.value)}><option value="users">ספריית משתמשים</option><option value="site">ספריית האתר</option></select></Field>}
       </div>
       <p className="help-text">לאתר רגיל אין צורך לשנות. באתר קיים עם ספרייה שונה, למשל kashrarDB1, שנה רק את "ספריית האתר".</p>
     </details>
@@ -323,6 +360,7 @@ function JobModal({ job, onClose, onLocalVerify }) {
 }
 
 function ReleasesPage() {
+  const { backendMode } = useBackendMode();
   const [releases, setReleases] = useState([]);
   const [versionInfo, setVersionInfo] = useState(null);
   const [showUpload, setShowUpload] = useState(false);
@@ -331,7 +369,7 @@ function ReleasesPage() {
 
   const load = async () => {
     try {
-      const [items, suggestions] = await Promise.all([api.releases(), api.releaseVersionSuggestions()]);
+      const [items, suggestions] = await Promise.all([api.releases(backendMode), api.releaseVersionSuggestions()]);
       setReleases(items);
       setVersionInfo(suggestions);
       setError('');
@@ -339,7 +377,7 @@ function ReleasesPage() {
       setError(e.message);
     }
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [backendMode]);
 
   const upload = async ({ version, notes, source }) => {
     const data = new FormData();
@@ -386,7 +424,7 @@ function ReleasesPage() {
       {releases.map((release) => <article className="release-card" key={release.id}>
         <div className="release-icon"><Box size={24} /></div>
         <div>
-          <div className="release-title"><strong>{release.version}</strong><StatusBadge status={release.status} /></div>
+          <div className="release-title"><strong>{release.version}</strong><StatusBadge status={release.status} />{(release.universalProof?.storageCompatibility || []).map((backend) => <BackendBadge key={backend} backend={backend} />)}</div>
           <p>{release.notes || 'ללא פירוט'}</p>
           <small>{release.fileCount} קבצים · {(release.totalBytes / 1024 / 1024).toFixed(1)} MB · {release.uploadType === 'folder' ? 'dist' : 'dist ZIP'} · {formatDate(release.createdAt)}</small>
           <code>{release.sha256?.slice(0, 20)}…</code>
@@ -569,6 +607,22 @@ function UploadReleaseModal({ versionInfo, onClose, onSave }) {
     {zipFile && <div className="zip-fallback-selected"><FileArchive size={18} /><div><strong>{zipFile.name}</strong><span>{formatBytes(zipFile.size)}</span></div><button className="icon-button" onClick={() => setZipFile(null)}><X size={16} /></button></div>}
     <div className="zip-fallback"><span>יש לך dist-universal.zip?</span><button type="button" onClick={() => zipInputRef.current?.click()}>בחר dist-universal.zip</button><input ref={zipInputRef} className="hidden-file-input" type="file" accept=".zip,application/zip" onChange={onZipPicked} /></div>
   </div><div className="modal-actions"><button className="secondary-button" disabled={saving} onClick={onClose}>ביטול</button><button className="primary-button" disabled={!ready || saving || reading} onClick={submit}><CloudUpload size={17} />{saving ? 'מעלה ושומר...' : 'שמור ריליס'}</button></div></Modal>;
+}
+
+function MigrationsPage() {
+  const [plans, setPlans] = useState([]);
+  const [error, setError] = useState('');
+  const load = () => api.migrations().then(setPlans).catch((loadError) => setError(loadError.message));
+  useEffect(() => { load(); }, []);
+  return <div className="page">
+    <PageHeader title="מיגרציות" subtitle="תכנון בטוח של TXT אל Mongo. אין במסך זה פעולת cutover או שינוי של אתר המקור." actions={<button className="secondary-button" onClick={load}><RefreshCw size={17} />רענן</button>} />
+    <div className="inline-alert"><CircleAlert size={18} /><span>תכנית מיגרציה מקשרת אתר TXT קיים ליעד Mongo מסומן כחזרה. שני האתרים נשארים עצמאיים.</span></div>
+    {error && <div className="alert"><CircleAlert size={18} />{error}</div>}
+    <div className="table-card"><table><thead><tr><th>מקור TXT</th><th>יעד Mongo</th><th>מצב</th><th>עודכן</th></tr></thead><tbody>
+      {plans.map((plan) => <tr key={plan.id}><td dir="ltr">{plan.sourceTargetKey}</td><td dir="ltr">{plan.destinationTargetKey}</td><td><StatusBadge status={plan.state} /></td><td>{formatDate(plan.updatedAt)}</td></tr>)}
+      {!plans.length && <tr><td colSpan="4"><Empty /></td></tr>}
+    </tbody></table></div>
+  </div>;
 }
 
 export default function App() { return <Layout />; }

@@ -4,6 +4,7 @@ import { HashRouter } from 'react-router-dom';
 import App from './App.jsx';
 import { getApiBootstrapDiagnostics, getApiHealthDiagnostics, initializeApiRuntime, verifyApiHealth } from './api.js';
 import './styles.css';
+import { BackendModeProvider } from './context/BackendModeContext.jsx';
 
 function renderBootstrapFailure(root, error) {
   const diagnostics = getApiBootstrapDiagnostics();
@@ -61,7 +62,7 @@ async function bootstrap() {
     createRoot(root).render(
       <React.StrictMode>
         <HashRouter>
-          <App />
+          <BackendModeProvider><App /></BackendModeProvider>
         </HashRouter>
       </React.StrictMode>,
     );
