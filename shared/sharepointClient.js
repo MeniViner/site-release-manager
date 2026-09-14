@@ -217,23 +217,37 @@ export function createSharePointClient(options = {}) {
 
     const data = await result.response.json();
     const item = data?.d ?? data ?? {};
+
     const id = Number(item.Id);
     const fsType = Number(item.FileSystemObjectType);
-    const fileRef = normalizePath(item.FileRef || item.Folder?.ServerRelativeUrl || '');
+
+    const fileRef = normalizePath(item.FileRef || '');
+    const folderRef = normalizePath(item.Folder?.ServerRelativeUrl || '');
 
     if (!Number.isInteger(id) || id <= 0) {
-      // The folder object is visible but SharePoint has not committed its list
-      // item yet. This is precisely the window that used to need a page refresh.
-      return { ready: false, reason: 'FOLDER_OBJECT_VISIBLE_WAITING_FOR_LIST_ITEM', exists: true };
+      return {
+        ready: false,
+        reason: 'FOLDER_OBJECT_VISIBLE_WAITING_FOR_LIST_ITEM',
+        exists: true
+      };
     }
-    if (fsType !== 1) return { ready: false, reason: 'FOLDER_METADATA_UNRECOGNIZED', exists: true };
-    if (
-      fileRef &&
-      fileRef.toLowerCase() !== normalizePath(folderPath).toLowerCase()
-    ) {
-      return { ready: false, reason: 'LIST_BACKED_FOLDER_NOT_READY', exists: true };
+
+    if (fsType !== 1) {
+      return {
+        ready: false,
+        reason: 'FOLDER_METADATA_UNRECOGNIZED',
+        exists: true
+      };
     }
-    return { ready: true, reason: 'LIST_BACKED_FOLDER_READY', exists: true, listItemId: id };
+
+    return {
+      ready: true,
+      reason: 'LIST_BACKED_FOLDER_READY',
+      exists: true,
+      listItemId: id,
+      fileRef,
+      folderRef
+    };
   }
 
   /**
