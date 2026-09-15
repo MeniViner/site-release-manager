@@ -19,6 +19,8 @@ const { buildSiteIdentity, canonicalTargetKey, SiteIdentityError, requiredLibrar
 const { canonicalState, isResumable, stateLabel } = require("../services/jobState.js");
 const { publicBackup } = require("../services/backupService.js");
 const { parseReleaseVersion } = require("../utils/versioning.js");
+const { backendQuery, normalizeBackend } = require("../utils/backendMode.js");
+const { buildBackendDeploymentPlan } = require("../services/deploymentProfiles.js");
 const sitesRouter = Router();
 
 const toDateOrNull = (value) => (value ? new Date(value) : null);
@@ -83,9 +85,9 @@ function resolveIdentity(candidate) {
   return buildSiteIdentity(candidate);
 }
 
-sitesRouter.get('/', async (_req, res, next) => {
+sitesRouter.get('/', async (req, res, next) => {
   try {
-    const sites = await getDb().collection('sites').find({}).sort({ updatedAt: -1 }).toArray();
+    const sites = await getDb().collection('sites').find(backendQuery(req.query.backend)).sort({ updatedAt: -1 }).toArray();
     res.json(sites.map(publicSite));
   } catch (error) {
     next(error);
@@ -106,10 +108,12 @@ sitesRouter.get('/:id', async (req, res, next) => {
     let plan = null;
     let active = null;
     if (payload.identity) {
+      const backendPlan = buildBackendDeploymentPlan(site, { version: 'site-details', universalProof: { storageCompatibility: ['txt', 'mongo'] } });
       plan = {
-        libraries: requiredLibraries(payload.identity),
-        folders: requiredFolders(payload.identity),
-        txtSeeds: buildTxtSeedPlan(payload.identity).map((seed) => ({ fileName: seed.fileName, path: seed.path })),
+        storageBackend: backendPlan.backend,
+        libraries: backendPlan.libraries,
+        folders: backendPlan.folders,
+        txtSeeds: backendPlan.seedFiles.map((seed) => ({ fileName: seed.fileName, path: seed.path })),
         boundary: PROVISIONING_BOUNDARY,
       };
       const owner = await findActiveJobForTarget(payload.targetKey);
@@ -215,6 +219,11 @@ sitesRouter.post('/', async (req, res, next) => {
     if (!unit || !name || !managerName) return res.status(400).json({ error: 'יחידה, שם האתר ומנהל האתר הם שדות חובה.' });
 
     const identity = resolveIdentity(body);
+    if (identity.storageBackend === 'mongo') {
+      if (!String(body.builderSiteId || '').trim() || !String(body.backendProfileId || '').trim() || !String(body.backendApiUrl || '').trim()) {
+        return res.status(400).json({ error: 'Mongo Sites require builderSiteId, backendProfileId and backendApiUrl.', code: 'MONGO_FIELDS_REQUIRED' });
+      }
+    }
     const now = new Date();
     const document = {
       mode: mode === 'install' ? 'install' : 'existing',
@@ -225,6 +234,10 @@ sitesRouter.post('/', async (req, res, next) => {
       siteCode: identity.siteCode,
       storageType: identity.storageBackend,
       storageBackend: identity.storageBackend,
+      builderSiteId: identity.storageBackend === 'mongo' ? String(body.builderSiteId).trim() : null,
+      backendProfileId: identity.storageBackend === 'mongo' ? String(body.backendProfileId).trim() : null,
+      backendApiUrl: identity.storageBackend === 'mongo' ? String(body.backendApiUrl).trim().replace(/\/+$/, '') : null,
+      rehearsal: identity.storageBackend === 'mongo' && body.rehearsal === true,
       siteDbFolder: identity.siteDbFolder,
       usersDbFolder: identity.usersDbFolder,
       siteAssetsFolder: identity.siteAssetsFolder,
@@ -266,6 +279,9 @@ sitesRouter.patch('/:id', async (req, res, next) => {
     if (!existing) return res.status(404).json({ error: 'האתר לא נמצא.' });
 
     const body = req.body || {};
+    if ('storageBackend' in body && normalizeBackend(body.storageBackend) !== normalizeBackend(existing.storageBackend)) {
+      return res.status(409).json({ error: 'Site backend is immutable. Create a linked migration destination instead.', code: 'BACKEND_IMMUTABLE' });
+    }
     const merged = {
       host: 'host' in body ? body.host : existing.host,
       siteCode: 'siteCode' in body ? body.siteCode : existing.siteCode,
@@ -290,6 +306,11 @@ sitesRouter.patch('/:id', async (req, res, next) => {
     }
     for (const key of ['firstPublishedAt', 'lastPublishedAt']) {
       if (key in body) metadataPatch[key] = toDateOrNull(body[key]);
+    }
+    if (normalizeBackend(existing.storageBackend) === 'mongo') {
+      for (const key of ['builderSiteId', 'backendProfileId', 'backendApiUrl', 'rehearsal']) {
+        if (key in body) metadataPatch[key] = key === 'rehearsal' ? body[key] === true : String(body[key] || '').trim();
+      }
     }
 
     const patch = {

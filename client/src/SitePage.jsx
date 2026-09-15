@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { api } from './api.js';
 import { buildSiteIdentity } from '../../shared/siteRuntime.js';
+import { useBackendMode } from './context/BackendModeContext.jsx';
 
 const STATUS_LABELS = {
   DRAFT: 'טיוטה', TRACKED: 'במעקב', ACTIVE: 'פעיל', FAILED: 'נכשל',
@@ -133,6 +134,7 @@ function SiteEditor({ site, hosts, identityLocked, onCancel, onSaved }) {
 }
 
 export default function SitePage() {
+  const { backendMode, setBackendMode } = useBackendMode();
   const { siteId } = useParams();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -149,7 +151,8 @@ export default function SitePage() {
   const load = async () => {
     setLoading(true);
     try {
-      const [detail, releaseItems, appConfig] = await Promise.all([api.site(siteId), api.releases(), api.config()]);
+      const detail = await api.site(siteId);
+      const [releaseItems, appConfig] = await Promise.all([api.releases(detail.storageBackend), api.config()]);
       setSite(detail);
       setReleases(releaseItems);
       setConfig(appConfig);
@@ -201,6 +204,7 @@ export default function SitePage() {
 
   if (loading) return <div className="center-state"><LoaderCircle className="spin" /><p>טוען פרטי אתר...</p></div>;
   if (!site) return <div className="page"><div className="site-not-found"><CircleAlert size={30} /><h1>האתר לא נמצא</h1><p>{error || 'רשומת האתר אינה קיימת.'}</p><Link className="secondary-button" to="/sites"><ArrowRight size={17} />חזרה לאתרים</Link></div></div>;
+  if ((site.storageBackend || 'txt') !== backendMode) return <div className="page"><div className="site-not-found"><Database size={30} /><h1>האתר הזה מנוהל במצב {(site.storageBackend || 'txt').toUpperCase()}</h1><p>מצב התפעול הנוכחי הוא {backendMode.toUpperCase()}. לא ניתן לפרוס אתר מעבר לגבול Backend.</p><button className="primary-button" onClick={() => setBackendMode(site.storageBackend || 'txt')}>עבור למצב {(site.storageBackend || 'txt').toUpperCase()}</button><Link className="secondary-button" to="/sites"><ArrowRight size={17} />חזרה לאתרים</Link></div></div>;
 
   const latestBackup = site.backups?.[0] || null;
   const currentRelease = site.currentRelease;

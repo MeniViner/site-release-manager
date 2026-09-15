@@ -9,6 +9,7 @@ const { collectFiles, copyDistWithoutDeploymentOverlay, directoryStats, distExcl
 const { nextReleaseVersions, parseReleaseVersion } = require("../utils/versioning.js");
 const { validateUniversalArtifact, ReleaseValidationError: ArtifactValidationError } = require("../services/releaseValidation.js");
 const { MANIFEST_FILE } = require("../shared/universalManifest.js");
+const { normalizeBackend, releaseSupportsBackend } = require("../utils/backendMode.js");
 class ReleaseValidationError extends Error {
   constructor(message) {
     super(message);
@@ -115,10 +116,11 @@ function cleanupTempFiles(files = []) {
   }
 }
 
-releasesRouter.get('/', async (_req, res, next) => {
+releasesRouter.get('/', async (req, res, next) => {
   try {
     const releases = await getDb().collection('releases').find({}).sort({ createdAt: -1 }).toArray();
-    res.json(releases.map(publicRelease));
+    const backend = req.query.backend ? normalizeBackend(req.query.backend) : null;
+    res.json(releases.filter((release) => !backend || releaseSupportsBackend(release, backend)).map(publicRelease));
   } catch (error) {
     next(error);
   }

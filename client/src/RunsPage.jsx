@@ -6,6 +6,7 @@ import {
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from './api.js';
 import { STAGE_ORDER as CANONICAL_STAGE_ORDER, stageLabel } from '../../shared/deploymentStages.js';
+import { useBackendMode } from './context/BackendModeContext.jsx';
 
 const STATE_LABELS = {
   QUEUED: 'ממתין בתור', PREPARING_RELEASE: 'מכין ריליס', READY_FOR_SHAREPOINT: 'מוכן ל-SharePoint',
@@ -19,6 +20,7 @@ const EVENT_STATUS = {
   started: { label: 'בתהליך', icon: Activity }, success: { label: 'הצליח', icon: CheckCircle2 },
   failed: { label: 'נכשל', icon: XCircle }, warning: { label: 'אזהרה', icon: CircleAlert },
   info: { label: 'מידע', icon: Clock3 },
+  skipped: { label: 'דולג במכוון', icon: Ban },
   // A settled run can never leave a stage spinning; an unfinished stage is
   // reported as abandoned instead.
   abandoned: { label: 'נעצר', icon: CircleAlert },
@@ -112,6 +114,7 @@ function summarizeStage(events, stageKey) {
 }
 
 export default function RunsPage() {
+  const { backendMode } = useBackendMode();
   const [searchParams] = useSearchParams();
   const [runs, setRuns] = useState([]);
   const [selectedId, setSelectedId] = useState('');
@@ -121,11 +124,12 @@ export default function RunsPage() {
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
   const [stateFilter, setStateFilter] = useState('');
+  const [batch, setBatch] = useState(null);
 
   const load = async () => {
     setLoading(true);
     try {
-      setRuns(await api.runs());
+      setRuns(await api.runs(backendMode));
       setError('');
     } catch (e) {
       setError(e.message);
@@ -147,10 +151,13 @@ export default function RunsPage() {
     }
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [backendMode]);
   useEffect(() => {
     const requestedRunId = searchParams.get('runId');
     if (requestedRunId) openRun(requestedRunId);
+    const batchId = searchParams.get('batchId');
+    if (batchId) api.deploymentBatch(batchId).then(setBatch).catch((batchError) => setError(batchError.message));
+    else setBatch(null);
   }, [searchParams]);
 
   const filtered = useMemo(() => runs.filter((run) => {
@@ -164,6 +171,13 @@ export default function RunsPage() {
       <div><h1>ריצות SharePoint</h1><p>כל ניסיון פריסה נשמר שלב-שלב כדי לדעת בדיוק איפה נכשל, איזו בקשה בוצעה ומה SharePoint החזיר.</p></div>
       <div className="page-actions"><button className="secondary-button" onClick={load}><RefreshCw size={17} />רענן</button></div>
     </div>
+
+    {batch && <section className="batch-progress-card">
+      <div><div><span>פריסה מרובה · {String(batch.backend).toUpperCase()}</span><h2>{batch.succeeded + batch.failed + batch.cancelled}/{batch.total} הושלמו</h2></div><strong>{Math.round(((batch.succeeded + batch.failed + batch.cancelled) / Math.max(1, batch.total)) * 100)}%</strong></div>
+      <div className="progress"><span style={{ width: `${((batch.succeeded + batch.failed + batch.cancelled) / Math.max(1, batch.total)) * 100}%` }} /></div>
+      <p>{batch.succeeded} הצליחו · {batch.failed} נכשלו · {batch.running} רצים · {batch.queued} בתור</p>
+      <div className="batch-job-grid">{batch.jobs.map((job) => <button key={job.id} onClick={() => openRun(job.id)}><span dir="ltr">#{job.id.slice(-6)}</span><strong>{job.state}</strong><small>{job.currentStage || job.message}</small></button>)}</div>
+    </section>}
 
     <div className="runs-filter-panel">
       <div className="runs-filter-chips" role="group" aria-label="סינון לפי מצב ריצה">

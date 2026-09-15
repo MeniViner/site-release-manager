@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Archive, CircleAlert, ExternalLink, LoaderCircle, RefreshCw, X } from 'lucide-react';
 import { api } from './api.js';
+import { useBackendMode } from './context/BackendModeContext.jsx';
 
 const OUTCOMES = {
   PASSED: 'הצליח',
@@ -24,13 +25,14 @@ const formatBytes = (value) => {
 };
 
 export default function BackupsPage() {
+  const { backendMode, hasProvider } = useBackendMode();
   const [searchParams, setSearchParams] = useSearchParams();
   const [backups, setBackups] = useState([]);
   const [sites, setSites] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const siteId = searchParams.get('siteId') || '';
-  const backend = searchParams.get('backend') || '';
+  const backend = searchParams.get('backend') || (hasProvider ? backendMode : '');
   const outcome = searchParams.get('outcome') || '';
 
   const load = async () => {
@@ -38,7 +40,7 @@ export default function BackupsPage() {
     try {
       const [records, siteItems] = await Promise.all([
         api.backups({ siteId, backend, outcome }),
-        api.sites(),
+        api.sites(backendMode),
       ]);
       setBackups(records);
       setSites(siteItems);
@@ -50,7 +52,7 @@ export default function BackupsPage() {
     }
   };
 
-  useEffect(() => { load(); }, [siteId, backend, outcome]);
+  useEffect(() => { load(); }, [siteId, backend, outcome, backendMode]);
 
   const setFilter = (key, value) => {
     const next = new URLSearchParams(searchParams);

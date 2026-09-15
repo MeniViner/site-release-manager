@@ -13,12 +13,14 @@ const { ObjectId } = require("mongodb");
 const { config, paths } = require("../config.js");
 const { getDb } = require("../db.js");
 const { STAGE } = require("../shared/deploymentStages.js");
-const { buildSiteIdentity, buildTxtSeedPlan, requiredLibraries, requiredFolders, canonicalTargetKey } = require("../shared/siteRuntime.js");
+const { buildSiteIdentity, canonicalTargetKey } = require("../shared/siteRuntime.js");
+const { buildBackendDeploymentPlan } = require("./deploymentProfiles.js");
 const { RUNTIME_CONFIG_FILE, DEPLOYMENT_METADATA_FILE, RUNTIME_BOOTSTRAP_FILE } = require("../shared/universalManifest.js");
 const { verifyStoredReleaseIntegrity } = require("./releaseValidation.js");
 const { createStaging, writeTargetOverlay, injectRuntimeBootstrap, regenerateManifest, verifyStaging, buildDeploymentFiles, buildUploadOrder, resolveStagedFile, destroyStaging } = require("./stagingService.js");
 const { appendRunEvent } = require("./runTelemetry.js");
 const { JOB_STATE } = require("./jobState.js");
+const siteBuilderBackendClient = require("./siteBuilderBackendClient.js");
 function log(jobId, message) {
   const line = `[${new Date().toISOString()}] [prepare] ${message}`;
   console.log(`[job ${jobId}] ${line}`);
@@ -28,7 +30,7 @@ function log(jobId, message) {
 /** Canonical per-target runtime identity. Nothing downstream re-derives paths. */
 function buildSiteRuntime(site, release, jobId, deployedAt) {
   const identity = buildSiteIdentity(site);
-  return {
+  const runtime = {
     schemaVersion: 2,
     ...identity,
     releaseVersion: release.version,
@@ -37,6 +39,13 @@ function buildSiteRuntime(site, release, jobId, deployedAt) {
     deploymentGeneratedBy: 'site-release-manager',
     deploymentJobId: String(jobId),
   };
+  if (identity.storageBackend === 'mongo') {
+    runtime.siteId = String(site.builderSiteId || '').trim();
+    runtime.backendApiUrl = String(site.backendApiUrl || '').trim().replace(/\/+$/, '');
+  } else {
+    delete runtime.backendApiUrl;
+  }
+  return runtime;
 }
 
 function stagingRootForJob(jobId) {
@@ -99,6 +108,24 @@ async function prepareDeploymentJob(jobId) {
     },
   });
   logs.push(log(jobId, `target siteDbRoot=${identity.siteDbRoot} usersDbRoot=${identity.usersDbRoot} dist=${identity.targetDistPath}`));
+
+  if (identity.storageBackend === 'mongo') {
+    const health = await siteBuilderBackendClient.health(site);
+    await appendRunEvent(objectId, {
+      stage: STAGE.TARGET_VALIDATE,
+      status: 'success',
+      source: 'server',
+      message: 'Mongo backend health and identity verified.',
+      details: { appVersion: health.appVersion || '', dataSchemaVersion: health.dataSchemaVersion ?? null },
+    });
+    const provisioned = await siteBuilderBackendClient.provision(site);
+    const status = await siteBuilderBackendClient.provisionStatus(site);
+    logs.push(log(jobId, `mongo provision verified siteId=${site.builderSiteId} seeded=${(provisioned.seeded || []).length}`));
+    await db.collection('deployment_jobs').updateOne(
+      { _id: objectId },
+      { $set: { mongoProvisioning: { provisioned, status, verifiedAt: new Date() } } },
+    );
+  }
 
   const deployedAt = new Date().toISOString();
   const stagingRoot = stagingRootForJob(jobId);
@@ -260,7 +287,8 @@ async function prepareDeploymentJob(jobId) {
  * job's own staging and identity so it can never carry another target's values.
  */
 function buildDeploymentDescriptor({ job, site, release, manifest, uploadOrder }) {
-  const identity = buildSiteIdentity(site);
+  const plan = buildBackendDeploymentPlan(site, release, distSubFolders(manifest));
+  const { identity } = plan;
   return {
     job: {
       id: String(job._id),
@@ -280,10 +308,12 @@ function buildDeploymentDescriptor({ job, site, release, manifest, uploadOrder }
       finalUrl: identity.finalAppUrl,
     },
     release: { id: String(release._id), version: release.version, notes: release.notes || '' },
-    libraries: requiredLibraries(identity),
-    folders: requiredFolders(identity, distSubFolders(manifest)),
-    seedFiles: buildTxtSeedPlan(identity),
-    permissionsMarker: `${identity.usersDbRoot}/.permissions-setup.json`,
+    storageBackend: plan.backend,
+    capabilities: plan.capabilities,
+    libraries: plan.libraries,
+    folders: plan.folders,
+    seedFiles: plan.seedFiles,
+    permissionsMarker: plan.permissionsMarker,
     runtimeVerification: {
       runtimeConfigFile: RUNTIME_CONFIG_FILE,
       deploymentMetadataFile: DEPLOYMENT_METADATA_FILE,

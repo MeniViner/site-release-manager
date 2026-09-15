@@ -288,8 +288,8 @@ async function request(path, options = {}) {
 export const api = {
   health: () => request('/api/health'),
   config: () => request('/api/config'),
-  dashboard: () => request('/api/dashboard'),
-  sites: () => request('/api/sites'),
+  dashboard: (backend = '') => request(`/api/dashboard${backend ? `?backend=${encodeURIComponent(backend)}` : ''}`),
+  sites: (backend = '') => request(`/api/sites${backend ? `?backend=${encodeURIComponent(backend)}` : ''}`),
   site: (id) => request(`/api/sites/${id}`),
   createSite: (body) => request('/api/sites', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
   updateSite: (id, body) => request(`/api/sites/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
@@ -298,7 +298,7 @@ export const api = {
   deleteSite: (id) => request(`/api/sites/${id}?confirm=delete-tracking-record`, { method: 'DELETE' }),
   siteProvisioningBoundary: () => request('/api/sites/provisioning-boundary'),
   deploy: (siteId, releaseId, { force = false } = {}) => request(`/api/sites/${siteId}/deploy`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ releaseId, force }) }),
-  releases: () => request('/api/releases'),
+  releases: (backend = '') => request(`/api/releases${backend ? `?backend=${encodeURIComponent(backend)}` : ''}`),
   releaseVersionSuggestions: () => request('/api/releases/version-suggestions'),
   uploadRelease: (formData) => request('/api/releases/upload', { method: 'POST', body: formData }),
   uploadReleaseFolder: (formData) => request('/api/releases/upload-folder', { method: 'POST', body: formData }),
@@ -306,7 +306,7 @@ export const api = {
   deleteRelease: (id) => request(`/api/releases/${id}`, { method: 'DELETE' }),
   job: (id) => request(`/api/jobs/${id}`),
   verifyLocalDeployment: (id) => request(`/api/deployments/${id}/verify-local`, { method: 'POST' }),
-  runs: () => request('/api/runs?limit=100'),
+  runs: (backend = '') => request(`/api/runs?limit=100${backend ? `&backend=${encodeURIComponent(backend)}` : ''}`),
   run: (id) => request(`/api/runs/${id}`),
   runStages: () => request('/api/runs/stages'),
   cancelRun: (id, reason = '') => request(`/api/runs/${id}/cancel`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason }) }),
@@ -319,4 +319,8 @@ export const api = {
     if (outcome) query.set('outcome', outcome);
     return request(`/api/backups${query.size ? `?${query}` : ''}`);
   },
+  createDeploymentBatch: (body) => request('/api/deployment-batches', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+  deploymentBatch: (id) => request(`/api/deployment-batches/${id}`),
+  migrations: () => request('/api/migrations'),
+  createMigration: (body) => request('/api/migrations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
 };

@@ -51,6 +51,8 @@ async function migrateIndexes(db) {
     db.collection('backups').createIndex({ siteId: 1, createdAt: -1 }),
     db.collection('backups').createIndex({ storageBackend: 1, outcome: 1, createdAt: -1 }),
     db.collection('backups').createIndex({ targetKey: 1, createdAt: -1 }),
+    db.collection('deployment_batches').createIndex({ backend: 1, createdAt: -1 }),
+    db.collection('migration_plans').createIndex({ sourceSiteId: 1, destinationSiteId: 1 }, { unique: true }),
   ]);
 }
 
