@@ -21,6 +21,7 @@ const { createDailyDataRouter } = require("./daily-data/v1/router.js");
  */
 const ALLOWED_REQUEST_HEADERS = Object.freeze(['Content-Type', 'Accept', 'X-SRM-Lease']);
 const DAILY_DATA_REQUEST_HEADERS = Object.freeze(['Content-Type', 'Accept', 'If-Match']);
+const MANAGEMENT_IDENTITY_REQUEST_HEADERS = Object.freeze(['Content-Type', 'Accept']);
 
 function createApp() {
   const app = express();
@@ -39,6 +40,23 @@ function createApp() {
   });
 
   const isAllowedOrigin = (origin) => !origin || allowedOrigins.has(origin.replace(/\/+$/, ''));
+  const managementIdentityCors = cors({
+    origin(origin, callback) {
+      return callback(null, isAllowedOrigin(origin));
+    },
+    credentials: true,
+    methods: ['POST', 'PATCH', 'OPTIONS'],
+    allowedHeaders: MANAGEMENT_IDENTITY_REQUEST_HEADERS,
+    maxAge: 600,
+    optionsSuccessStatus: 204,
+  });
+  const hasManagementIdentityBoundary = (req) => {
+    const method = req.method === 'OPTIONS'
+      ? String(req.get('access-control-request-method') || '').toUpperCase()
+      : req.method;
+    return (req.path === '/api/sites' && method === 'POST')
+      || (/^\/api\/sites\/[^/]+\/data-access$/.test(req.path) && method === 'PATCH');
+  };
   // Daily Site Builder data is intentionally isolated from the management API:
   // it needs credentialed PUT/PATCH for the SharePoint/IIS identity flow, while
   // management keeps its existing non-credentialed browser boundary.
@@ -63,6 +81,12 @@ function createApp() {
     });
   });
   app.use('/api/daily-data/v1', createDailyDataRouter());
+
+  // Only management operations that require trusted IIS identity opt into
+  // browser credentials. The remaining management API stays non-credentialed.
+  app.use((req, res, next) => (hasManagementIdentityBoundary(req)
+    ? managementIdentityCors(req, res, next)
+    : next()));
 
   app.use(cors({
     origin(origin, callback) {
@@ -161,4 +185,5 @@ const startedAt = new Date();
 module.exports = {
   createApp: createApp,
   ALLOWED_REQUEST_HEADERS: ALLOWED_REQUEST_HEADERS,
+  MANAGEMENT_IDENTITY_REQUEST_HEADERS: MANAGEMENT_IDENTITY_REQUEST_HEADERS,
 };

@@ -93,7 +93,6 @@ copyFile('server/package.json', packageRoot);
 copyDir('server/node_modules', packageRoot);
 copyDir('client/dist', packageRoot);
 copyDir('sharepoint-deployer/client/dist', packageRoot);
-copyDir('storage', packageRoot);
 
 const runtimeDir = path.join(packageRoot, 'runtime');
 fs.mkdirSync(runtimeDir, { recursive: true });
@@ -142,4 +141,4 @@ console.log('');
 console.log('IIS PACKAGE READY');
 console.log(`File: ${outputPath}`);
 console.log(`Node runtime: ${process.execPath}`);
-console.log('Contains: IIS entry + web.config + server + Windows server/node_modules + client/dist + deployer dist + storage + .env');
+console.log('Contains: IIS entry + web.config + server + Windows server/node_modules + client/dist + deployer dist + .env. Runtime storage is excluded.');

@@ -70,7 +70,24 @@ function IdentityGrid({ identity }) {
   </div>;
 }
 
+function MongoHostingDetails({ site, dailyDataApiUrl }) {
+  const identity = site.identity;
+  const rows = [
+    ['SharePoint host', identity.host],
+    ['SharePoint Web / siteCode', identity.siteCode],
+    ['Hosting library', identity.siteDbFolder],
+    ['Dist path', identity.targetDistPath],
+    ['Images path', identity.imagesRoot],
+    ['Generated Mongo Site ID', site.builderSiteId],
+    ['Central daily-data API', dailyDataApiUrl || '—'],
+  ];
+  return <div className="identity-grid">
+    {rows.map(([label, value]) => <div key={label}><span>{label}</span><strong dir="ltr">{value || '—'}</strong></div>)}
+  </div>;
+}
+
 function SiteEditor({ site, hosts, identityLocked, onCancel, onSaved }) {
+  const mongoSite = site.storageBackend === 'mongo';
   const [form, setForm] = useState({
     unit: site.unit || '',
     name: site.name || '',
@@ -87,19 +104,23 @@ function SiteEditor({ site, hosts, identityLocked, onCancel, onSaved }) {
   const [error, setError] = useState('');
   const set = (key, value) => setForm((previous) => ({ ...previous, [key]: value }));
   const preview = useMemo(() => {
+    if (mongoSite) return { identity: site.identity, error: '' };
     try {
       return { identity: buildSiteIdentity({ ...form, storageBackend: site.storageBackend }), error: '' };
     } catch (identityError) {
       return { identity: null, error: identityError.message };
     }
-  }, [form, site.storageBackend]);
+  }, [form, mongoSite, site.identity, site.storageBackend]);
 
   const save = async () => {
     if (!preview.identity || saving) return;
     setSaving(true);
     setError('');
     try {
-      await api.updateSite(site.id, form);
+      const body = mongoSite
+        ? { unit: form.unit, name: form.name, managerName: form.managerName }
+        : form;
+      await api.updateSite(site.id, body);
       await onSaved();
     } catch (saveError) {
       setError(saveError.message);
@@ -109,23 +130,25 @@ function SiteEditor({ site, hosts, identityLocked, onCancel, onSaved }) {
 
   return <div className="site-editor">
     {error && <div className="alert"><CircleAlert size={18} />{error}</div>}
-    {identityLocked && <div className="workspace-warning"><CircleAlert size={18} /><div><strong>זהות היעד נעולה זמנית</strong><span>אפשר לעדכן שם, יחידה ומנהל. שדות SharePoint ייפתחו כשהריצה הפעילה תסתיים.</span></div></div>}
+    {identityLocked && !mongoSite && <div className="workspace-warning"><CircleAlert size={18} /><div><strong>זהות היעד נעולה זמנית</strong><span>אפשר לעדכן שם, יחידה ומנהל. שדות SharePoint ייפתחו כשהריצה הפעילה תסתיים.</span></div></div>}
     <div className="form-grid">
       <label className="field"><span>יחידה</span><input value={form.unit} onChange={(event) => set('unit', event.target.value)} /></label>
       <label className="field"><span>שם האתר</span><input value={form.name} onChange={(event) => set('name', event.target.value)} /></label>
       <label className="field"><span>מנהל האתר</span><input value={form.managerName} onChange={(event) => set('managerName', event.target.value)} /></label>
-      <label className="field"><span>Host</span><select disabled={identityLocked} value={form.host} onChange={(event) => set('host', event.target.value)}>{hosts.map((host) => <option key={host}>{host}</option>)}</select></label>
-      <label className="field"><span>siteCode</span><input disabled={identityLocked} dir="ltr" value={form.siteCode} onChange={(event) => set('siteCode', event.target.value.toLowerCase())} /></label>
-      <label className="field"><span>siteDbFolder</span><input disabled={identityLocked} dir="ltr" value={form.siteDbFolder} onChange={(event) => set('siteDbFolder', event.target.value)} /></label>
-      <label className="field"><span>usersDbFolder</span><input disabled={identityLocked} dir="ltr" value={form.usersDbFolder} onChange={(event) => set('usersDbFolder', event.target.value)} /></label>
-      <label className="field"><span>siteAssetsFolder</span><input disabled={identityLocked} dir="ltr" value={form.siteAssetsFolder} onChange={(event) => set('siteAssetsFolder', event.target.value)} /></label>
-      <label className="field"><span>imagesFolder</span><input disabled={identityLocked} dir="ltr" value={form.imagesFolder} onChange={(event) => set('imagesFolder', event.target.value)} /></label>
-      <label className="field"><span>widgets_data.txt</span><select disabled={identityLocked} value={form.widgetsDbTarget} onChange={(event) => set('widgetsDbTarget', event.target.value)}><option value="users">usersDbFolder</option><option value="site">siteAssetsRoot</option></select></label>
+      {!mongoSite && <>
+        <label className="field"><span>Host</span><select disabled={identityLocked} value={form.host} onChange={(event) => set('host', event.target.value)}>{hosts.map((host) => <option key={host}>{host}</option>)}</select></label>
+        <label className="field"><span>siteCode</span><input disabled={identityLocked} dir="ltr" value={form.siteCode} onChange={(event) => set('siteCode', event.target.value.toLowerCase())} /></label>
+        <label className="field"><span>siteDbFolder</span><input disabled={identityLocked} dir="ltr" value={form.siteDbFolder} onChange={(event) => set('siteDbFolder', event.target.value)} /></label>
+        <label className="field"><span>usersDbFolder</span><input disabled={identityLocked} dir="ltr" value={form.usersDbFolder} onChange={(event) => set('usersDbFolder', event.target.value)} /></label>
+        <label className="field"><span>siteAssetsFolder</span><input disabled={identityLocked} dir="ltr" value={form.siteAssetsFolder} onChange={(event) => set('siteAssetsFolder', event.target.value)} /></label>
+        <label className="field"><span>imagesFolder</span><input disabled={identityLocked} dir="ltr" value={form.imagesFolder} onChange={(event) => set('imagesFolder', event.target.value)} /></label>
+        <label className="field"><span>widgets_data.txt</span><select disabled={identityLocked} value={form.widgetsDbTarget} onChange={(event) => set('widgetsDbTarget', event.target.value)}><option value="users">usersDbFolder</option><option value="site">siteAssetsRoot</option></select></label>
+      </>}
     </div>
-    <div className={`derived-target-preview ${preview.error ? 'invalid' : ''}`}>
+    {!mongoSite && <div className={`derived-target-preview ${preview.error ? 'invalid' : ''}`}>
       <small>הנתיבים הנגזרים מתעדכנים אוטומטית</small>
       <code dir="ltr">{preview.identity?.finalAppUrl || preview.error}</code>
-    </div>
+    </div>}
     <div className="workspace-actions">
       <button className="secondary-button" onClick={onCancel} disabled={saving}><X size={17} />ביטול</button>
       <button className="primary-button" onClick={save} disabled={saving || !preview.identity}><Save size={17} />{saving ? 'שומר...' : 'שמור שינויים'}</button>
@@ -232,19 +255,21 @@ export default function SitePage() {
     {error && <div className="alert"><CircleAlert size={18} />{error}<button aria-label="סגור הודעת שגיאה" onClick={() => setError('')}><X size={16} /></button></div>}
     {active && <div className="workspace-warning"><CircleAlert size={18} /><div><strong>ריצת פריסה פעילה כותבת ליעד</strong><span>עריכת זהות היעד חסומה עד לסיום הריצה.</span></div><Link to={`/runs?runId=${active.jobId}`}>פתח ריצה</Link></div>}
 
-    {editing && <WorkspaceSection icon={PencilLine} title="עריכת אתר" subtitle="הנתיבים הנגזרים אינם שדות נפרדים; הם מתעדכנים אוטומטית משדות הזהות הקנוניים.">
+    {editing && <WorkspaceSection icon={PencilLine} title="עריכת אתר" subtitle={site.storageBackend === 'mongo' ? 'באתר Mongo ניתן לעדכן רק את המטא-נתונים. פרטי האירוח והזהות הפיזית נקבעים בהקמה.' : 'הנתיבים הנגזרים אינם שדות נפרדים; הם מתעדכנים אוטומטית משדות הזהות הקנוניים.'}>
       <SiteEditor site={site} hosts={config?.sharePointHosts || [site.host]} identityLocked={Boolean(active)} onCancel={() => setEditing(false)} onSaved={async () => { setEditing(false); await load(); }} />
     </WorkspaceSection>}
 
     <div className="site-workspace-grid">
-      <WorkspaceSection icon={Database} title="זהות היעד" subtitle="siteCode מזהה את ה-SharePoint Web; זוג הספריות מזהה את התקנת Site Builder הלוגית בתוכו.">
+      <WorkspaceSection icon={Database} title={site.storageBackend === 'mongo' ? 'פרטי אירוח ותשתית' : 'זהות היעד'} subtitle={site.storageBackend === 'mongo' ? 'פרטים אלה הם לקריאה בלבד עבור אתר Mongo ומנוהלים על ידי שרת Site Release Manager.' : 'siteCode מזהה את ה-SharePoint Web; זוג הספריות מזהה את התקנת Site Builder הלוגית בתוכו.'}>
         {hasValidIdentity ? <>
-          <IdentityGrid identity={site.identity} />
-          <div className="identity-explainer">
-            <div><strong dir="ltr">{site.identity.siteCode}</strong><span>SharePoint Web</span></div>
-            <span className="identity-plus">+</span>
-            <div><strong dir="ltr">{site.identity.siteDbFolder} · {site.identity.usersDbFolder}</strong><span>התקנה לוגית עצמאית</span></div>
-          </div>
+          {site.storageBackend === 'mongo' ? <MongoHostingDetails site={site} dailyDataApiUrl={config?.dailyDataApiUrl} /> : <>
+            <IdentityGrid identity={site.identity} />
+            <div className="identity-explainer">
+              <div><strong dir="ltr">{site.identity.siteCode}</strong><span>SharePoint Web</span></div>
+              <span className="identity-plus">+</span>
+              <div><strong dir="ltr">{site.identity.siteDbFolder} · {site.identity.usersDbFolder}</strong><span>התקנה לוגית עצמאית</span></div>
+            </div>
+          </>}
           <a className="final-url-row" href={site.finalUrl} target="_blank" rel="noreferrer"><span>Final app URL</span><code dir="ltr">{site.finalUrl}</code><ExternalLink size={15} /></a>
         </> : <div className="workspace-warning"><CircleAlert size={18} /><div><strong>זהות היעד השמורה אינה תקינה</strong><span>{site.identityError} פתח עריכה ותקן את שדות SharePoint לפני פריסה.</span></div></div>}
       </WorkspaceSection>

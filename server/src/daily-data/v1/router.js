@@ -16,7 +16,7 @@ function requestMeta(req) {
 
 function requireRole(role) {
   return (req, _res, next) => {
-    if (hasRole(req.dailyDataSite, req.dailyDataPrincipal, role)) return next();
+    if (hasRole(req.dailyDataSite, req.dailyDataPrincipal, role, req)) return next();
     return next(Object.assign(new Error(`The trusted identity is not authorized to ${role} this site's data.`), {
       statusCode: 403,
       code: 'site_access_forbidden',

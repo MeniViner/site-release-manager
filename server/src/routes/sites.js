@@ -86,6 +86,23 @@ function resolveIdentity(candidate) {
   return buildSiteIdentity(candidate);
 }
 
+function validateDataAccess(access) {
+  if (!access || typeof access !== 'object' || Array.isArray(access)) {
+    throw Object.assign(new Error('dataAccess must be an object.'), { statusCode: 400, code: 'INVALID_DATA_ACCESS' });
+  }
+  for (const role of ['viewers', 'submitters', 'editors', 'administrators']) {
+    if (!Array.isArray(access[role]) || access[role].some((value) => !String(value || '').trim())) {
+      throw Object.assign(new Error(`dataAccess.${role} must be a non-empty identity list.`), { statusCode: 400, code: 'INVALID_DATA_ACCESS' });
+    }
+  }
+  for (const flag of ['sharePointReadAccess', 'sharePointInteractionAccess']) {
+    if (flag in access && typeof access[flag] !== 'boolean') {
+      throw Object.assign(new Error(`dataAccess.${flag} must be boolean.`), { statusCode: 400, code: 'INVALID_DATA_ACCESS' });
+    }
+  }
+  return access;
+}
+
 sitesRouter.get('/', async (req, res, next) => {
   try {
     const sites = await getDb().collection('sites').find(backendQuery(req.query.backend)).sort({ updatedAt: -1 }).toArray();
@@ -220,6 +237,12 @@ sitesRouter.post('/', async (req, res, next) => {
     if (!unit || !name || !managerName) return res.status(400).json({ error: 'יחידה, שם האתר ומנהל האתר הם שדות חובה.' });
 
     const requestedBackend = normalizeBackend(body.storageBackend);
+    if (requestedBackend === 'mongo' && mode !== 'install') {
+      return res.status(409).json({
+        error: 'רישום אתר Mongo קיים חסום עד שיהיה חוזה גילוי מאומת. בחר התקנה חדשה או השתמש בזרימת Migration.',
+        code: 'MONGO_EXISTING_DISCOVERY_UNSUPPORTED',
+      });
+    }
     const mongoSiteObjectId = requestedBackend === 'mongo' ? new ObjectId() : null;
     const allocationSuffix = mongoSiteObjectId?.toHexString().slice(-10);
     // Mongo targets are centrally allocated. Browser input cannot select a
@@ -334,20 +357,10 @@ sitesRouter.patch('/:id', async (req, res, next) => {
       if (key in body) metadataPatch[key] = toDateOrNull(body[key]);
     }
     if (mongoSite && 'dataAccess' in body) {
-      const principal = trustedIdentityForRequest(req);
-      if (!hasRole(existing, principal, 'administrators')) {
-        return res.status(403).json({ error: 'Only a site data administrator can change data access.', code: 'SITE_ACCESS_FORBIDDEN' });
-      }
-      const access = body.dataAccess;
-      if (!access || typeof access !== 'object' || Array.isArray(access)) {
-        return res.status(400).json({ error: 'dataAccess must be an object.', code: 'INVALID_DATA_ACCESS' });
-      }
-      for (const role of ['viewers', 'submitters', 'editors', 'administrators']) {
-        if (!Array.isArray(access[role]) || access[role].some((value) => !String(value || '').trim())) {
-          return res.status(400).json({ error: `dataAccess.${role} must be a non-empty identity list.`, code: 'INVALID_DATA_ACCESS' });
-        }
-      }
-      metadataPatch.dataAccess = access;
+      return res.status(400).json({
+        error: 'Use the dedicated data-access administration endpoint.',
+        code: 'DATA_ACCESS_ENDPOINT_REQUIRED',
+      });
     }
 
     const patch = {
@@ -429,6 +442,29 @@ sitesRouter.patch('/:id', async (req, res, next) => {
   } catch (error) {
     if (error?.code === 11000) return res.status(409).json({ error: 'קיים כבר אתר שמצביע לאותו יעד פיזי: Host, siteCode, ספריית אתר וספריית משתמשים זהים.' });
     if (error instanceof SiteIdentityError) return res.status(400).json({ error: error.message });
+    return next(error);
+  }
+});
+
+sitesRouter.patch('/:id/data-access', async (req, res, next) => {
+  try {
+    if (!ObjectId.isValid(req.params.id)) return res.status(404).json({ error: 'האתר לא נמצא.' });
+    const db = getDb();
+    const objectId = new ObjectId(req.params.id);
+    const existing = await db.collection('sites').findOne({ _id: objectId, storageBackend: 'mongo' });
+    if (!existing) return res.status(404).json({ error: 'אתר Mongo לא נמצא.' });
+    const principal = trustedIdentityForRequest(req);
+    if (!hasRole(existing, principal, 'administrators', req)) {
+      return res.status(403).json({ error: 'Only a site data administrator can change data access.', code: 'SITE_ACCESS_FORBIDDEN' });
+    }
+    const dataAccess = validateDataAccess(req.body?.dataAccess);
+    const result = await db.collection('sites').findOneAndUpdate(
+      { _id: objectId },
+      { $set: { dataAccess, updatedAt: new Date() } },
+      { returnDocument: 'after' },
+    );
+    return res.json(publicSite(result));
+  } catch (error) {
     return next(error);
   }
 });

@@ -33,19 +33,49 @@ function accessForCreator(principal) {
     submitters: [principal],
     editors: [principal],
     administrators: [principal],
+    sharePointReadAccess: true,
+    sharePointInteractionAccess: true,
   };
 }
 
-function hasRole(site, principal, role) {
+function createSharePointAccessResolver({ enabled, headerName } = {}) {
+  return Object.freeze({
+    allows(req, site, capability) {
+      const access = site.dataAccess || {};
+      const accessFlag = capability === 'submitters'
+        ? access.sharePointInteractionAccess === true
+        : access.sharePointReadAccess === true;
+      if (!enabled || !accessFlag) return false;
+      const values = String(req.get(headerName) || '')
+        .split(',')
+        .map((value) => value.trim().toLowerCase())
+        .filter(Boolean);
+      return values.includes(normalizedPrincipal(site.builderSiteId));
+    },
+  });
+}
+
+const sharePointAccessResolver = createSharePointAccessResolver({
+  enabled: config.trustedSiteAccessEnabled,
+  headerName: config.trustedSiteAccessHeader,
+});
+
+function hasRole(site, principal, role, req) {
   const access = site.dataAccess || {};
   const values = Array.isArray(access[role]) ? access[role] : [];
   const normalized = new Set(values.map(normalizedPrincipal));
   if (normalized.has(principal)) return true;
-  return role !== 'administrators' && hasRole(site, principal, 'administrators');
+  if (role !== 'administrators' && hasRole(site, principal, 'administrators', req)) return true;
+  if (role === 'viewers' || role === 'submitters') {
+    return sharePointAccessResolver.allows(req, site, role);
+  }
+  return false;
 }
 
 module.exports = {
   accessForCreator,
+  createSharePointAccessResolver,
   hasRole,
+  normalizedPrincipal,
   trustedIdentityForRequest,
 };

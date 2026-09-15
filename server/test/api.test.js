@@ -17,7 +17,7 @@ process.env.CLIENT_ORIGINS = 'http://localhost:5173,https://portal.army.idf';
 process.env.SHAREPOINT_HOSTS = 'portal.army.idf,mazi.army.idf';
 
 let available = false;
-const { createApp, ALLOWED_REQUEST_HEADERS } = require("../src/app.js");
+const { createApp, ALLOWED_REQUEST_HEADERS, MANAGEMENT_IDENTITY_REQUEST_HEADERS } = require("../src/app.js");
 let connectDb; let closeDb; let db;
 let server;
 let base;
@@ -105,6 +105,35 @@ test('daily data preflight supports credentialed PUT without changing management
   assert.ok(String(headers.get('access-control-allow-headers')).toLowerCase().includes('if-match'));
 });
 
+test('Mongo management creation preflight is credentialed only at its trusted-identity boundary', async () => {
+  const { status, headers } = await call('/api/sites', {
+    method: 'OPTIONS',
+    headers: {
+      Origin: 'https://portal.army.idf',
+      'Access-Control-Request-Method': 'POST',
+      'Access-Control-Request-Headers': 'content-type,accept',
+    },
+  });
+  assert.equal(status, 204);
+  assert.equal(headers.get('access-control-allow-origin'), 'https://portal.army.idf');
+  assert.equal(headers.get('access-control-allow-credentials'), 'true');
+  const allowed = String(headers.get('access-control-allow-headers')).toLowerCase();
+  for (const header of MANAGEMENT_IDENTITY_REQUEST_HEADERS) assert.ok(allowed.includes(header.toLowerCase()));
+
+  const health = await call('/api/health', { headers: { Origin: 'https://portal.army.idf' } });
+  assert.equal(health.headers.get('access-control-allow-credentials'), null);
+});
+
+test('existing Mongo registration is blocked without allocating a replacement identity', async () => {
+  const { status, body } = await call('/api/sites', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ unit: 'u', name: 'n', managerName: 'm', host: 'portal.army.idf', siteCode: 'existing', storageBackend: 'mongo', mode: 'existing' }),
+  });
+  assert.equal(status, 409);
+  assert.equal(body.code, 'MONGO_EXISTING_DISCOVERY_UNSUPPORTED');
+});
+
 test('daily data refuses an unauthenticated browser identity', async () => {
   const { status, body } = await call('/api/daily-data/v1/healthz');
   assert.equal(status, 401);
@@ -188,6 +217,7 @@ test('central Mongo sites allocate isolated identities and enforce data authoriz
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-daily-data-dev-user': principal },
       body: JSON.stringify({
+        mode: 'install',
         unit: 'unit',
         name,
         managerName: principal,
@@ -212,6 +242,20 @@ test('central Mongo sites allocate isolated identities and enforce data authoriz
     assert.equal(first.body.site.backendApiUrl, undefined);
     assert.equal(first.body.site.rehearsal, undefined);
     assert.equal(first.body.technicalPreview.dailyDataApiUrl, `http://127.0.0.1:4300/api/daily-data/v1`);
+
+    const browserCreation = await call('/api/sites', {
+      method: 'POST',
+      headers: {
+        Origin: 'https://portal.army.idf',
+        Cookie: 'iis-session=trusted',
+        'Content-Type': 'application/json',
+        'x-daily-data-dev-user': 'browser-user',
+      },
+      body: JSON.stringify({ mode: 'install', unit: 'unit', name: 'Browser', managerName: 'browser-user', host: 'portal.army.idf', siteCode: 'browser-web', storageBackend: 'mongo' }),
+    });
+    assert.equal(browserCreation.status, 201);
+    assert.equal(browserCreation.headers.get('access-control-allow-credentials'), 'true');
+    assert.deepEqual(browserCreation.body.site.dataAccess.viewers, ['browser-user']);
 
     const dailyPath = `/api/daily-data/v1/sites/${encodeURIComponent(first.body.site.builderSiteId)}/legacy-object`;
     const write = await call(dailyPath, {

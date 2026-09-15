@@ -1,16 +1,14 @@
-const path = require('node:path');
 const { getBuilderDataDb } = require('../../db.js');
+const { createDailyDataDomain } = require('./domain/domain.js');
 
 let domainPromise;
 
 function getDailyDataDomain() {
   if (!domainPromise) {
-    const adapterPath = path.join(__dirname, 'domain', 'adapter.js');
-    domainPromise = import(adapterPath).then(({ createDailyDataDomain }) =>
-      createDailyDataDomain({
-        db: getBuilderDataDb(),
-        collectionPrefix: 'site_',
-      }));
+    domainPromise = createDailyDataDomain({
+      db: getBuilderDataDb(),
+      collectionPrefix: 'site_',
+    });
   }
   return domainPromise;
 }

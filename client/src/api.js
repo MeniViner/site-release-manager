@@ -291,8 +291,19 @@ export const api = {
   dashboard: (backend = '') => request(`/api/dashboard${backend ? `?backend=${encodeURIComponent(backend)}` : ''}`),
   sites: (backend = '') => request(`/api/sites${backend ? `?backend=${encodeURIComponent(backend)}` : ''}`),
   site: (id) => request(`/api/sites/${id}`),
-  createSite: (body) => request('/api/sites', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+  createSite: (body) => request('/api/sites', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    ...(body?.storageBackend === 'mongo' ? { credentials: 'include' } : {}),
+  }),
   updateSite: (id, body) => request(`/api/sites/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+  updateSiteDataAccess: (id, dataAccess) => request(`/api/sites/${id}/data-access`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dataAccess }),
+    credentials: 'include',
+  }),
   // Deleting a Site removes the Release Manager tracking record only; the
   // explicit confirm token makes that intent unambiguous at the API boundary.
   deleteSite: (id) => request(`/api/sites/${id}?confirm=delete-tracking-record`, { method: 'DELETE' }),

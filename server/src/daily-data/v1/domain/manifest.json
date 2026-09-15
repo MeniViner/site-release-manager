@@ -1,8 +1,8 @@
 {
   "module": "site-builder-daily-data",
   "version": 1,
-  "sourceRevision": "092d87d30066781cf6c3898135a0b3579b3d650f",
-  "generatedAt": "2026-09-15T08:57:45.562Z",
+  "format": "commonjs",
+  "sourceRevision": "81ee5eaf65f02a97a5daa46ffdcb145ac4c6cbb9",
   "files": [
     "server/src/db/indexDefinitions.js",
     "server/src/db/mongo.js",

@@ -6,6 +6,7 @@ import App from './App.jsx';
 import SitePage from './SitePage.jsx';
 import { api } from './api.js';
 import { buildSiteIdentity, buildTxtSeedPlan } from '../../shared/siteRuntime.js';
+import { BackendModeContext } from './context/BackendModeContext.jsx';
 
 const identity = buildSiteIdentity({
   host: 'portal.army.idf',
@@ -143,6 +144,40 @@ describe('Site workspace route', () => {
     await waitFor(() => {
       expect(screen.getByText('https://portal.army.idf/sites/schedule/siteDBFinance/dist/index.html')).toBeInTheDocument();
     });
+  });
+
+  it('renders Mongo hosting as read-only and submits only ordinary metadata', async () => {
+    const mongo = siteFixture({
+      storageBackend: 'mongo',
+      builderSiteId: 'srm-alpha',
+      plan: { txtSeeds: [] },
+    });
+    mockSiteRequests(mongo);
+    vi.spyOn(api, 'updateSite').mockResolvedValue(mongo);
+
+    render(
+      <BackendModeContext.Provider value={{ backendMode: 'mongo', setBackendMode: vi.fn(), isTxtMode: false, isMongoMode: true, hasProvider: true }}>
+        <MemoryRouter initialEntries={['/sites/site-a?section=edit']}>
+          <Routes><Route path="/sites/:siteId" element={<SitePage />} /></Routes>
+        </MemoryRouter>
+      </BackendModeContext.Provider>,
+    );
+
+    expect(await screen.findByText('פרטי אירוח ותשתית')).toBeInTheDocument();
+    expect(screen.getByText('Generated Mongo Site ID')).toBeInTheDocument();
+    expect(screen.getByText('srm-alpha')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Host')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('siteCode')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('siteDbFolder')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('usersDbFolder')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('siteAssetsFolder')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('imagesFolder')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('widgets_data.txt')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'שמור שינויים' }));
+    await waitFor(() => expect(api.updateSite).toHaveBeenCalledWith('site-a', {
+      unit: 'Operations', name: 'Schedule A', managerName: 'Manager',
+    }));
   });
 
   it('renders an invalid legacy Site as repairable instead of crashing the workspace', async () => {

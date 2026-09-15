@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
+const { builtinModules } = require('node:module');
 
 const root = path.resolve(__dirname, '..', '..');
 const sourceRoot = path.join(root, 'server', 'src');
@@ -14,11 +15,6 @@ function javascriptFiles(directory) {
     const fullPath = path.join(directory, entry.name);
     return entry.isDirectory() ? javascriptFiles(fullPath) : entry.name.endsWith('.js') ? [fullPath] : [];
   });
-}
-
-function isEmbeddedDomainModule(file) {
-  return file.startsWith(path.join(sourceRoot, 'daily-data', 'v1', 'domain'))
-    || file === path.join(sourceRoot, 'daily-data', 'v1', 'service.js');
 }
 
 function withoutCommentsAndLiterals(source) {
@@ -69,9 +65,9 @@ function productionSharedNames() {
 
 test('production server files contain no executable ESM syntax', () => {
   const violations = [];
-  for (const file of javascriptFiles(sourceRoot).filter((file) => !isEmbeddedDomainModule(file))) {
+  for (const file of javascriptFiles(sourceRoot)) {
     const executable = withoutCommentsAndLiterals(fs.readFileSync(file, 'utf8'));
-    if (/\bimport\s*(?:\(|[\w${*])/.test(executable) || /\bexport\s+(?:default|const|let|var|async|function|class|\{)/.test(executable)) {
+    if (/\bimport\s*\(|\bimport\s+(?:[\w${*])/.test(executable) || /\bexport\s+(?:default|const|let|var|async|function|class|\{)/.test(executable)) {
       violations.push(path.relative(root, file));
     }
   }
@@ -81,7 +77,7 @@ test('production server files contain no executable ESM syntax', () => {
 test('production server modules load through native require without ESM errors', () => {
   assert.doesNotThrow(() => require('../src/app.js'));
   assert.doesNotThrow(() => require('../src/db.js'));
-  for (const file of javascriptFiles(sourceRoot).filter((file) => !isEmbeddedDomainModule(file))) {
+  for (const file of javascriptFiles(sourceRoot)) {
     if (file === path.join(sourceRoot, 'index.js')) continue;
     assert.doesNotThrow(() => require(file), path.relative(root, file));
   }
@@ -91,9 +87,31 @@ test('IIS entrypoint is native CommonJS and web.config targets it', () => {
   const entry = fs.readFileSync(path.join(root, 'index.cjs'), 'utf8');
   const webConfig = fs.readFileSync(path.join(root, 'web.config'), 'utf8');
   assert.match(entry, /\brequire\(/);
-  assert.doesNotMatch(withoutCommentsAndLiterals(entry), /\bimport\s*(?:\(|[\w${*])/);
+  assert.doesNotMatch(withoutCommentsAndLiterals(entry), /\bimport\s*\(|\bimport\s+(?:[\w${*])/);
   assert.match(webConfig, /path="index\.cjs"/);
   assert.match(webConfig, /url="index\.cjs"/);
+});
+
+test('IISNode named-pipe PORT values remain valid listen targets', () => {
+  const configPath = require.resolve('../src/config.js');
+  const originalPort = process.env.PORT;
+  const namedPipe = '\\\\.\\pipe\\iisnode-site-release-manager';
+  try {
+    process.env.PORT = namedPipe;
+    delete require.cache[configPath];
+    const { config, parseListenTarget } = require('../src/config.js');
+    assert.equal(config.port, namedPipe);
+    assert.equal(parseListenTarget('4300'), 4300);
+    assert.equal(parseListenTarget(namedPipe), namedPipe);
+    assert.equal(Number.isNaN(config.port), false);
+  } finally {
+    if (originalPort === undefined) delete process.env.PORT;
+    else process.env.PORT = originalPort;
+    delete require.cache[configPath];
+  }
+  const entry = fs.readFileSync(path.join(root, 'index.cjs'), 'utf8');
+  assert.match(entry, /const listenTarget = process\.env\.PORT \|\| config\.port \|\| 4300/);
+  assert.match(entry, /app\.listen\(listenTarget/);
 });
 
 test('the production dependency graph is self-contained in server/src and server/node_modules', () => {
@@ -106,7 +124,7 @@ test('the production dependency graph is self-contained in server/src and server
       if (specifier.startsWith('.')) {
         const target = path.resolve(path.dirname(file), specifier);
         if (!fs.existsSync(target)) missingLocalDependencies.push(`${path.relative(root, file)} -> ${specifier}`);
-      } else if (!specifier.startsWith('node:') && !['express', 'cors', 'multer', 'mongodb', 'dotenv', 'adm-zip'].includes(specifier)) {
+      } else if (!specifier.startsWith('node:') && !builtinModules.includes(specifier) && !['express', 'cors', 'multer', 'mongodb', 'dotenv', 'adm-zip', 'zod'].includes(specifier)) {
         invalidDependencies.push(`${path.relative(root, file)} -> ${specifier}`);
       }
     }

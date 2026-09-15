@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 
 const STORAGE_KEY = 'site-release-manager.backend-mode';
-const BackendModeContext = createContext({
+export const BackendModeContext = createContext({
   backendMode: 'txt',
   setBackendMode: () => {},
   isTxtMode: true,
