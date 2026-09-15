@@ -15,17 +15,15 @@ Release Manager has two global operating modes: `txt` (the safe default) and `mo
 
 Universal releases are shared artifacts. `universalProof.storageCompatibility` must explicitly contain Mongo before a Mongo deployment. Older artifacts without this field retain legacy TXT compatibility only, preserving the existing production path while failing closed for Mongo.
 
-## Secrets
+## Central Mongo data service
 
-`SITE_BUILDER_BACKEND_PROFILES` is server-only JSON:
+Mongo sites use one server only: the existing Site Release Manager Express
+application serves management routes under `/api/*` and the Site Builder daily
+data service under `/api/daily-data/v1/*`. The browser receives only the
+centrally configured `dailyDataApiUrl`; no backend profile, external server
+URL, or API key is stored in a site, runtime overlay, browser bundle, or log.
 
-```json
-{
-  "rehearsal": {
-    "url": "https://site-builder-api.example",
-    "apiKey": "server-secret"
-  }
-}
-```
-
-Sites store only `backendProfileId` and the matching public `backendApiUrl`. API keys are never returned by `/api/config`, written into runtime config, deployment metadata, SharePoint or logs.
+The daily data database is configured independently through
+`BUILDER_DATA_MONGO_DB_NAME`; management records remain in `MONGO_DB_NAME`.
+The packaged Site Builder domain retains its own `sites`, revisions, audit,
+backup, and logical-site collections inside that separate database.

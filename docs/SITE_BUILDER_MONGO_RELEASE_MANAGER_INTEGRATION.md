@@ -1,6 +1,10 @@
-# Site Builder Mongo × Release Manager — Future Integration Architecture
+# Site Builder Mongo × Release Manager — Historical Integration Notes
 
-**Status: analysis and design only. Nothing in this document is implemented.**
+> **Superseded:** this document predates the embedded central service. Mongo
+> frontend data now uses `PUBLIC_DAILY_DATA_API_URL` and
+> `/api/daily-data/v1` on Site Release Manager; external backend profiles,
+> `backendApiUrl`, and browser/server API keys are not part of the implemented
+> architecture. See [DAILY_DATA_SERVICE.md](./DAILY_DATA_SERVICE.md).
 
 This document is the output of a read-only study of the Site Builder repository
 as it exists on disk (branch `codex/dev-ai-engine`, working tree including

@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { builtinModules } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -70,7 +71,7 @@ const dependencyFailures = [];
 for (const file of javascriptFiles(serverSource)) {
   const source = fs.readFileSync(file, 'utf8');
   const executable = withoutCommentsAndLiterals(source);
-  if (/\bimport\s*(?:\(|[\w${*])/.test(executable) || /\bexport\s+(?:default|const|let|var|async|function|class|\{)/.test(executable)) {
+  if (/\bimport\s*\(|\bimport\s+(?:[\w${*])/.test(executable) || /\bexport\s+(?:default|const|let|var|async|function|class|\{)/.test(executable)) {
     runtimeFailures.push(`${path.relative(root, file)} contains executable ESM syntax`);
   }
   for (const match of source.matchAll(/require\((['"])([^'"]+)\1\)/g)) {
@@ -78,7 +79,7 @@ for (const file of javascriptFiles(serverSource)) {
     if (specifier.startsWith('.')) {
       const target = path.resolve(path.dirname(file), specifier);
       if (!fs.existsSync(target)) dependencyFailures.push(`${path.relative(root, file)} -> ${specifier} is missing`);
-    } else if (!specifier.startsWith('node:') && !fs.existsSync(path.join(root, 'server', 'node_modules', specifier, 'package.json'))) {
+    } else if (!specifier.startsWith('node:') && !builtinModules.includes(specifier) && !fs.existsSync(path.join(root, 'server', 'node_modules', specifier, 'package.json'))) {
       dependencyFailures.push(`${path.relative(root, file)} -> ${specifier} is not in server/node_modules`);
     }
   }

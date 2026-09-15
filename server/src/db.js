@@ -80,6 +80,11 @@ function getDb() {
   return database;
 }
 
+function getBuilderDataDb() {
+  if (!client) throw new Error('MongoDB is not connected.');
+  return client.db(config.builderDataMongoDbName);
+}
+
 async function closeDb() {
   if (client) await client.close();
   client = undefined;
@@ -91,4 +96,5 @@ module.exports = {
   migrateIndexes: migrateIndexes,
   getDb: getDb,
   closeDb: closeDb,
+  getBuilderDataDb: getBuilderDataDb,
 };

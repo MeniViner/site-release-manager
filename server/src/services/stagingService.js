@@ -79,7 +79,7 @@ function createStaging({ releaseDistDir, stagingRoot }) {
  * Library URL. The JSON files stay authoritative and are still verified, just
  * not through a browser `.json` request.
  */
-function writeTargetOverlay({ distDir, identity, release, jobId, deployedAt, backendApiUrl = '' }) {
+function writeTargetOverlay({ distDir, identity, release, jobId, deployedAt, dailyDataApiUrl = '' }) {
   const runtimeConfig = {
     schemaVersion: 2,
     storageBackend: identity.storageBackend,
@@ -110,8 +110,9 @@ function writeTargetOverlay({ distDir, identity, release, jobId, deployedAt, bac
     deploymentGeneratedBy: 'site-release-manager',
     deploymentJobId: String(jobId),
   };
-  // Only a Mongo-backed target carries a backend URL. TXT targets must not.
-  if (identity.storageBackend === 'mongo' && backendApiUrl) runtimeConfig.backendApiUrl = backendApiUrl;
+  // Only a Mongo-backed target carries the central daily-data URL. TXT targets
+  // retain their historical SharePoint-only runtime configuration.
+  if (identity.storageBackend === 'mongo' && dailyDataApiUrl) runtimeConfig.dailyDataApiUrl = dailyDataApiUrl;
 
   const deploymentMetadata = {
     kind: 'sitebuilder-deployment',

@@ -1,18 +1,23 @@
 # Mongo Site Provisioning
 
-Site Builder owns Mongo registration, collections, indexes, canonical seed content, schema migrations and backup semantics. Release Manager only calls the authenticated Site Builder API.
+Mongo provisioning is embedded in Site Release Manager. It calls the packaged,
+versioned Site Builder domain in-process; it never calls an external Site
+Builder API or sends an API key.
 
-A Release Manager Mongo Site stores:
+On ordinary Mongo creation, Release Manager generates the immutable
+`builderSiteId`, allocates unique SharePoint library paths, records the creator
+as the initial daily-data administrator, and returns a read-only technical
+preview. `backendProfileId`, `backendApiUrl`, manually supplied site IDs and
+`rehearsal` are not accepted as ordinary site settings.
 
-- `storageBackend: "mongo"`
-- `builderSiteId` (mapped to runtime `siteId`)
-- `backendProfileId`
-- public `backendApiUrl`
-- SharePoint host, `siteCode`, frontend library/folder and images path
-- optional `rehearsal: true`
+During a new-site deployment, Release Manager creates only missing canonical
+Site Builder objects and asserts `siteExists`, `provisioned`, and
+`missingDefaults === 0` before recording success. Normal deployments of
+existing Mongo sites do not seed, migrate, or rewrite application data. An
+administrator may use the explicit `repair: true` daily-data endpoint to
+repair incomplete provisioning. Migration rehearsal marking is available only
+in the Migration workflow.
 
-Before frontend staging, Release Manager verifies Site Builder health reports Mongo, calls the idempotent provision endpoint, and verifies provision status. A normal update may create missing canonical objects but must never overwrite existing application data.
-
-The Mongo SharePoint plan contains the frontend library, `dist`, images and release asset folders. It intentionally contains no TXT seeds, users-data library or TXT permissions marker.
-
-Health compatibility is strict: a known backend mismatch or incompatible Universal `storageCompatibility` blocks deployment. Data-schema requirements can be enforced from `requiresDataSchemaVersion` as manifests adopt that field.
+The Mongo SharePoint plan provisions only the unique frontend hosting library,
+images, `dist`, and release asset folders. It creates no TXT seed files,
+users-data library, or TXT permissions marker.

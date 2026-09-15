@@ -20,7 +20,7 @@ const { verifyStoredReleaseIntegrity } = require("./releaseValidation.js");
 const { createStaging, writeTargetOverlay, injectRuntimeBootstrap, regenerateManifest, verifyStaging, buildDeploymentFiles, buildUploadOrder, resolveStagedFile, destroyStaging } = require("./stagingService.js");
 const { appendRunEvent } = require("./runTelemetry.js");
 const { JOB_STATE } = require("./jobState.js");
-const siteBuilderBackendClient = require("./siteBuilderBackendClient.js");
+const { provisionSite } = require("../daily-data/v1/service.js");
 function log(jobId, message) {
   const line = `[${new Date().toISOString()}] [prepare] ${message}`;
   console.log(`[job ${jobId}] ${line}`);
@@ -41,9 +41,9 @@ function buildSiteRuntime(site, release, jobId, deployedAt) {
   };
   if (identity.storageBackend === 'mongo') {
     runtime.siteId = String(site.builderSiteId || '').trim();
-    runtime.backendApiUrl = String(site.backendApiUrl || '').trim().replace(/\/+$/, '');
+    runtime.dailyDataApiUrl = config.dailyDataApiUrl;
   } else {
-    delete runtime.backendApiUrl;
+    delete runtime.dailyDataApiUrl;
   }
   return runtime;
 }
@@ -110,20 +110,11 @@ async function prepareDeploymentJob(jobId) {
   logs.push(log(jobId, `target siteDbRoot=${identity.siteDbRoot} usersDbRoot=${identity.usersDbRoot} dist=${identity.targetDistPath}`));
 
   if (identity.storageBackend === 'mongo') {
-    const health = await siteBuilderBackendClient.health(site);
-    await appendRunEvent(objectId, {
-      stage: STAGE.TARGET_VALIDATE,
-      status: 'success',
-      source: 'server',
-      message: 'Mongo backend health and identity verified.',
-      details: { appVersion: health.appVersion || '', dataSchemaVersion: health.dataSchemaVersion ?? null },
-    });
-    const provisioned = await siteBuilderBackendClient.provision(site);
-    const status = await siteBuilderBackendClient.provisionStatus(site);
-    logs.push(log(jobId, `mongo provision verified siteId=${site.builderSiteId} seeded=${(provisioned.seeded || []).length}`));
+    const provisioned = await provisionSite(site);
+    logs.push(log(jobId, `embedded Mongo provisioning verified siteId=${site.builderSiteId} created=${provisioned.createdCount} preserved=${provisioned.skippedCount}`));
     await db.collection('deployment_jobs').updateOne(
       { _id: objectId },
-      { $set: { mongoProvisioning: { provisioned, status, verifiedAt: new Date() } } },
+      { $set: { mongoProvisioning: { ...provisioned, verifiedAt: new Date() } } },
     );
   }
 
@@ -155,7 +146,7 @@ async function prepareDeploymentJob(jobId) {
     release,
     jobId,
     deployedAt,
-    backendApiUrl: site.backendApiUrl || '',
+    dailyDataApiUrl: identity.storageBackend === 'mongo' ? config.dailyDataApiUrl : '',
   });
   await appendRunEvent(objectId, {
     stage: STAGE.RUNTIME_CONFIG_CREATE,

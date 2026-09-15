@@ -25,6 +25,8 @@
     "runtime:client": "node scripts/write-client-runtime-config.mjs",
     "package:iis": "node scripts/create-iis-package.mjs",
     "verify:iis": "node scripts/verify-iis-package.mjs",
+    "package:iis-server-only": "node scripts/create-iis-server-only-package.mjs",
+    "verify:iis-server-only": "node scripts/verify-iis-server-only-package.mjs",
     "postbuild": "node scripts/deploy-manager-sharepoint.mjs",
     "deploy:manager-sharepoint": "node scripts/deploy-manager-sharepoint.mjs --force",
     "sharepoint:local": "node scripts/dev.mjs --api-only",
