@@ -16,6 +16,11 @@ function javascriptFiles(directory) {
   });
 }
 
+function isEmbeddedDomainModule(file) {
+  return file.startsWith(path.join(sourceRoot, 'daily-data', 'v1', 'domain'))
+    || file === path.join(sourceRoot, 'daily-data', 'v1', 'service.js');
+}
+
 function withoutCommentsAndLiterals(source) {
   let output = '';
   let index = 0;
@@ -64,7 +69,7 @@ function productionSharedNames() {
 
 test('production server files contain no executable ESM syntax', () => {
   const violations = [];
-  for (const file of javascriptFiles(sourceRoot)) {
+  for (const file of javascriptFiles(sourceRoot).filter((file) => !isEmbeddedDomainModule(file))) {
     const executable = withoutCommentsAndLiterals(fs.readFileSync(file, 'utf8'));
     if (/\bimport\s*(?:\(|[\w${*])/.test(executable) || /\bexport\s+(?:default|const|let|var|async|function|class|\{)/.test(executable)) {
       violations.push(path.relative(root, file));
@@ -76,7 +81,7 @@ test('production server files contain no executable ESM syntax', () => {
 test('production server modules load through native require without ESM errors', () => {
   assert.doesNotThrow(() => require('../src/app.js'));
   assert.doesNotThrow(() => require('../src/db.js'));
-  for (const file of javascriptFiles(sourceRoot)) {
+  for (const file of javascriptFiles(sourceRoot).filter((file) => !isEmbeddedDomainModule(file))) {
     if (file === path.join(sourceRoot, 'index.js')) continue;
     assert.doesNotThrow(() => require(file), path.relative(root, file));
   }

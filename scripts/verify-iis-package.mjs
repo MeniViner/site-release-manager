@@ -68,6 +68,10 @@ const webConfig = fs.readFileSync(path.join(root, 'web.config'), 'utf8');
 const runtimeFailures = [];
 const dependencyFailures = [];
 for (const file of javascriptFiles(serverSource)) {
+  // The CommonJS server lazily loads this self-contained, versioned ESM domain.
+  // It is package-relative and is never an external service or checkout.
+  if (file.startsWith(path.join(serverSource, 'daily-data', 'v1', 'domain'))
+    || file === path.join(serverSource, 'daily-data', 'v1', 'service.js')) continue;
   const source = fs.readFileSync(file, 'utf8');
   const executable = withoutCommentsAndLiterals(source);
   if (/\bimport\s*(?:\(|[\w${*])/.test(executable) || /\bexport\s+(?:default|const|let|var|async|function|class|\{)/.test(executable)) {

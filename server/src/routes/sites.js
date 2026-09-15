@@ -21,6 +21,7 @@ const { publicBackup } = require("../services/backupService.js");
 const { parseReleaseVersion } = require("../utils/versioning.js");
 const { backendQuery, normalizeBackend } = require("../utils/backendMode.js");
 const { buildBackendDeploymentPlan } = require("../services/deploymentProfiles.js");
+const { accessForCreator, hasRole, trustedIdentityForRequest } = require("../daily-data/v1/identity.js");
 const sitesRouter = Router();
 
 const toDateOrNull = (value) => (value ? new Date(value) : null);
@@ -218,14 +219,28 @@ sitesRouter.post('/', async (req, res, next) => {
     const { mode = 'existing', unit, name, managerName, currentVersion, firstPublishedAt, lastPublishedAt, releaseId } = body;
     if (!unit || !name || !managerName) return res.status(400).json({ error: 'יחידה, שם האתר ומנהל האתר הם שדות חובה.' });
 
-    const identity = resolveIdentity(body);
-    if (identity.storageBackend === 'mongo') {
-      if (!String(body.builderSiteId || '').trim() || !String(body.backendProfileId || '').trim() || !String(body.backendApiUrl || '').trim()) {
-        return res.status(400).json({ error: 'Mongo Sites require builderSiteId, backendProfileId and backendApiUrl.', code: 'MONGO_FIELDS_REQUIRED' });
-      }
-    }
+    const requestedBackend = normalizeBackend(body.storageBackend);
+    const mongoSiteObjectId = requestedBackend === 'mongo' ? new ObjectId() : null;
+    const allocationSuffix = mongoSiteObjectId?.toHexString().slice(-10);
+    // Mongo targets are centrally allocated. Browser input cannot select a
+    // data identity or reuse another logical site's SharePoint hosting path.
+    const candidate = requestedBackend === 'mongo' ? {
+      ...body,
+      storageBackend: 'mongo',
+      builderSiteId: `srm-${mongoSiteObjectId.toHexString()}`,
+      siteDbFolder: `siteDB-${allocationSuffix}`,
+      usersDbFolder: `siteUsersDb-${allocationSuffix}`,
+      siteAssetsFolder: 'siteAssets',
+      imagesFolder: 'images',
+      widgetsDbTarget: 'users',
+      bootstrapLibrary: 'SiteAssets',
+      bootstrapFolder: 'sitebuilder-bootstrap',
+    } : body;
+    const identity = resolveIdentity(candidate);
+    const creator = identity.storageBackend === 'mongo' ? trustedIdentityForRequest(req) : null;
     const now = new Date();
     const document = {
+      ...(mongoSiteObjectId ? { _id: mongoSiteObjectId } : {}),
       mode: mode === 'install' ? 'install' : 'existing',
       unit: String(unit).trim(),
       name: String(name).trim(),
@@ -234,10 +249,8 @@ sitesRouter.post('/', async (req, res, next) => {
       siteCode: identity.siteCode,
       storageType: identity.storageBackend,
       storageBackend: identity.storageBackend,
-      builderSiteId: identity.storageBackend === 'mongo' ? String(body.builderSiteId).trim() : null,
-      backendProfileId: identity.storageBackend === 'mongo' ? String(body.backendProfileId).trim() : null,
-      backendApiUrl: identity.storageBackend === 'mongo' ? String(body.backendApiUrl).trim().replace(/\/+$/, '') : null,
-      rehearsal: identity.storageBackend === 'mongo' && body.rehearsal === true,
+      builderSiteId: identity.storageBackend === 'mongo' ? identity.siteId : null,
+      dataAccess: identity.storageBackend === 'mongo' ? accessForCreator(creator) : null,
       siteDbFolder: identity.siteDbFolder,
       usersDbFolder: identity.usersDbFolder,
       siteAssetsFolder: identity.siteAssetsFolder,
@@ -262,7 +275,19 @@ sitesRouter.post('/', async (req, res, next) => {
     if (mode === 'install' && releaseId) {
       job = await createDeploymentJob({ siteId: result.insertedId, releaseId, type: 'INSTALL' });
     }
-    return res.status(201).json({ site: publicSite({ ...document, _id: result.insertedId }), job, boundary: PROVISIONING_BOUNDARY });
+    return res.status(201).json({
+      site: publicSite({ ...document, _id: result.insertedId }),
+      job,
+      boundary: PROVISIONING_BOUNDARY,
+      ...(identity.storageBackend === 'mongo' ? {
+        technicalPreview: {
+          builderSiteId: identity.siteId,
+          dailyDataApiUrl: config.dailyDataApiUrl,
+          hostingLibrary: identity.siteDbFolder,
+          targetDistPath: identity.targetDistPath,
+        },
+      } : {}),
+    });
   } catch (error) {
     if (error?.code === 11000) return res.status(409).json({ error: 'קיים כבר אתר שמצביע לאותו יעד פיזי: Host, siteCode, ספריית אתר וספריית משתמשים זהים.' });
     if (error instanceof SiteIdentityError) return res.status(400).json({ error: error.message });
@@ -282,16 +307,17 @@ sitesRouter.patch('/:id', async (req, res, next) => {
     if ('storageBackend' in body && normalizeBackend(body.storageBackend) !== normalizeBackend(existing.storageBackend)) {
       return res.status(409).json({ error: 'Site backend is immutable. Create a linked migration destination instead.', code: 'BACKEND_IMMUTABLE' });
     }
+    const mongoSite = normalizeBackend(existing.storageBackend) === 'mongo';
     const merged = {
-      host: 'host' in body ? body.host : existing.host,
-      siteCode: 'siteCode' in body ? body.siteCode : existing.siteCode,
-      siteDbFolder: 'siteDbFolder' in body ? body.siteDbFolder : existing.siteDbFolder,
-      usersDbFolder: 'usersDbFolder' in body ? body.usersDbFolder : existing.usersDbFolder,
-      siteAssetsFolder: 'siteAssetsFolder' in body ? body.siteAssetsFolder : existing.siteAssetsFolder,
-      imagesFolder: 'imagesFolder' in body ? body.imagesFolder : existing.imagesFolder,
-      widgetsDbTarget: 'widgetsDbTarget' in body ? body.widgetsDbTarget : existing.widgetsDbTarget,
-      bootstrapLibrary: 'bootstrapLibrary' in body ? body.bootstrapLibrary : existing.bootstrapLibrary,
-      bootstrapFolder: 'bootstrapFolder' in body ? body.bootstrapFolder : existing.bootstrapFolder,
+      host: mongoSite ? existing.host : ('host' in body ? body.host : existing.host),
+      siteCode: mongoSite ? existing.siteCode : ('siteCode' in body ? body.siteCode : existing.siteCode),
+      siteDbFolder: mongoSite ? existing.siteDbFolder : ('siteDbFolder' in body ? body.siteDbFolder : existing.siteDbFolder),
+      usersDbFolder: mongoSite ? existing.usersDbFolder : ('usersDbFolder' in body ? body.usersDbFolder : existing.usersDbFolder),
+      siteAssetsFolder: mongoSite ? existing.siteAssetsFolder : ('siteAssetsFolder' in body ? body.siteAssetsFolder : existing.siteAssetsFolder),
+      imagesFolder: mongoSite ? existing.imagesFolder : ('imagesFolder' in body ? body.imagesFolder : existing.imagesFolder),
+      widgetsDbTarget: mongoSite ? existing.widgetsDbTarget : ('widgetsDbTarget' in body ? body.widgetsDbTarget : existing.widgetsDbTarget),
+      bootstrapLibrary: mongoSite ? existing.bootstrapLibrary : ('bootstrapLibrary' in body ? body.bootstrapLibrary : existing.bootstrapLibrary),
+      bootstrapFolder: mongoSite ? existing.bootstrapFolder : ('bootstrapFolder' in body ? body.bootstrapFolder : existing.bootstrapFolder),
       storageBackend: existing.storageBackend || 'txt',
     };
     const identity = resolveIdentity(merged);
@@ -307,10 +333,21 @@ sitesRouter.patch('/:id', async (req, res, next) => {
     for (const key of ['firstPublishedAt', 'lastPublishedAt']) {
       if (key in body) metadataPatch[key] = toDateOrNull(body[key]);
     }
-    if (normalizeBackend(existing.storageBackend) === 'mongo') {
-      for (const key of ['builderSiteId', 'backendProfileId', 'backendApiUrl', 'rehearsal']) {
-        if (key in body) metadataPatch[key] = key === 'rehearsal' ? body[key] === true : String(body[key] || '').trim();
+    if (mongoSite && 'dataAccess' in body) {
+      const principal = trustedIdentityForRequest(req);
+      if (!hasRole(existing, principal, 'administrators')) {
+        return res.status(403).json({ error: 'Only a site data administrator can change data access.', code: 'SITE_ACCESS_FORBIDDEN' });
       }
+      const access = body.dataAccess;
+      if (!access || typeof access !== 'object' || Array.isArray(access)) {
+        return res.status(400).json({ error: 'dataAccess must be an object.', code: 'INVALID_DATA_ACCESS' });
+      }
+      for (const role of ['viewers', 'submitters', 'editors', 'administrators']) {
+        if (!Array.isArray(access[role]) || access[role].some((value) => !String(value || '').trim())) {
+          return res.status(400).json({ error: `dataAccess.${role} must be a non-empty identity list.`, code: 'INVALID_DATA_ACCESS' });
+        }
+      }
+      metadataPatch.dataAccess = access;
     }
 
     const patch = {

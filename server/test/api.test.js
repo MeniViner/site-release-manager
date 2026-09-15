@@ -89,6 +89,28 @@ test('a Private Network Access preflight is answered', async () => {
   assert.equal(headers.get('access-control-allow-private-network'), 'true');
 });
 
+test('daily data preflight supports credentialed PUT without changing management CORS', async () => {
+  const { status, headers } = await call('/api/daily-data/v1/sites/demo/legacy-object', {
+    method: 'OPTIONS',
+    headers: {
+      Origin: 'https://portal.army.idf',
+      'Access-Control-Request-Method': 'PUT',
+      'Access-Control-Request-Headers': 'content-type,if-match',
+    },
+  });
+  assert.equal(status, 204);
+  assert.equal(headers.get('access-control-allow-origin'), 'https://portal.army.idf');
+  assert.equal(headers.get('access-control-allow-credentials'), 'true');
+  assert.ok(String(headers.get('access-control-allow-methods')).includes('PUT'));
+  assert.ok(String(headers.get('access-control-allow-headers')).toLowerCase().includes('if-match'));
+});
+
+test('daily data refuses an unauthenticated browser identity', async () => {
+  const { status, body } = await call('/api/daily-data/v1/healthz');
+  assert.equal(status, 401);
+  assert.equal(body.error.code, 'development_identity_required');
+});
+
 test('an unconfigured origin gets an actionable 403 instead of an opaque 500', async () => {
   const { status, body } = await call('/api/health', { headers: { Origin: 'https://not-configured.example' } });
   assert.equal(status, 403);
@@ -157,6 +179,63 @@ test('site CRUD works end to end and delete needs explicit confirmation', async 
   const deleted = await call(`/api/sites/${siteId}?confirm=delete-tracking-record`, { method: 'DELETE' });
   assert.equal(deleted.status, 200);
   assert.equal(deleted.body.deletedSharePointData, false, 'deleting a tracking record must never delete SharePoint data');
+});
+
+test('central Mongo sites allocate isolated identities and enforce data authorization and conflicts', async (t) => {
+    if (!available) { t.skip('Set SRM_TEST_MONGO_URI to run database-backed API tests.'); return; }
+    await db.collection('sites').deleteMany({});
+    const createMongoSite = async (principal, name) => call('/api/sites', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-daily-data-dev-user': principal },
+      body: JSON.stringify({
+        unit: 'unit',
+        name,
+        managerName: principal,
+        host: 'portal.army.idf',
+        siteCode: 'shared-web',
+        storageBackend: 'mongo',
+        // Legacy external-profile fields must be ignored, never persisted.
+        builderSiteId: 'browser-controlled-id',
+        backendProfileId: 'external-profile',
+        backendApiUrl: 'https://external.example.test',
+        rehearsal: true,
+      }),
+    });
+    const first = await createMongoSite('alice', 'Alpha');
+    const second = await createMongoSite('bob', 'Bravo');
+    assert.equal(first.status, 201);
+    assert.equal(second.status, 201);
+    assert.match(first.body.site.builderSiteId, /^srm-/);
+    assert.notEqual(first.body.site.builderSiteId, second.body.site.builderSiteId);
+    assert.notEqual(first.body.site.siteDbFolder, second.body.site.siteDbFolder);
+    assert.equal(first.body.site.backendProfileId, undefined);
+    assert.equal(first.body.site.backendApiUrl, undefined);
+    assert.equal(first.body.site.rehearsal, undefined);
+    assert.equal(first.body.technicalPreview.dailyDataApiUrl, `http://127.0.0.1:4300/api/daily-data/v1`);
+
+    const dailyPath = `/api/daily-data/v1/sites/${encodeURIComponent(first.body.site.builderSiteId)}/legacy-object`;
+    const write = await call(dailyPath, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'x-daily-data-dev-user': 'alice' },
+      body: JSON.stringify({ key: 'bihs_master_config_v1.txt', data: { schemaVersion: '1.0.0' }, expectedVersion: 0 }),
+    });
+    assert.equal(write.status, 200);
+    const conflict = await call(dailyPath, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'x-daily-data-dev-user': 'alice' },
+      body: JSON.stringify({ key: 'bihs_master_config_v1.txt', data: { schemaVersion: '1.0.1' }, expectedVersion: 0 }),
+    });
+    assert.equal(conflict.status, 409);
+    assert.equal(conflict.body.error.code, 'conflict');
+    const crossSite = await call(`${dailyPath}?key=bihs_master_config_v1.txt`, {
+      headers: { 'x-daily-data-dev-user': 'bob' },
+    });
+    assert.equal(crossSite.status, 403);
+    const read = await call(`${dailyPath}?key=bihs_master_config_v1.txt`, {
+      headers: { 'x-daily-data-dev-user': 'alice' },
+    });
+    assert.equal(read.status, 200);
+    assert.deepEqual(read.body.data, { schemaVersion: '1.0.0' });
 });
 
 test('an invalid target identity is rejected with a clear message', async (t) => {

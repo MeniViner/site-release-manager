@@ -13,12 +13,14 @@ const { runsRouter } = require("./routes/runs.js");
 const { backupsRouter } = require("./routes/backups.js");
 const { deploymentBatchesRouter } = require("./routes/deploymentBatches.js");
 const { migrationsRouter } = require("./routes/migrations.js");
+const { createDailyDataRouter } = require("./daily-data/v1/router.js");
 /**
  * Headers the browser worker sends. X-SRM-Lease carries the exclusive write
  * lease; without it in the allow-list every cross-origin deployment request
  * from SharePoint would be blocked by the preflight.
  */
 const ALLOWED_REQUEST_HEADERS = Object.freeze(['Content-Type', 'Accept', 'X-SRM-Lease']);
+const DAILY_DATA_REQUEST_HEADERS = Object.freeze(['Content-Type', 'Accept', 'If-Match']);
 
 function createApp() {
   const app = express();
@@ -36,10 +38,36 @@ function createApp() {
     next();
   });
 
+  const isAllowedOrigin = (origin) => !origin || allowedOrigins.has(origin.replace(/\/+$/, ''));
+  // Daily Site Builder data is intentionally isolated from the management API:
+  // it needs credentialed PUT/PATCH for the SharePoint/IIS identity flow, while
+  // management keeps its existing non-credentialed browser boundary.
+  app.use('/api/daily-data/v1', express.json({ limit: '10mb' }));
+  app.use('/api/daily-data/v1', cors({
+    origin(origin, callback) {
+      return callback(null, isAllowedOrigin(origin));
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: DAILY_DATA_REQUEST_HEADERS,
+    maxAge: 600,
+    optionsSuccessStatus: 204,
+  }));
+  app.use('/api/daily-data/v1', (req, res, next) => {
+    const origin = req.get('origin');
+    if (isAllowedOrigin(origin)) return next();
+    console.warn(`[daily-data] Rejected request from unconfigured origin: ${origin}`);
+    return res.status(403).json({
+      ok: false,
+      error: { code: 'origin_not_configured', message: 'Origin is not configured for daily data access.' },
+    });
+  });
+  app.use('/api/daily-data/v1', createDailyDataRouter());
+
   app.use(cors({
     origin(origin, callback) {
       // A same-origin or tool request has no Origin header and is always allowed.
-      if (!origin || allowedOrigins.has(origin.replace(/\/+$/, ''))) return callback(null, true);
+      if (isAllowedOrigin(origin)) return callback(null, true);
       // Reject by NOT setting CORS headers rather than by throwing: throwing
       // turned a configuration problem into an opaque HTTP 500.
       return callback(null, false);
@@ -71,6 +99,7 @@ function createApp() {
     ok: true,
     appVersion: config.appVersion,
     mongoDbName: config.mongoDbName,
+    builderDataMongoDbName: config.builderDataMongoDbName,
     publicApiUrl: config.publicApiUrl,
     clientOrigins: config.clientOrigins,
     sharePointHosts: config.sharePointHosts,
@@ -86,6 +115,7 @@ function createApp() {
     publicApiUrl: config.publicApiUrl,
     clientOrigins: config.clientOrigins,
     appVersion: config.appVersion,
+    dailyDataApiUrl: config.dailyDataApiUrl,
   }));
 
   app.use('/api/dashboard', dashboardRouter);

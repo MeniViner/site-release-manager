@@ -26,24 +26,6 @@ const clientOrigins = Array.from(new Set([
   ...sharePointHosts.map((host) => `https://${host}`),
 ]));
 
-function backendProfiles(value) {
-  if (!String(value || '').trim()) return Object.freeze({});
-  let parsed;
-  try {
-    parsed = JSON.parse(value);
-  } catch {
-    throw new Error('SITE_BUILDER_BACKEND_PROFILES must be valid JSON.');
-  }
-  const profiles = {};
-  for (const [id, item] of Object.entries(parsed)) {
-    const url = String(item?.url || '').trim().replace(/\/+$/, '');
-    const apiKey = String(item?.apiKey || '').trim();
-    if (!id || !/^https?:\/\//.test(url) || !apiKey) throw new Error(`Invalid Site Builder backend profile "${id}".`);
-    profiles[id] = Object.freeze({ url, apiKey });
-  }
-  return Object.freeze(profiles);
-}
-
 const config = Object.freeze({
   appVersion,
   port: Number(process.env.PORT || 4300),
@@ -53,12 +35,19 @@ const config = Object.freeze({
   publicApiUrl: String(process.env.PUBLIC_API_URL || 'http://127.0.0.1:4300').replace(/\/+$/, ''),
   mongoUri: String(process.env.MONGO_URI || 'mongodb://127.0.0.1:27017'),
   mongoDbName: String(process.env.MONGO_DB_NAME || 'site_release_manager'),
+  // Builder application documents deliberately use a different database from
+  // Release Manager's tracking, jobs, and backup records.
+  builderDataMongoDbName: String(process.env.BUILDER_DATA_MONGO_DB_NAME || `${process.env.MONGO_DB_NAME || 'site_release_manager'}_site_builder_data`),
+  dailyDataApiUrl: String(process.env.PUBLIC_DAILY_DATA_API_URL || `${process.env.PUBLIC_API_URL || 'http://127.0.0.1:4300'}/api/daily-data/v1`).replace(/\/+$/, ''),
+  nodeEnv: String(process.env.NODE_ENV || 'development'),
+  trustedIdentityHeader: String(process.env.TRUSTED_IDENTITY_HEADER || 'x-iisnode-auth_user').toLowerCase(),
+  trustedIdentityEnabled: String(process.env.TRUSTED_IDENTITY_ENABLED || 'false').toLowerCase() === 'true',
+  dailyDataDevIdentityHeader: String(process.env.DAILY_DATA_DEV_IDENTITY_HEADER || 'x-daily-data-dev-user').toLowerCase(),
   storageRoot: resolveFromRoot(process.env.STORAGE_ROOT, './storage'),
   sharePointHosts,
   sharePointDeployerPath: `/${String(process.env.SHAREPOINT_DEPLOYER_PATH || '/sites/tools/SiteAssets/site-release-deployer/index.html').replace(/^\/+/, '')}`,
   maxReleaseBytes: Number(process.env.MAX_RELEASE_MB || 500) * 1024 * 1024,
   maxReleaseFiles: Number(process.env.MAX_RELEASE_FILES || 12000),
-  siteBuilderBackendProfiles: backendProfiles(process.env.SITE_BUILDER_BACKEND_PROFILES),
 });
 
 const paths = Object.freeze({
