@@ -8,13 +8,13 @@
  */
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { createSharePointClient, SEED_CONTENT_TYPE, ASSET_CONTENT_TYPE, escapeODataPath, assertServerRelativePath } = require("../src/shared/sharepointClient.js");
+const { createSharePointClient, SEED_CONTENT_TYPE, ASSET_CONTENT_TYPE, escapeODataPath, assertServerRelativePath, classifyFolderReadiness } = require("../src/shared/sharepointClient.js");
 const { ensureExactLibrary, ensureFolderTree, ensureTxtSeeds, uploadReleaseAssets, orderParentFirst, LIBRARY_OUTCOME, PROVISIONING_ERROR, ProvisioningError, finalAppSmoke, verifyFinalRuntimeConfig } = require("../src/shared/sharepointProvisioning.js");
 const { SP_ERROR } = require("../src/shared/sharepointErrors.js");
 const { buildSiteIdentity, buildTxtSeedPlan, requiredLibraries, requiredFolders } = require("../src/shared/siteRuntime.js");
 const { RUNTIME_BOOTSTRAP_FILE, RUNTIME_CONFIG_FILE, DEPLOYMENT_METADATA_FILE } = require("../src/shared/universalManifest.js");
 const { buildRuntimeBootstrapSource } = require("../src/shared/runtimeBootstrap.js");
-const { createFakeSharePoint, instantRetry, sha256Hex } = require("./helpers/fakeSharePoint.js");
+const { createFakeSharePoint, folderProbeFixture, instantRetry, sha256Hex } = require("./helpers/fakeSharePoint.js");
 const IDENTITY = buildSiteIdentity({ host: 'portal.army.idf', siteCode: 'schedule' });
 const FRESH = buildSiteIdentity({
   host: 'portal.army.idf', siteCode: 'schedule',
@@ -166,7 +166,7 @@ test('another list already occupying the target root URL is reported as a collis
 // Folders
 // ---------------------------------------------------------------------------
 
-for (const shape of ['file', 'directory', 'spexception', '404']) {
+for (const shape of ['file', 'directory', '404']) {
   test(`folders stabilize through transient "${shape}" not-ready responses`, async () => {
     const farm = createFakeSharePoint({ notReadyReads: 3, notReadyShape: shape });
     seedWebRoot(farm, FRESH);
@@ -176,13 +176,341 @@ for (const shape of ['file', 'directory', 'spexception', '404']) {
 
     const folders = requiredFolders(FRESH, ['assets', 'images']);
     const results = await ensureFolderTree(client, folders, {
-      retry, libraryRoots: [FRESH.siteDbRoot, FRESH.usersDbRoot],
+      retry, libraries: [...farm.state.lists.values()],
     });
 
     assert.equal(results.length, folders.length);
     for (const folder of folders) assert.ok(farm.state.folders.has(folder), `missing ${folder}`);
   });
 }
+
+test('an unclassified transient discovery response never triggers a speculative create', async () => {
+  const farm = createFakeSharePoint({ notReadyShape: 'spexception' });
+  seedWebRoot(farm, FRESH);
+  const library = farm.addLibrary('siteDBFresh', FRESH.siteDbRoot);
+  const path = `${FRESH.siteDbRoot}/unknown`;
+
+  await assert.rejects(
+    ensureFolderTree(clientFor(farm), [path], {
+      retry: { ...retry, maxAttempts: 3 },
+      libraries: [library],
+      createFolderExact: farm.createFolderExact,
+    }),
+    (error) => {
+      assert.equal(error.code, PROVISIONING_ERROR.FOLDER_NOT_STABLE);
+      return true;
+    },
+  );
+  assert.equal(farm.state.folderCreateCalls.length, 0, 'unknown state must remain read-only');
+});
+
+test('transient discovery waits for a definitive missing answer before creating once', async () => {
+  const farm = createFakeSharePoint();
+  seedWebRoot(farm, FRESH);
+  const library = farm.addLibrary('siteDBFresh', FRESH.siteDbRoot);
+  const path = `${FRESH.siteDbRoot}/eventually missing`;
+  const original = farm.fetchImpl;
+  let ambiguousReads = 0;
+  const client = createSharePointClient({
+    webUrl: farm.webUrl,
+    getDigest: async () => 'D',
+    fetchImpl: async (url, init) => {
+      if (String(url).includes('/ListItemAllFields') && ambiguousReads < 2) {
+        ambiguousReads += 1;
+        return {
+          ok: false,
+          status: 400,
+          headers: { get: () => 'application/json' },
+          text: async () => JSON.stringify({ error: { code: '-1, Microsoft.SharePoint.SPException', message: { value: 'The farm is busy.' } } }),
+        };
+      }
+      return original(url, init);
+    },
+  });
+
+  const [result] = await ensureFolderTree(client, [path], {
+    retry,
+    libraries: [library],
+    createFolderExact: farm.createFolderExact,
+  });
+  assert.equal(ambiguousReads, 2);
+  assert.equal(farm.state.folderCreateCalls.length, 1);
+  assert.equal(result.reason, 'LIST_BACKED_FOLDER_READY');
+});
+
+test('child readiness requires exact positive list, folder-object and parent-enumeration evidence', () => {
+  const ready = folderProbeFixture();
+  assert.deepEqual(classifyFolderReadiness(ready), {
+    ready: true,
+    exists: true,
+    reason: 'LIST_BACKED_FOLDER_READY',
+    expectedPath: ready.expectedPath,
+    actualPath: ready.expectedPath,
+    parentPath: ready.expectedParentPath,
+    libraryId: ready.expectedLibraryId,
+    listItemId: 17,
+  });
+
+  const cases = [
+    ['missing list-item ID', { listItemId: null }, 'FOLDER_LIST_ITEM_ID_UNCONFIRMED', false],
+    ['missing object type', { fileSystemObjectType: 'unconfirmed' }, 'FOLDER_OBJECT_TYPE_UNCONFIRMED', false],
+    ['wrong object type', { fileSystemObjectType: 0 }, 'FOLDER_NAME_COLLISION', true],
+    ['wrong FileRef', { fileRef: `${ready.expectedPath}-wrong` }, 'FOLDER_PATH_MISMATCH', true],
+    ['wrong FolderRef', { folderRef: `${ready.expectedPath}-wrong` }, 'FOLDER_PATH_MISMATCH', true],
+    ['wrong folder object path', { folderObjectPath: `${ready.expectedPath}-wrong` }, 'FOLDER_PATH_MISMATCH', true],
+    ['wrong list', { listId: 'other-list' }, 'FOLDER_OWNER_LIBRARY_MISMATCH', true],
+    ['wrong parent entry path', { parentEntryPath: `${ready.expectedPath}-wrong` }, 'FOLDER_PARENT_ENUMERATION_MISMATCH', false],
+    ['wrong parent list item', { parentListItemId: 99 }, 'FOLDER_PARENT_ENUMERATION_MISMATCH', true],
+    ['wrong parent list', { parentListId: 'other-list' }, 'FOLDER_OWNER_LIBRARY_MISMATCH', true],
+  ];
+  for (const [label, overrides, reason, contradiction] of cases) {
+    const outcome = classifyFolderReadiness(folderProbeFixture(overrides));
+    assert.equal(outcome.ready, false, label);
+    assert.equal(outcome.reason, reason, label);
+    assert.equal(Boolean(outcome.contradiction), contradiction, label);
+  }
+});
+
+test('explicit Exists:false remains missing even when another endpoint returns metadata', () => {
+  const outcome = classifyFolderReadiness(folderProbeFixture({ folderExists: false }));
+  assert.equal(outcome.ready, false);
+  assert.equal(outcome.exists, false);
+  assert.equal(outcome.contradiction, true);
+  assert.equal(outcome.reason, 'FOLDER_NOT_FOUND');
+});
+
+test('an explicit null OData record is not mistaken for list-item metadata', () => {
+  const fixture = folderProbeFixture();
+  const outcome = classifyFolderReadiness({
+    ...fixture,
+    listItem: { d: null },
+  });
+  assert.equal(outcome.ready, false);
+  assert.equal(outcome.exists, true);
+  assert.equal(outcome.reason, 'FOLDER_OBJECT_VISIBLE_WAITING_FOR_LIST_ITEM');
+});
+
+test('HTTP 200 with null metadata remains unknown and cannot authorize creation', () => {
+  const fixture = folderProbeFixture();
+  const outcome = classifyFolderReadiness({
+    ...fixture,
+    listItem: { d: null },
+    folder: { d: null },
+  });
+  assert.equal(outcome.ready, false);
+  assert.equal(outcome.exists, false);
+  assert.equal(outcome.unknown, true);
+  assert.equal(outcome.reason, 'FOLDER_METADATA_UNRECOGNIZED');
+});
+
+for (const odataMode of ['verbose', 'minimal']) {
+  test(`folder probes parse ${odataMode} envelopes and verify real parent membership`, async () => {
+    const farm = createFakeSharePoint({ odataMode });
+    seedWebRoot(farm, FRESH);
+    const library = farm.addLibrary('siteDBFresh', FRESH.siteDbRoot);
+    const path = `${FRESH.siteDbRoot}/תיקייה עם רווחים`;
+    farm.addVisibleManualFolder(path);
+    const outcome = await clientFor(farm).probeFolder(path, {
+      libraryTitle: library.title,
+      libraryId: library.id,
+      parentPath: FRESH.siteDbRoot,
+    });
+    assert.equal(outcome.ready, true);
+    assert.equal(outcome.listItemId > 0, true);
+    assert.equal(outcome.libraryId, library.id);
+  });
+}
+
+test('read-only diagnostics distinguish a visible manual folder from an incomplete app-created child', async () => {
+  const farm = createFakeSharePoint();
+  seedWebRoot(farm, FRESH);
+  const library = farm.addLibrary('siteDBFresh', FRESH.siteDbRoot);
+  const manual = `${FRESH.siteDbRoot}/ידני`;
+  const incomplete = `${FRESH.siteDbRoot}/יישום חלקי`;
+  farm.addVisibleManualFolder(manual);
+  farm.addIncompleteAppFolder(incomplete);
+  const client = clientFor(farm);
+  const options = { libraryTitle: library.title, libraryId: library.id, parentPath: FRESH.siteDbRoot };
+
+  assert.match((await client.probeFolder(manual, options)).reason, /READY/);
+  assert.equal((await client.probeFolder(incomplete, options)).reason, 'FOLDER_LIST_ITEM_ID_UNCONFIRMED');
+  assert.equal(farm.state.folderCreateCalls.length, 0, 'diagnostic probes must remain read-only');
+});
+
+test('401 and 403 from parent enumeration classify as authorization failures', async () => {
+  for (const status of [401, 403]) {
+    const farm = createFakeSharePoint();
+    seedWebRoot(farm, FRESH);
+    const library = farm.addLibrary('siteDBFresh', FRESH.siteDbRoot);
+    const path = `${FRESH.siteDbRoot}/protected`;
+    farm.addFolder(path);
+    const original = farm.fetchImpl;
+    const client = createSharePointClient({
+      webUrl: farm.webUrl,
+      getDigest: async () => 'D',
+      fetchImpl: async (url, init) => {
+        if (String(url).includes('/Folders?')) {
+          return {
+            ok: false,
+            status,
+            headers: { get: () => 'application/json' },
+            text: async () => JSON.stringify({ error: { message: { value: status === 401 ? 'Sign in required.' : 'Access denied.' } } }),
+          };
+        }
+        return original(url, init);
+      },
+    });
+    const outcome = await client.probeFolder(path, {
+      libraryTitle: library.title,
+      libraryId: library.id,
+      parentPath: FRESH.siteDbRoot,
+    });
+    assert.equal(outcome.reason, 'FOLDER_PROBE_AUTHORIZATION_FAILED');
+    assert.equal(outcome.status, status);
+    assert.equal(outcome.errorClass, status === 401 ? SP_ERROR.AUTH_FAILURE : SP_ERROR.PERMISSION_DENIED);
+  }
+});
+
+test('parent-enumeration fallback verifies membership and surfaces fallback 403', async () => {
+  const farm = createFakeSharePoint();
+  seedWebRoot(farm, FRESH);
+  const library = farm.addLibrary('siteDBFresh', FRESH.siteDbRoot);
+  const path = `${FRESH.siteDbRoot}/fallback child`;
+  farm.addFolder(path);
+  const original = farm.fetchImpl;
+  const advancedRejected = async (url, init) => {
+    if (String(url).includes('/Folders?') && String(url).includes('ListItemAllFields')) {
+      return {
+        ok: false,
+        status: 400,
+        headers: { get: () => 'application/json' },
+        text: async () => JSON.stringify({ error: { code: '-1, Microsoft.SharePoint.SPException', message: { value: 'Unsupported expand.' } } }),
+      };
+    }
+    return original(url, init);
+  };
+  const options = { libraryTitle: library.title, libraryId: library.id, parentPath: FRESH.siteDbRoot };
+  const fallbackClient = createSharePointClient({ webUrl: farm.webUrl, fetchImpl: advancedRejected, getDigest: async () => 'D' });
+  assert.equal((await fallbackClient.probeFolder(path, options)).ready, true);
+
+  const deniedClient = createSharePointClient({
+    webUrl: farm.webUrl,
+    getDigest: async () => 'D',
+    fetchImpl: async (url, init) => {
+      if (String(url).includes('/Folders?') && !String(url).includes('ListItemAllFields')) {
+        return {
+          ok: false,
+          status: 403,
+          headers: { get: () => 'application/json' },
+          text: async () => JSON.stringify({ error: { message: { value: 'Access denied.' } } }),
+        };
+      }
+      return advancedRejected(url, init);
+    },
+  });
+  const denied = await deniedClient.probeFolder(path, options);
+  assert.equal(denied.reason, 'FOLDER_PROBE_AUTHORIZATION_FAILED');
+  assert.equal(denied.errorClass, SP_ERROR.PERMISSION_DENIED);
+});
+
+test('historical incomplete folders poll then require reconciliation without mutation', async () => {
+  const farm = createFakeSharePoint();
+  seedWebRoot(farm, FRESH);
+  const library = farm.addLibrary('siteDBFresh', FRESH.siteDbRoot);
+  const path = `${FRESH.siteDbRoot}/historical incomplete`;
+  farm.addIncompleteAppFolder(path);
+
+  await assert.rejects(
+    ensureFolderTree(clientFor(farm), [path], {
+      retry: { ...retry, maxAttempts: 3 },
+      libraries: [library],
+      createFolderExact: farm.createFolderExact,
+    }),
+    (error) => {
+      assert.equal(error.code, PROVISIONING_ERROR.FOLDER_RECONCILIATION_REQUIRED);
+      assert.equal(error.reason, 'FOLDER_LIST_ITEM_ID_UNCONFIRMED');
+      assert.equal(error.destructiveRepairAllowed, false);
+      assert.equal(error.mutationAttempted, false);
+      return true;
+    },
+  );
+  assert.equal(farm.state.folderCreateCalls.length, 0);
+});
+
+test('folder authorization classification surfaces immediately without mutation', async () => {
+  const farm = createFakeSharePoint();
+  seedWebRoot(farm, FRESH);
+  const library = farm.addLibrary('siteDBFresh', FRESH.siteDbRoot);
+  const path = `${FRESH.siteDbRoot}/protected`;
+  const client = {
+    probeFolder: async () => ({
+      ready: false,
+      exists: false,
+      authorization: true,
+      reason: 'FOLDER_PROBE_AUTHORIZATION_FAILED',
+      status: 403,
+      errorClass: SP_ERROR.PERMISSION_DENIED,
+    }),
+  };
+
+  await assert.rejects(
+    ensureFolderTree(client, [path], {
+      retry,
+      libraries: [library],
+      createFolderExact: farm.createFolderExact,
+    }),
+    (error) => {
+      assert.equal(error.code, PROVISIONING_ERROR.FOLDER_PROBE_AUTHORIZATION_FAILED);
+      assert.equal(error.errorClass, SP_ERROR.PERMISSION_DENIED);
+      return true;
+    },
+  );
+  assert.equal(farm.state.folderCreateCalls.length, 0);
+});
+
+test('library-bound folder creation preserves exact Hebrew names, parents and list identity', async () => {
+  const farm = createFakeSharePoint();
+  seedWebRoot(farm, FRESH);
+  const library = farm.addLibrary('siteDBFresh', FRESH.siteDbRoot);
+  const left = `${FRESH.siteDbRoot}/אב`;
+  const right = `${FRESH.siteDbRoot}/אם`;
+  farm.addFolder(left);
+  farm.addFolder(right);
+  const children = [`${left}/שם זהה`, `${right}/שם זהה`];
+
+  const results = await ensureFolderTree(clientFor(farm), children, {
+    retry,
+    libraries: [library],
+    createFolderExact: farm.createFolderExact,
+  });
+
+  assert.equal(results.every((entry) => entry.created), true);
+  assert.deepEqual(farm.state.folderCreateCalls.map(({ libraryId, parentPath, leafName, folderPath }) => ({
+    libraryId, parentPath, leafName, folderPath,
+  })), [
+    { libraryId: library.id, parentPath: left, leafName: 'שם זהה', folderPath: children[0] },
+    { libraryId: library.id, parentPath: right, leafName: 'שם זהה', folderPath: children[1] },
+  ]);
+  assert.equal([...farm.state.folders.keys()].some((path) => /שם זהה\d+$/.test(path)), false, 'no suffix may be adopted');
+});
+
+test('an ambiguous folder create is never repeated and recovers only from exact verified state', async () => {
+  const farm = createFakeSharePoint({ folderCreateReportsError: true, notReadyReads: 2 });
+  seedWebRoot(farm, FRESH);
+  const library = farm.addLibrary('siteDBFresh', FRESH.siteDbRoot);
+  const path = `${FRESH.siteDbRoot}/נוצר למרות שגיאה`;
+
+  const [result] = await ensureFolderTree(clientFor(farm), [path], {
+    retry,
+    libraries: [library],
+    createFolderExact: farm.createFolderExact,
+  });
+
+  assert.equal(farm.state.folderCreateCalls.length, 1);
+  assert.equal(result.recoveredAfterCreateError, true);
+  assert.equal(result.created, false);
+  assert.equal(result.reason, 'LIST_BACKED_FOLDER_READY');
+});
 
 test('a permission failure during folder work surfaces immediately instead of burning the retry budget', async () => {
   const farm = createFakeSharePoint();
@@ -198,7 +526,10 @@ test('a permission failure during folder work surfaces immediately instead of bu
   });
 
   await assert.rejects(
-    ensureFolderTree(client, ['/sites/schedule/siteDBFresh/siteAssets'], { retry }),
+    ensureFolderTree(client, ['/sites/schedule/siteDBFresh/siteAssets'], {
+      retry,
+      libraries: [{ id: 'list-denied', title: 'siteDBFresh', rootFolder: FRESH.siteDbRoot }],
+    }),
     (error) => {
       assert.equal(error.sharePoint?.errorClass || error.errorClass, SP_ERROR.PERMISSION_DENIED);
       return true;
@@ -440,7 +771,7 @@ test('a fresh logical site provisions libraries, folders and TXT seeds in ONE ru
   }
 
   await ensureFolderTree(client, requiredFolders(FRESH, ['assets', 'images']), {
-    retry, log, libraryRoots: [FRESH.siteDbRoot, FRESH.usersDbRoot],
+    retry, log, libraries: [...farm.state.lists.values()],
   });
 
   const seeds = await ensureTxtSeeds(client, buildTxtSeedPlan(FRESH), { retry, sha256, log });
@@ -468,7 +799,7 @@ test('target A and target B in the same Web are provisioned independently', asyn
       await ensureExactLibrary(client, spec, { createLibraryExact: farm.createLibraryExact, retry });
     }
     await ensureFolderTree(client, requiredFolders(identity), {
-      retry, libraryRoots: [identity.siteDbRoot, identity.usersDbRoot],
+      retry, libraries: [...farm.state.lists.values()],
     });
     await ensureTxtSeeds(client, buildTxtSeedPlan(identity), { retry, sha256 });
   }
@@ -490,12 +821,16 @@ function runtimeFixture(identity = IDENTITY) {
     storageBackend: identity.storageBackend,
     host: identity.host,
     siteCode: identity.siteCode,
+    siteRoot: identity.siteRoot,
+    siteApiRoot: identity.siteApiRoot,
     siteDbFolder: identity.siteDbFolder,
     siteDbRoot: identity.siteDbRoot,
     usersDbFolder: identity.usersDbFolder,
     usersDbRoot: identity.usersDbRoot,
     siteAssetsFolder: identity.siteAssetsFolder,
     siteAssetsRoot: identity.siteAssetsRoot,
+    imagesFolder: identity.imagesFolder,
+    imagesRoot: identity.imagesRoot,
     widgetsDbTarget: identity.widgetsDbTarget,
     targetDistPath: identity.targetDistPath,
     finalAppUrl: identity.finalAppUrl,
@@ -511,9 +846,12 @@ function runtimeFixture(identity = IDENTITY) {
     storageBackend: identity.storageBackend,
     host: identity.host,
     siteCode: identity.siteCode,
+    siteRoot: identity.siteRoot,
+    siteApiRoot: identity.siteApiRoot,
     siteDbRoot: identity.siteDbRoot,
     usersDbRoot: identity.usersDbRoot,
     siteAssetsRoot: identity.siteAssetsRoot,
+    imagesRoot: identity.imagesRoot,
     targetDistPath: identity.targetDistPath,
     finalAppUrl: identity.finalAppUrl,
     deploymentJobId: 'job-77',
@@ -529,7 +867,7 @@ function runtimeFixture(identity = IDENTITY) {
     runtimeBootstrapPath: `${identity.targetDistPath}/${RUNTIME_BOOTSTRAP_FILE}`,
     runtimeConfigUrl: `${identity.siteBaseUrl}/${RUNTIME_CONFIG_FILE}`,
     deploymentMetadataUrl: `${identity.siteBaseUrl}/${DEPLOYMENT_METADATA_FILE}`,
-    runtimeBootstrapUrl: `${identity.siteBaseUrl}/${RUNTIME_BOOTSTRAP_FILE}`,
+    runtimeBootstrapUrl: new URL(RUNTIME_BOOTSTRAP_FILE, identity.finalAppUrl).toString(),
     expected: runtimeConfig,
   };
   return { runtimeConfig, deploymentMetadata, verification };

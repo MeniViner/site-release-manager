@@ -128,6 +128,7 @@ function writeTargetOverlay({ distDir, identity, release, jobId, deployedAt, dai
     siteCode: identity.siteCode,
     siteId: identity.siteId,
     siteRoot: identity.siteRoot,
+    siteApiRoot: identity.siteApiRoot,
     siteDbRoot: identity.siteDbRoot,
     usersDbRoot: identity.usersDbRoot,
     siteAssetsRoot: identity.siteAssetsRoot,

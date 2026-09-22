@@ -43,21 +43,98 @@ function loadScript(src) {
  * Mirrors Site Builder's `ensureSharePointJsom`.
  */
 export async function ensureSharePointJsom(webUrl) {
-  if (window.SP?.ClientContext && window.SP?.ListCreationInformation) return window.SP;
+  if (window.SP?.ClientContext && window.SP?.ListCreationInformation && window.SP?.ListItemCreationInformation) return window.SP;
   const web = new URL(webUrl);
   const layouts = `${web.origin}${web.pathname.replace(/\/+$/, '')}/_layouts/15/`;
   for (const script of JSOM_SCRIPTS) {
     // Sequential on purpose: SP.js depends on SP.Runtime.js.
     // eslint-disable-next-line no-await-in-loop
-    await loadScript(`${layouts}${script}`).catch(() => {});
+    await loadScript(`${layouts}${script}`);
   }
-  if (!window.SP?.ClientContext || !window.SP?.ListCreationInformation) {
+  if (!window.SP?.ClientContext || !window.SP?.ListCreationInformation || !window.SP?.ListItemCreationInformation) {
     const error = new Error('SharePoint JSOM is unavailable on this page, so an exact-URL Document Library cannot be created.');
     error.code = 'SHAREPOINT_JSOM_UNAVAILABLE';
     error.errorClass = 'PERMANENT_FAILURE';
     throw error;
   }
   return window.SP;
+}
+
+function assertExactFolderName(value) {
+  const name = String(value ?? '');
+  if (!name || name.trim() !== name || name === '.' || name === '..' || /[/\\"*:<>|]/.test(name)) {
+    const error = new Error('SharePoint folder name is invalid.');
+    error.code = 'INVALID_FOLDER_NAME';
+    error.errorClass = 'INVALID_PATH';
+    throw error;
+  }
+  return name.normalize('NFC');
+}
+
+function applyJsomFailure(error, args) {
+  const errorCode = Number(args?.get_errorCode?.());
+  const errorType = String(args?.get_errorTypeName?.() || '');
+  const message = String(args?.get_message?.() || error.message || '');
+  error.sharePointCode = Number.isFinite(errorCode) ? String(errorCode) : '';
+  if (errorCode === -2147024891 || /UnauthorizedAccess|AccessDenied/i.test(`${errorType} ${message}`)) {
+    error.errorClass = 'PERMISSION_DENIED';
+  } else if (/security validation|formdigest|sign.?in|authentication/i.test(`${errorType} ${message}`)) {
+    error.errorClass = 'AUTH_FAILURE';
+  } else if ([-2130575257, -2130245363].includes(errorCode) || /already exists/i.test(message)) {
+    error.errorClass = 'ALREADY_EXISTS';
+  }
+  return error;
+}
+
+/**
+ * Create a child item in the already-verified owning library. Unlike generic
+ * web folder creation this binds the item to a List ID and an exact real parent.
+ */
+export function createLibraryBoundFolderViaJsom(webUrl) {
+  return async function createFolderExact({ libraryId, parentPath, leafName, folderPath }) {
+    const SP = await ensureSharePointJsom(webUrl);
+    const exactLeaf = assertExactFolderName(leafName);
+    const expectedPath = `${String(parentPath).replace(/\/+$/, '')}/${exactLeaf}`.normalize('NFC');
+    if (expectedPath.toLowerCase() !== String(folderPath).normalize('NFC').toLowerCase()) {
+      const error = new Error('SharePoint folder path does not match its exact parent and leaf name.');
+      error.code = 'FOLDER_PATH_MISMATCH';
+      error.errorClass = 'INVALID_PATH';
+      throw error;
+    }
+    if (!libraryId) {
+      const error = new Error('A verified SharePoint List ID is required for folder creation.');
+      error.code = 'LIBRARY_ID_REQUIRED';
+      error.errorClass = 'PERMANENT_FAILURE';
+      throw error;
+    }
+
+    const context = new SP.ClientContext(webUrl);
+    const list = context.get_web().get_lists().getById(libraryId);
+    const creation = new SP.ListItemCreationInformation();
+    creation.set_underlyingObjectType(SP.FileSystemObjectType.folder);
+    creation.set_folderUrl(parentPath);
+    creation.set_leafName(exactLeaf);
+    const item = list.addItem(creation);
+    item.update();
+    context.load(item, 'Id', 'FileSystemObjectType', 'FileRef');
+
+    return new Promise((resolve, reject) => {
+      context.executeQueryAsync(
+        () => resolve({
+          created: true,
+          listItemId: Number(item.get_id?.() || 0),
+          fileSystemObjectType: Number(item.get_fileSystemObjectType?.() ?? 1),
+          fileRef: item.get_item?.('FileRef') || folderPath,
+        }),
+        (_sender, args) => {
+          const error = new Error(args?.get_message?.() || 'JSOM folder creation failed.');
+          error.code = 'JSOM_FOLDER_QUERY_FAILED';
+          error.operation = `create-folder:${folderPath}`;
+          reject(applyJsomFailure(error, args));
+        },
+      );
+    });
+  };
 }
 
 /**

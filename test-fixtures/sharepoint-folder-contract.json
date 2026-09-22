@@ -1,0 +1,87 @@
+[
+  {
+    "name": "explicit-missing",
+    "probeKind": "folder-object",
+    "status": 200,
+    "payload": {
+      "d": {
+        "Exists": false,
+        "ServerRelativeUrl": "/sites/example/סבא/אבא"
+      }
+    },
+    "expectedPath": "/sites/example/סבא/אבא",
+    "expected": {
+      "ready": false,
+      "exists": false,
+      "reason": "FOLDER_NOT_FOUND"
+    }
+  },
+  {
+    "name": "unknown-success-envelope",
+    "probeKind": "folder-object",
+    "status": 200,
+    "payload": {
+      "d": {}
+    },
+    "expectedPath": "/sites/example/סבא/אבא",
+    "expected": {
+      "ready": false,
+      "exists": false,
+      "reason": "FOLDER_METADATA_UNRECOGNIZED"
+    }
+  },
+  {
+    "name": "wrong-canonical-path",
+    "probeKind": "list-item",
+    "status": 200,
+    "payload": {
+      "d": {
+        "Id": 17,
+        "FileSystemObjectType": 1,
+        "FileRef": "/sites/example/סבא/אמא"
+      }
+    },
+    "expectedPath": "/sites/example/סבא/אבא",
+    "expected": {
+      "ready": false,
+      "exists": true,
+      "reason": "FOLDER_PATH_MISMATCH"
+    }
+  },
+  {
+    "name": "missing-object-type",
+    "probeKind": "list-item",
+    "status": 200,
+    "payload": {
+      "value": {
+        "Id": 17,
+        "FileRef": "/sites/example/סבא/אבא"
+      }
+    },
+    "expectedPath": "/sites/example/סבא/אבא",
+    "expected": {
+      "ready": false,
+      "exists": true,
+      "reason": "FOLDER_OBJECT_TYPE_UNCONFIRMED"
+    }
+  },
+  {
+    "name": "valid-list-backed-child",
+    "probeKind": "list-item",
+    "status": 200,
+    "payload": {
+      "value": {
+        "Id": 17,
+        "FileSystemObjectType": 1,
+        "FileRef": "/sites/example/סבא/אבא",
+        "FileDirRef": "/sites/example/סבא"
+      }
+    },
+    "expectedPath": "/sites/example/סבא/אבא",
+    "expected": {
+      "ready": true,
+      "exists": true,
+      "reason": "LIST_BACKED_FOLDER_READY"
+    }
+  }
+]

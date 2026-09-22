@@ -46,7 +46,8 @@ describe('deployment notification dismissal', () => {
 
     render(<SharePointDeploymentCoordinator />);
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('SharePoint unavailable');
+    expect(await screen.findByRole('alert')).toHaveTextContent('אירעה שגיאה לא צפויה בפריסת SharePoint');
+    expect(screen.getByRole('alert')).not.toHaveTextContent('SharePoint unavailable');
     fireEvent.click(screen.getByRole('button', { name: 'סגור התראת פריסה' }));
     await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
   });

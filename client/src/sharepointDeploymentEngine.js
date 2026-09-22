@@ -12,7 +12,12 @@
 
 import { resolveApiUrl } from './api.js';
 import { runDeploymentPipeline, describeFailure } from '../../shared/deploymentPipeline.js';
-import { sha256Hex, createExactLibraryViaJsom, workerClientId } from './sharepoint/browserAdapters.js';
+import {
+  sha256Hex,
+  createExactLibraryViaJsom,
+  createLibraryBoundFolderViaJsom,
+  workerClientId,
+} from './sharepoint/browserAdapters.js';
 
 async function apiCall(path, options = {}, leaseId = '') {
   const headers = { ...(options.headers || {}) };
@@ -62,6 +67,7 @@ export async function deploySharePointJob(jobId, { onProgress = () => {}, signal
     fetchImpl: fetch.bind(window),
     sha256: sha256Hex,
     createLibraryExact: createExactLibraryViaJsom,
+    createFolderExact: createLibraryBoundFolderViaJsom,
     hostname: window.location.hostname,
     clientId: workerClientId(),
     downloadFile: (file) => downloadStagedFile(jobId, file),

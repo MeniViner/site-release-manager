@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { CheckCircle2, CircleAlert, LoaderCircle, Users, X } from 'lucide-react';
 import { api } from './api.js';
 import { deploySharePointJob } from './sharepointDeploymentEngine.js';
+import { userFacingSharePointFailure } from '../../shared/userFacingErrors.js';
 
 /**
  * Same-page SharePoint deployment.
@@ -71,14 +72,15 @@ export default function SharePointDeploymentCoordinator() {
             return;
           }
           if (error.apiCode === 'JOB_SETTLED') { setStatus(null); return; }
+          const safe = userFacingSharePointFailure(error);
           setStatus({
             jobId: candidate.id,
             notificationKey: candidateNotificationKey,
             progress: 100,
             stage: error.failureInfo?.stage || 'FAILED',
             message: 'פריסת SharePoint נכשלה.',
-            error: error.message,
-            nextAction: error.failureInfo?.nextAction || '',
+            error: safe.message,
+            nextAction: safe.nextAction,
             failed: true,
           });
         } finally {

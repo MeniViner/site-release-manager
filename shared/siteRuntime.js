@@ -48,16 +48,18 @@ export class SiteIdentityError extends Error {
   }
 }
 
-const SEGMENT_PATTERN = /^[A-Za-z0-9._-]{1,80}$/;
 const SITE_CODE_PATTERN = /^[\p{L}\p{N}][\p{L}\p{N}._-]{0,79}$/u;
 const HOST_PATTERN = /^[a-z0-9][a-z0-9.-]{1,120}$/;
+const SHAREPOINT_INVALID_SEGMENT_CHARACTERS = /[~"#%&*:<>?\/\\{|}\u0000-\u001F\u007F]/u;
 
 export function normalizeSegment(value, fallback, label) {
   const raw = text(value) || text(fallback);
-  if (!SEGMENT_PATTERN.test(raw)) {
+  if (!raw || raw.length > 80 || SHAREPOINT_INVALID_SEGMENT_CHARACTERS.test(raw)) {
     throw new SiteIdentityError(`${label} must be a single SharePoint folder name (got "${text(value) || '(empty)'}").`);
   }
-  if (raw === '.' || raw === '..') throw new SiteIdentityError(`${label} cannot be a traversal segment.`);
+  if (raw === '.' || raw === '..' || raw.startsWith('.') || raw.endsWith('.')) {
+    throw new SiteIdentityError(`${label} cannot start or end with "." or be a traversal segment.`);
+  }
   return raw;
 }
 

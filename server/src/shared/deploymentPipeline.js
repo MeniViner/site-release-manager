@@ -17,6 +17,7 @@ const { STAGE, stageLabel } = require("./deploymentStages.js");
 const { createSharePointClient } = require("./sharepointClient.js");
 const { ensureExactLibrary, ensureFolderTree, ensureTxtSeeds, uploadReleaseAssets, finalAppSmoke, createTxtBackup, verifyFinalRuntimeConfig, BACKUP_OUTCOME } = require("./sharepointProvisioning.js");
 const { classifySharePointError, SP_ERROR } = require("./sharepointErrors.js");
+const { userFacingSharePointFailure } = require("./userFacingErrors.js");
 const HEARTBEAT_MS = 30_000;
 
 /**
@@ -53,9 +54,14 @@ function describeFailure(error, stage) {
     method: error?.method,
     cause: error,
   });
+  const safe = userFacingSharePointFailure({
+    ...error,
+    errorClass: error?.errorClass || normalized.errorClass,
+    nextAction: error?.sharePoint?.nextAction || '',
+  });
   return {
     stage: error?.stage || stage,
-    message: error?.message || 'SharePoint deployment failed.',
+    message: safe.message,
     errorClass: error?.errorClass || normalized.errorClass || SP_ERROR.UNKNOWN,
     httpStatus: normalized.httpStatus ?? error?.httpStatus ?? null,
     sharePointCode: normalized.sharePointCode || '',
@@ -65,9 +71,10 @@ function describeFailure(error, stage) {
     url: normalized.url || error?.url || '',
     method: normalized.method || '',
     attempt: error?.attempts ?? null,
-    nextAction: normalized.nextAction || '',
+    nextAction: safe.nextAction,
     details: {
       code: error?.code || '',
+      diagnosticMessage: error?.message || '',
       responsePreview: normalized.responsePreview || '',
       retryHistory: error?.retryHistory ? JSON.stringify(error.retryHistory.slice(-6)) : '',
       stabilizeHistory: error?.stabilizeHistory ? JSON.stringify(error.stabilizeHistory.slice(-6)) : '',
@@ -85,6 +92,7 @@ function describeFailure(error, stage) {
  * @param {Function} options.fetchImpl    credentialed fetch for SharePoint
  * @param {Function} options.sha256       (bytes) => hex
  * @param {Function} options.createLibraryExact  (webUrl) => async ({title,urlSegment}) => created
+ * @param {Function} options.createFolderExact   (webUrl) => async ({libraryId,parentPath,leafName}) => created
  * @param {string}   options.hostname     the page's hostname, for target validation
  * @param {string}   options.clientId     stable per-tab worker identity
  * @param {Function} [options.onProgress]
@@ -96,7 +104,7 @@ function describeFailure(error, stage) {
  */
 async function runDeploymentPipeline(options) {
   const {
-    jobId, apiCall, fetchImpl, sha256, createLibraryExact,
+    jobId, apiCall, fetchImpl, sha256, createLibraryExact, createFolderExact,
     hostname, clientId, signal,
     retry = {},
     onProgress = () => {},
@@ -120,9 +128,20 @@ async function runDeploymentPipeline(options) {
     return false;
   };
   let ownershipLost = null;
-  if (signal) signal.addEventListener?.('abort', () => controller?.abort(), { once: true });
+  if (signal?.aborted) controller?.abort();
+  else if (signal) signal.addEventListener?.('abort', () => controller?.abort(), { once: true });
   const effectiveSignal = controller ? controller.signal : signal;
   const assertOwned = () => { if (ownershipLost) throw ownershipLost; };
+  const assertActive = () => {
+    assertOwned();
+    if (effectiveSignal?.aborted) {
+      const error = new Error('Deployment cancelled.');
+      error.name = 'CancelledError';
+      error.cancelled = true;
+      error.errorClass = SP_ERROR.PERMANENT_FAILURE;
+      throw error;
+    }
+  };
 
   const send = (path, init) => apiCall(path, init, leaseId).catch((error) => {
     abortOnOwnershipLoss(error);
@@ -237,12 +256,19 @@ async function runDeploymentPipeline(options) {
     await reportEvent(STAGE.LIBRARY_DISCOVERY, 'started', 'מאתר את ספריות המסמכים המוגדרות.');
 
     const makeLibrary = createLibraryExact(webUrl);
+    const makeFolder = typeof createFolderExact === 'function' ? createFolderExact(webUrl) : null;
     const libraryResults = [];
     for (const spec of descriptor.libraries) {
+      assertActive();
       // Sequential on purpose: SharePoint list creation is not safely concurrent.
       // eslint-disable-next-line no-await-in-loop
       const created = await ensureExactLibrary(client, spec, { createLibraryExact: makeLibrary, log, signal: effectiveSignal, retry });
-      libraryResults.push({ title: spec.title, outcome: created.outcome, rootFolder: created.library.rootFolder });
+      libraryResults.push({
+        id: created.library.id,
+        title: spec.title,
+        outcome: created.outcome,
+        rootFolder: created.library.rootFolder,
+      });
     }
     await reportEvent(STAGE.LIBRARY_DISCOVERY, 'success', 'כל ספריות המסמכים אותרו או נוצרו.', { details: { libraries: JSON.stringify(libraryResults) } });
     await reportEvent(STAGE.CREATE_LIBRARIES, 'success',
@@ -294,11 +320,13 @@ async function runDeploymentPipeline(options) {
         };
       } else {
         try {
+          assertActive();
           backup = await createTxtBackup(client, {
             sourceFiles: descriptor.seedFiles,
             siteAssetsRoot: site.siteAssetsRoot,
             host: site.host,
-            libraryRoots: descriptor.libraries.map((library) => library.rootFolder),
+            libraries: libraryResults,
+            createFolderExact: makeFolder,
             sha256,
             retry,
             signal: effectiveSignal,
@@ -364,9 +392,14 @@ async function runDeploymentPipeline(options) {
     // --- CREATE_FOLDERS / FOLDER_STABILIZE --------------------------------
     stage = STAGE.CREATE_FOLDERS;
     await reportProgress(52, 'יוצר ומייצב תיקיות', '', stage);
+    assertActive();
     await reportEvent(STAGE.CREATE_FOLDERS, 'started', 'יוצר את היררכיית התיקיות הנדרשת.');
     const folderResults = await ensureFolderTree(client, descriptor.folders, {
-      log, signal: effectiveSignal, retry, libraryRoots: descriptor.libraries.map((library) => library.rootFolder),
+      log,
+      signal: effectiveSignal,
+      retry,
+      libraries: libraryResults,
+      createFolderExact: makeFolder,
     });
     const createdFolders = folderResults.filter((entry) => entry.created).length;
     await reportEvent(STAGE.CREATE_FOLDERS, 'success', `${folderResults.length} תיקיות קיימות/נוצרו (${createdFolders} חדשות).`);
@@ -378,6 +411,7 @@ async function runDeploymentPipeline(options) {
     if (descriptor.capabilities?.txtSeeds !== false && (descriptor.capabilities || site.storageBackend === 'txt')) {
       stage = STAGE.CREATE_TXT_SEEDS;
       await reportProgress(60, 'בודק קובצי TXT', '', stage);
+      assertActive();
       await reportEvent(stage, 'started', 'בודק קובצי TXT; קבצים קיימים לא ישונו.');
       const seedResults = await ensureTxtSeeds(client, descriptor.seedFiles, { log, signal: effectiveSignal, retry, sha256 });
       preserved = seedResults.filter((entry) => entry.action === 'preserved').length;
@@ -410,6 +444,7 @@ async function runDeploymentPipeline(options) {
 
     // --- FINAL_ASSET_COPY .. FINAL_INDEX_VERIFY ---------------------------
     stage = STAGE.FINAL_ASSET_COPY;
+    assertActive();
     await reportEvent(stage, 'started', 'מעלה את קובצי הריליס; index.html יעלה אחרון.');
     const verifiedBuffer = [];
     const flushVerified = async () => {

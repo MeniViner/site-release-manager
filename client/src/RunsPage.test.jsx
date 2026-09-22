@@ -6,7 +6,7 @@ import RunsPage from './RunsPage.jsx';
 import { api } from './api.js';
 
 function runFixture(state) {
-  return {
+  const run = {
     id: `run-${state.toLowerCase()}`,
     state,
     storedState: state,
@@ -32,6 +32,16 @@ function runFixture(state) {
     logs: [],
     stageSummary: [],
   };
+  if (state === 'FAILED') {
+    run.failureInfo = {
+      stage: 'CREATE_FOLDERS',
+      stageLabel: 'יצירת תיקיות',
+      message: 'raw payload: secret diagnostic text',
+      errorClass: 'PATH_COLLISION',
+      details: { diagnosticMessage: 'raw payload: secret diagnostic text' },
+    };
+  }
+  return run;
 }
 
 async function renderRun(state) {
@@ -58,5 +68,7 @@ describe('terminal Run actions', () => {
 
     const diagnostics = screen.getByRole('link', { name: 'אבחון SharePoint' });
     expect(diagnostics).toHaveClass('run-action-diagnostic');
+    expect(screen.getAllByText('נמצא ב-SharePoint אובייקט אחר שאינו תואם לנתיב הפריסה.')).toHaveLength(2);
+    expect(screen.queryByText(/secret diagnostic text/)).not.toBeInTheDocument();
   });
 });

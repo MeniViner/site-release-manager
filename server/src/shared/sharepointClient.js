@@ -43,6 +43,229 @@ function assertServerRelativePath(value, label = 'path') {
 
 const cacheBustSuffix = (url, token) => `${url}${url.includes('?') ? '&' : '?'}srmCacheBust=${token}`;
 
+function unwrapODataRecord(payload) {
+  if (payload && typeof payload === 'object' && Object.prototype.hasOwnProperty.call(payload, 'd')) {
+    const value = payload.d;
+    if (Array.isArray(value)) return value.length === 1 ? value[0] : null;
+    return value && typeof value === 'object' ? value : null;
+  }
+  const value = payload?.value ?? payload;
+  if (Array.isArray(value)) return value.length === 1 ? value[0] : null;
+  return value && typeof value === 'object' ? value : null;
+}
+
+function unwrapODataCollection(payload) {
+  const value = payload?.d?.results ?? payload?.value ?? payload?.results ?? payload;
+  return Array.isArray(value) ? value : [];
+}
+
+const positiveInteger = (value) => {
+  const numeric = Number(value);
+  return Number.isInteger(numeric) && numeric > 0 ? numeric : null;
+};
+
+const listIdFrom = (record) => String(
+  record?.ParentList?.Id
+  ?? record?.List?.Id
+  ?? record?.ParentListId
+  ?? record?.ListId
+  ?? '',
+).replace(/[{}]/g, '').toLowerCase();
+
+const explicitExists = (record) => (
+  typeof record?.Exists === 'boolean' ? record.Exists : null
+);
+
+const folderPathFrom = (record) => normalizePath(record?.ServerRelativeUrl || '');
+
+function classifyFolderProbe({
+  status,
+  payload,
+  expectedPath,
+  libraryRoot = false,
+  probeKind = libraryRoot ? 'library-root' : 'list-item',
+} = {}) {
+  const numericStatus = Number(status || 0);
+  const expected = normalizePath(expectedPath);
+  if (numericStatus === 401 || numericStatus === 403) {
+    return {
+      ready: false,
+      exists: false,
+      authorization: true,
+      reason: 'FOLDER_PROBE_AUTHORIZATION_FAILED',
+      expectedPath: expected,
+      status: numericStatus,
+      errorClass: numericStatus === 401 ? SP_ERROR.AUTH_FAILURE : SP_ERROR.PERMISSION_DENIED,
+    };
+  }
+  if (numericStatus === 404) {
+    return { ready: false, exists: false, reason: 'FOLDER_NOT_FOUND', expectedPath: expected, status: numericStatus };
+  }
+  if (numericStatus < 200 || numericStatus >= 300) {
+    return { ready: false, exists: false, reason: 'FOLDER_PROBE_FAILED', expectedPath: expected, status: numericStatus };
+  }
+
+  const record = unwrapODataRecord(payload);
+  if (!record) {
+    return { ready: false, exists: false, reason: 'FOLDER_METADATA_UNRECOGNIZED', expectedPath: expected, status: numericStatus };
+  }
+  if (libraryRoot) {
+    const actualPath = normalizePath(record?.RootFolder?.ServerRelativeUrl);
+    const id = String(record?.Id || '');
+    const baseTemplate = Number(record?.BaseTemplate);
+    const exists = Boolean(id || actualPath || record?.Title);
+    let reason = 'LIBRARY_ROOT_READY';
+    if (!id) reason = 'LIBRARY_ID_UNCONFIRMED';
+    else if (baseTemplate !== 101) reason = 'LIBRARY_NOT_DOCUMENT_LIBRARY';
+    else if (!samePath(actualPath, expected)) reason = 'LIBRARY_ROOT_PATH_MISMATCH';
+    return {
+      ready: reason === 'LIBRARY_ROOT_READY',
+      exists,
+      reason,
+      expectedPath: expected,
+      actualPath,
+      status: numericStatus,
+      id,
+      baseTemplate: Number.isFinite(baseTemplate) ? baseTemplate : null,
+    };
+  }
+
+  const explicitlyMissing = record.Exists === false;
+  const id = positiveInteger(record.Id);
+  const objectType = Number(record.FileSystemObjectType);
+  const actualPath = normalizePath(record.FileRef ?? record.Folder?.ServerRelativeUrl ?? record.ServerRelativeUrl);
+  const exists = explicitlyMissing ? false : Boolean(id || record.Exists === true || actualPath);
+  let reason = 'LIST_BACKED_FOLDER_READY';
+  if (explicitlyMissing) reason = 'FOLDER_NOT_FOUND';
+  else if (!actualPath) reason = 'FOLDER_METADATA_UNRECOGNIZED';
+  else if (!samePath(actualPath, expected)) reason = 'FOLDER_PATH_MISMATCH';
+  else if (probeKind === 'folder-object' && !id) reason = 'FOLDER_OBJECT_VISIBLE_WAITING_FOR_LIST_ITEM';
+  else if (!id) reason = 'FOLDER_LIST_ITEM_ID_UNCONFIRMED';
+  else if (!Number.isFinite(objectType)) reason = 'FOLDER_OBJECT_TYPE_UNCONFIRMED';
+  else if (objectType !== 1) reason = 'FOLDER_NAME_COLLISION';
+  return {
+    ready: reason === 'LIST_BACKED_FOLDER_READY',
+    exists,
+    reason,
+    expectedPath: expected,
+    actualPath,
+    status: numericStatus,
+    id,
+    fileSystemObjectType: Number.isFinite(objectType) ? objectType : null,
+    parentPath: normalizePath(record.FileDirRef),
+    ownerListId: listIdFrom(record),
+  };
+}
+
+function classifyFolderReadiness({
+  expectedPath,
+  expectedParentPath,
+  expectedLibraryId,
+  listItem,
+  folder,
+  parentEntries = [],
+  listItemMissing = false,
+  folderMissing = false,
+} = {}) {
+  const expected = normalizePath(expectedPath);
+  const expectedParent = normalizePath(expectedParentPath);
+  const expectedListId = String(expectedLibraryId || '').replace(/[{}]/g, '').toLowerCase();
+  const item = unwrapODataRecord(listItem);
+  const folderRecord = unwrapODataRecord(folder);
+  const entries = unwrapODataCollection(parentEntries);
+  const actualFileRef = normalizePath(item?.FileRef || '');
+  const actualFolderRef = normalizePath(item?.Folder?.ServerRelativeUrl || '');
+  const folderObjectPath = folderPathFrom(folderRecord);
+
+  if (explicitExists(folderRecord) === false) {
+    return { ready: false, exists: false, contradiction: Boolean(item), reason: 'FOLDER_NOT_FOUND', expectedPath: expected };
+  }
+  if (!item) {
+    if (folderMissing && listItemMissing) {
+      return { ready: false, exists: false, reason: 'FOLDER_NOT_FOUND', expectedPath: expected };
+    }
+    return {
+      ready: false,
+      exists: Boolean(folderRecord) && !folderMissing,
+      unknown: !folderRecord && !folderMissing,
+      reason: folderRecord ? 'FOLDER_OBJECT_VISIBLE_WAITING_FOR_LIST_ITEM' : 'FOLDER_METADATA_UNRECOGNIZED',
+      expectedPath: expected,
+    };
+  }
+
+  const id = positiveInteger(item.Id);
+  if (!id) return { ready: false, exists: true, reason: 'FOLDER_LIST_ITEM_ID_UNCONFIRMED', expectedPath: expected };
+  const itemObjectType = Number(item.FileSystemObjectType);
+  if (!Number.isFinite(itemObjectType)) {
+    return { ready: false, exists: true, reason: 'FOLDER_OBJECT_TYPE_UNCONFIRMED', expectedPath: expected, listItemId: id };
+  }
+  if (itemObjectType !== 1) {
+    return { ready: false, exists: true, contradiction: true, reason: 'FOLDER_NAME_COLLISION', expectedPath: expected, listItemId: id };
+  }
+  if (!actualFileRef) return { ready: false, exists: true, reason: 'FOLDER_FILE_REF_MISSING', expectedPath: expected, listItemId: id };
+  if (!samePath(actualFileRef, expected)) {
+    return { ready: false, exists: true, contradiction: true, reason: 'FOLDER_PATH_MISMATCH', expectedPath: expected, actualPath: actualFileRef, listItemId: id };
+  }
+  if (!actualFolderRef) return { ready: false, exists: true, reason: 'FOLDER_FOLDER_REF_MISSING', expectedPath: expected, listItemId: id };
+  if (!samePath(actualFolderRef, expected)) {
+    return { ready: false, exists: true, contradiction: true, reason: 'FOLDER_PATH_MISMATCH', expectedPath: expected, actualPath: actualFolderRef, listItemId: id };
+  }
+
+  const actualListId = listIdFrom(item);
+  if (!actualListId) return { ready: false, exists: true, reason: 'FOLDER_LIBRARY_ID_MISSING', expectedPath: expected, listItemId: id };
+  if (expectedListId && actualListId !== expectedListId) {
+    return { ready: false, exists: true, contradiction: true, reason: 'FOLDER_OWNER_LIBRARY_MISMATCH', expectedPath: expected, expectedLibraryId: expectedListId, actualLibraryId: actualListId, listItemId: id };
+  }
+
+  if (!folderRecord || explicitExists(folderRecord) !== true) {
+    return { ready: false, exists: true, reason: 'FOLDER_OBJECT_NOT_CONFIRMED', expectedPath: expected, listItemId: id };
+  }
+  if (!folderObjectPath || !samePath(folderObjectPath, expected)) {
+    return { ready: false, exists: true, contradiction: true, reason: 'FOLDER_PATH_MISMATCH', expectedPath: expected, actualPath: folderObjectPath, listItemId: id };
+  }
+
+  const matchingEntries = entries.filter((entry) => samePath(folderPathFrom(entry), expected));
+  if (!matchingEntries.length) {
+    return { ready: false, exists: true, reason: 'FOLDER_PARENT_ENUMERATION_MISMATCH', expectedPath: expected, expectedParentPath: expectedParent, listItemId: id };
+  }
+  if (matchingEntries.length !== 1) {
+    return { ready: false, exists: true, contradiction: true, reason: 'FOLDER_PARENT_ENUMERATION_MISMATCH', expectedPath: expected, listItemId: id };
+  }
+  const parentEntry = matchingEntries[0];
+  if (explicitExists(parentEntry) === false) {
+    return { ready: false, exists: false, contradiction: true, reason: 'FOLDER_PARENT_ENUMERATION_MISMATCH', expectedPath: expected, listItemId: id };
+  }
+  const entryItem = unwrapODataRecord(parentEntry.ListItemAllFields);
+  if (!entryItem || positiveInteger(entryItem.Id) !== id) {
+    return { ready: false, exists: true, contradiction: true, reason: 'FOLDER_PARENT_ENUMERATION_MISMATCH', expectedPath: expected, listItemId: id };
+  }
+  if (Number(entryItem.FileSystemObjectType) !== 1) {
+    return { ready: false, exists: true, contradiction: true, reason: 'FOLDER_PARENT_ENUMERATION_MISMATCH', expectedPath: expected, listItemId: id };
+  }
+  if (!samePath(entryItem.FileRef, expected)) {
+    return { ready: false, exists: true, contradiction: true, reason: 'FOLDER_PARENT_ENUMERATION_MISMATCH', expectedPath: expected, actualPath: normalizePath(entryItem.FileRef), listItemId: id };
+  }
+  const parentListId = listIdFrom(entryItem);
+  if (!parentListId || (expectedListId && parentListId !== expectedListId)) {
+    return { ready: false, exists: true, contradiction: true, reason: 'FOLDER_OWNER_LIBRARY_MISMATCH', expectedPath: expected, expectedLibraryId: expectedListId, actualLibraryId: parentListId, listItemId: id };
+  }
+
+  const actualParent = expected.slice(0, expected.lastIndexOf('/'));
+  if (!samePath(actualParent, expectedParent)) {
+    return { ready: false, exists: true, contradiction: true, reason: 'FOLDER_PARENT_MISMATCH', expectedPath: expected, expectedParentPath: expectedParent, actualParentPath: actualParent, listItemId: id };
+  }
+  return {
+    ready: true,
+    exists: true,
+    reason: 'LIST_BACKED_FOLDER_READY',
+    expectedPath: expected,
+    actualPath: actualFileRef,
+    parentPath: expectedParent,
+    libraryId: actualListId,
+    listItemId: id,
+  };
+}
+
 /**
  * @param {object} options
  * @param {string} options.webUrl        absolute SharePoint web URL, no trailing slash
@@ -134,7 +357,7 @@ function createSharePointClient(options = {}) {
       headers: { Accept: ODATA_VERBOSE, 'Content-Type': ODATA_VERBOSE },
     }, { operation: 'contextinfo', target: base });
     const data = await result.response.json();
-    const digest = data?.d?.GetContextWebInformation?.FormDigestValue;
+    const digest = unwrapODataRecord(data)?.GetContextWebInformation?.FormDigestValue;
     if (!digest) {
       throw sharePointError(classifySharePointError({
         httpStatus: result.status,
@@ -156,7 +379,7 @@ function createSharePointClient(options = {}) {
     const result = await raw(url, { headers: { Accept: ODATA_VERBOSE } }, { operation: `read-library:${title}`, target: title });
     if (result.ok) {
       const data = await result.response.json();
-      return { found: true, library: normalizeLibrary(data?.d), normalized: null };
+      return { found: true, library: normalizeLibrary(unwrapODataRecord(data)), normalized: null };
     }
     // MISSING is the normal "library does not exist yet" answer and arrives as
     // 404 or as 400 + FileNotFound on this farm.
@@ -183,7 +406,12 @@ function createSharePointClient(options = {}) {
    *
    * Mirrors Site Builder's `classifySharePointFolderProbe`.
    */
-  async function probeFolder(folderPath, { expectLibraryRoot = false, libraryTitle = '' } = {}) {
+  async function probeFolder(folderPath, {
+    expectLibraryRoot = false,
+    libraryTitle = '',
+    libraryId = '',
+    parentPath = '',
+  } = {}) {
     assertServerRelativePath(folderPath, 'folder');
 
     if (expectLibraryRoot) {
@@ -191,103 +419,131 @@ function createSharePointClient(options = {}) {
       const { found, library } = await readLibraryByTitle(title);
       if (!found) return { ready: false, reason: 'FOLDER_NOT_FOUND', exists: false, library: null };
       if (Number(library.baseTemplate) !== 101) {
-        return { ready: false, reason: 'LIBRARY_EXISTS_NOT_DOCUMENT_LIBRARY', exists: true, library };
+        return { ready: false, reason: 'LIBRARY_EXISTS_NOT_DOCUMENT_LIBRARY', exists: true, contradiction: true, library };
       }
       if (!library.id) return { ready: false, reason: 'LIBRARY_ROOT_NOT_READY', exists: true, library };
-      if (
-        normalizePath(library.rootFolder).toLowerCase() !==
-        normalizePath(folderPath).toLowerCase()
-      ) {
-        return { ready: false, reason: 'LIBRARY_ROOT_MISMATCH', exists: true, library };
+      if (libraryId && normalizeListId(library.id) !== normalizeListId(libraryId)) {
+        return { ready: false, reason: 'LIBRARY_ROOT_LIST_ID_MISMATCH', exists: true, contradiction: true, library };
+      }
+      if (!samePath(library.rootFolder, folderPath)) {
+        return { ready: false, reason: 'LIBRARY_ROOT_MISMATCH', exists: true, contradiction: true, library };
       }
       return { ready: true, reason: 'LIBRARY_ROOT_READY', exists: true, library };
     }
 
-    const url = `${base}/_api/web/GetFolderByServerRelativeUrl('${escapeODataPath(folderPath)}')/ListItemAllFields`
-      + '?$select=Id,FileSystemObjectType,FileRef,Folder/ServerRelativeUrl&$expand=Folder';
-    const result = await raw(url, { headers: { Accept: ODATA_VERBOSE } }, { operation: `probe-folder:${folderPath}`, target: folderPath });
+    const expectedParent = normalizePath(parentPath || folderPath.slice(0, folderPath.lastIndexOf('/')));
+    const itemUrl = `${base}/_api/web/GetFolderByServerRelativeUrl('${escapeODataPath(folderPath)}')/ListItemAllFields`
+      + '?$select=Id,FileSystemObjectType,FileRef,Folder/ServerRelativeUrl,ParentList/Id&$expand=Folder,ParentList';
+    const folderUrl = `${base}/_api/web/GetFolderByServerRelativeUrl('${escapeODataPath(folderPath)}')`
+      + '?$select=Exists,Name,ServerRelativeUrl';
+    const parentBaseUrl = `${base}/_api/web/GetFolderByServerRelativeUrl('${escapeODataPath(expectedParent)}')/Folders`;
+    const parentUrl = parentBaseUrl
+      + '?$select=Exists,Name,ServerRelativeUrl,ListItemAllFields/Id,ListItemAllFields/FileSystemObjectType,ListItemAllFields/FileRef,ListItemAllFields/ParentList/Id'
+      + '&$expand=ListItemAllFields,ListItemAllFields/ParentList';
+    const parentFallbackUrl = `${parentBaseUrl}?$select=Exists,Name,ServerRelativeUrl`;
 
-    if (!result.ok) {
-      if (result.normalized.errorClass === SP_ERROR.MISSING) {
-        return { ready: false, reason: 'FOLDER_NOT_FOUND', exists: false };
+    const readProbe = async (url, operation) => {
+      const result = await raw(url, { headers: { Accept: ODATA_VERBOSE } }, { operation, target: folderPath });
+      if (!result.ok && [SP_ERROR.AUTH_FAILURE, SP_ERROR.PERMISSION_DENIED].includes(result.normalized.errorClass)) {
+        return {
+          missing: false,
+          authorization: true,
+          status: result.status,
+          errorClass: result.normalized.errorClass,
+          payload: null,
+        };
       }
-      throw sharePointError(result.normalized);
-    }
-
-    const data = await result.response.json();
-    const item = data?.d ?? data ?? {};
-
-    const id = Number(item.Id);
-    const fsType = Number(item.FileSystemObjectType);
-
-    const fileRef = normalizePath(item.FileRef || '');
-    const folderRef = normalizePath(item.Folder?.ServerRelativeUrl || '');
-
-    if (!Number.isInteger(id) || id <= 0) {
+      if (!result.ok && result.normalized.errorClass !== SP_ERROR.MISSING) throw sharePointError(result.normalized);
       return {
-        ready: false,
-        reason: 'FOLDER_OBJECT_VISIBLE_WAITING_FOR_LIST_ITEM',
-        exists: true
+        missing: !result.ok,
+        payload: result.ok ? await result.response.json() : null,
       };
-    }
-
-    if (fsType !== 1) {
-      return {
-        ready: false,
-        reason: 'FOLDER_METADATA_UNRECOGNIZED',
-        exists: true
-      };
-    }
-
-    return {
-      ready: true,
-      reason: 'LIST_BACKED_FOLDER_READY',
-      exists: true,
-      listItemId: id,
-      fileRef,
-      folderRef
     };
+
+    const itemRead = await readProbe(itemUrl, `probe-folder-list-item:${folderPath}`);
+    if (itemRead.authorization) {
+      return {
+        ready: false,
+        exists: false,
+        authorization: true,
+        reason: 'FOLDER_PROBE_AUTHORIZATION_FAILED',
+        status: itemRead.status,
+        errorClass: itemRead.errorClass,
+      };
+    }
+    const folderRead = await readProbe(folderUrl, `probe-folder-object:${folderPath}`);
+    if (folderRead.authorization) {
+      return {
+        ready: false,
+        exists: false,
+        authorization: true,
+        reason: 'FOLDER_PROBE_AUTHORIZATION_FAILED',
+        status: folderRead.status,
+        errorClass: folderRead.errorClass,
+      };
+    }
+    if (itemRead.missing && folderRead.missing) {
+      return { ready: false, reason: 'FOLDER_NOT_FOUND', exists: false, expectedPath: normalizePath(folderPath) };
+    }
+    let parentRead;
+    try {
+      parentRead = await readProbe(parentUrl, `probe-folder-parent-enumeration:${expectedParent}`);
+    } catch (error) {
+      const errorClass = error?.sharePoint?.errorClass || error?.errorClass;
+      if (error?.httpStatus !== 400 || errorClass !== SP_ERROR.TRANSIENT_NOT_READY) throw error;
+      parentRead = await readProbe(parentFallbackUrl, `probe-folder-parent-enumeration-fallback:${expectedParent}`);
+      if (!parentRead.missing) {
+        const item = unwrapODataRecord(itemRead.payload);
+        parentRead.payload = {
+          value: unwrapODataCollection(parentRead.payload).map((entry) => (
+            samePath(entry?.ServerRelativeUrl, folderPath)
+              ? { ...entry, ListItemAllFields: item }
+              : entry
+          )),
+        };
+      }
+    }
+    if (parentRead.authorization) {
+      return {
+        ready: false,
+        exists: false,
+        authorization: true,
+        reason: 'FOLDER_PROBE_AUTHORIZATION_FAILED',
+        status: parentRead.status,
+        errorClass: parentRead.errorClass,
+      };
+    }
+    return classifyFolderReadiness({
+      expectedPath: folderPath,
+      expectedParentPath: expectedParent,
+      expectedLibraryId: libraryId,
+      listItem: itemRead.payload,
+      folder: folderRead.payload,
+      parentEntries: parentRead.payload,
+      listItemMissing: itemRead.missing,
+      folderMissing: folderRead.missing,
+    });
   }
 
-  /**
-   * Create a folder. Two request shapes are tried because this farm accepts one
-   * or the other depending on where the parent lives.
-   */
+  /** Compatibility REST creator; production uses the list-bound JSOM adapter. */
   async function createFolder(folderPath) {
     assertServerRelativePath(folderPath, 'folder');
     const parent = folderPath.slice(0, folderPath.lastIndexOf('/'));
     const leaf = folderPath.slice(folderPath.lastIndexOf('/') + 1);
 
-    const candidates = [
-      {
-        url: `${base}/_api/web/GetFolderByServerRelativeUrl('${escapeODataPath(parent)}')/Folders/add('${escapeODataPath(leaf)}')`,
-        init: { method: 'POST', headers: { Accept: ODATA_VERBOSE } },
-      },
-      {
-        url: `${base}/_api/web/folders`,
-        init: {
-          method: 'POST',
-          headers: { Accept: ODATA_VERBOSE, 'Content-Type': ODATA_VERBOSE },
-          body: JSON.stringify({ __metadata: { type: 'SP.Folder' }, ServerRelativeUrl: folderPath }),
-        },
-      },
-    ];
-
-    let lastNormalized = null;
-    for (const candidate of candidates) {
-      const result = await raw(candidate.url, candidate.init, { operation: `create-folder:${folderPath}`, target: folderPath });
-      if (result.ok) return { created: true, alreadyExisted: false, normalized: null };
-      lastNormalized = result.normalized;
-      // "Already exists" is success: another attempt in this same run, or a
-      // previous run, already created it. Never delete and recreate.
-      if (result.normalized.errorClass === SP_ERROR.ALREADY_EXISTS) {
-        return { created: false, alreadyExisted: true, normalized: result.normalized };
-      }
-      if (result.normalized.errorClass === SP_ERROR.PERMISSION_DENIED || result.normalized.errorClass === SP_ERROR.AUTH_FAILURE) {
-        throw sharePointError(result.normalized);
-      }
+    const url = `${base}/_api/web/GetFolderByServerRelativeUrl('${escapeODataPath(parent)}')/Folders/add('${escapeODataPath(leaf)}')`;
+    const result = await raw(url, { method: 'POST', headers: { Accept: ODATA_VERBOSE } }, {
+      operation: `create-folder:${folderPath}`,
+      target: folderPath,
+    });
+    if (result.ok) return { created: true, alreadyExisted: false, normalized: null };
+    if (result.normalized.errorClass === SP_ERROR.ALREADY_EXISTS) {
+      return { created: false, alreadyExisted: true, normalized: result.normalized };
     }
-    return { created: false, alreadyExisted: false, normalized: lastNormalized };
+    if (result.normalized.errorClass === SP_ERROR.PERMISSION_DENIED || result.normalized.errorClass === SP_ERROR.AUTH_FAILURE) {
+      throw sharePointError(result.normalized);
+    }
+    return { created: false, alreadyExisted: false, normalized: result.normalized };
   }
 
   /**
@@ -355,8 +611,24 @@ function normalizeLibrary(record) {
 }
 
 function normalizePath(value) {
-  return String(value ?? '').replace(/\/+$/, '');
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  let path = raw;
+  if (/^https?:\/\//i.test(raw)) {
+    try { path = new URL(raw).pathname; } catch { return ''; }
+  }
+  try { path = decodeURIComponent(path); } catch { /* Preserve already-decoded percent characters. */ }
+  const normalized = `/${path.replace(/^\/+|\/+$/g, '')}`.replace(/\/{2,}/g, '/');
+  return normalized === '/' ? '' : normalized.normalize('NFC');
 }
+
+function samePath(left, right) {
+  const a = normalizePath(left);
+  const b = normalizePath(right);
+  return Boolean(a && b && a.toLowerCase() === b.toLowerCase());
+}
+
+const normalizeListId = (value) => String(value || '').replace(/[{}]/g, '').toLowerCase();
 
 async function safeText(response) {
   try { return (await response.text()).slice(0, 1500); } catch { return ''; }
@@ -367,6 +639,11 @@ module.exports = {
   assertServerRelativePath: assertServerRelativePath,
   createSharePointClient: createSharePointClient,
   normalizePath: normalizePath,
+  samePath: samePath,
+  unwrapODataRecord: unwrapODataRecord,
+  unwrapODataCollection: unwrapODataCollection,
+  classifyFolderReadiness: classifyFolderReadiness,
+  classifyFolderProbe: classifyFolderProbe,
   ODATA_VERBOSE: ODATA_VERBOSE,
   SEED_CONTENT_TYPE: SEED_CONTENT_TYPE,
   ASSET_CONTENT_TYPE: ASSET_CONTENT_TYPE,

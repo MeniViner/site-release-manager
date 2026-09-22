@@ -10,6 +10,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { runDeploymentPipeline } = require("../src/shared/deploymentPipeline.js");
+const { createSharePointClient } = require("../src/shared/sharepointClient.js");
 const { STAGE } = require("../src/shared/deploymentStages.js");
 const { buildSiteIdentity, buildTxtSeedPlan, requiredLibraries, requiredFolders } = require("../src/shared/siteRuntime.js");
 const { RUNTIME_BOOTSTRAP_FILE } = require("../src/shared/universalManifest.js");
@@ -72,12 +73,16 @@ function createFakeApi(identity, release) {
     storageBackend: identity.storageBackend,
     host: identity.host,
     siteCode: identity.siteCode,
+    siteRoot: identity.siteRoot,
+    siteApiRoot: identity.siteApiRoot,
     siteDbFolder: identity.siteDbFolder,
     siteDbRoot: identity.siteDbRoot,
     usersDbFolder: identity.usersDbFolder,
     usersDbRoot: identity.usersDbRoot,
     siteAssetsFolder: identity.siteAssetsFolder,
     siteAssetsRoot: identity.siteAssetsRoot,
+    imagesFolder: identity.imagesFolder,
+    imagesRoot: identity.imagesRoot,
     widgetsDbTarget: identity.widgetsDbTarget,
     targetDistPath: identity.targetDistPath,
     finalAppUrl: identity.finalAppUrl,
@@ -93,9 +98,12 @@ function createFakeApi(identity, release) {
     storageBackend: identity.storageBackend,
     host: identity.host,
     siteCode: identity.siteCode,
+    siteRoot: identity.siteRoot,
+    siteApiRoot: identity.siteApiRoot,
     siteDbRoot: identity.siteDbRoot,
     usersDbRoot: identity.usersDbRoot,
     siteAssetsRoot: identity.siteAssetsRoot,
+    imagesRoot: identity.imagesRoot,
     targetDistPath: identity.targetDistPath,
     finalAppUrl: identity.finalAppUrl,
     deploymentJobId: 'job-1',
@@ -134,7 +142,7 @@ function createFakeApi(identity, release) {
       runtimeBootstrapPath: `${identity.targetDistPath}/${RUNTIME_BOOTSTRAP_FILE}`,
       runtimeConfigUrl: `${identity.siteBaseUrl}/sitebuilder-runtime-config.json`,
       deploymentMetadataUrl: `${identity.siteBaseUrl}/sitebuilder-deployment.json`,
-      runtimeBootstrapUrl: `${identity.siteBaseUrl}/${RUNTIME_BOOTSTRAP_FILE}`,
+      runtimeBootstrapUrl: new URL(RUNTIME_BOOTSTRAP_FILE, identity.finalAppUrl).toString(),
       expected: runtimeConfig,
     },
     manifest: { files: deploymentFiles, uploadOrder: release.uploadOrder },
@@ -196,6 +204,7 @@ function pipelineOptions(farm, api, release, overrides = {}) {
     fetchImpl: farm.fetchImpl,
     sha256: async (bytes) => sha256Hex(bytes),
     createLibraryExact: () => farm.createLibraryExact,
+    createFolderExact: () => farm.createFolderExact,
     hostname: 'portal.army.idf',
     clientId: 'worker-a',
     downloadFile: async (file) => api.bytesByPath.get(file.path),
@@ -290,6 +299,75 @@ test('an EXISTING site update preserves TXT data and does not recreate libraries
   assert.ok(firstBackupWrite >= 0 && firstBackupWrite < firstReleaseWrite, 'backup must run before release mutation');
 });
 
+test('an existing-site universal deployment preserves TXT, media, backups and unrelated dist files', async () => {
+  const identity = buildSiteIdentity({
+    host: 'portal.army.idf',
+    siteCode: 'schedule',
+    siteDbFolder: 'נתוני מבצעים',
+    usersDbFolder: 'משתמשי מבצעים',
+  });
+  const farm = createFakeSharePoint({ webUrl: identity.sharePointSiteUrl, notReadyReads: 1 });
+  farm.state.folders.set(identity.siteRoot, { listItemId: 1 });
+  for (const library of requiredLibraries(identity)) farm.addLibrary(library.title, library.rootFolder);
+  for (const folder of requiredFolders(identity, ['assets'])) farm.addFolder(folder);
+
+  const protectedFiles = new Map();
+  for (const source of buildTxtSeedPlan(identity)) {
+    const body = `protected-${source.fileName}`;
+    farm.addFile(source.path, body);
+    protectedFiles.set(source.path, body);
+  }
+  const mediaPath = `${identity.imagesRoot}/תמונה קיימת.jpg`;
+  const oldBackupPath = `${identity.siteAssetsRoot}/Backups/backup-2026-01-01T00-00-00`;
+  const oldBackupFile = `${oldBackupPath}/users_data.txt`;
+  const unrelatedDistFile = `${identity.targetDistPath}/keep-me.txt`;
+  farm.addFolder(`${identity.siteAssetsRoot}/Backups`);
+  farm.addFolder(oldBackupPath);
+  farm.addFile(mediaPath, 'existing-media');
+  farm.addFile(oldBackupFile, 'existing-backup');
+  farm.addFile(unrelatedDistFile, 'unrelated-dist');
+  protectedFiles.set(mediaPath, 'existing-media');
+  protectedFiles.set(oldBackupFile, 'existing-backup');
+  protectedFiles.set(unrelatedDistFile, 'unrelated-dist');
+
+  const release = releaseFiles();
+  const api = createFakeApi(identity, release);
+  const result = await runDeploymentPipeline(pipelineOptions(farm, api, release));
+
+  assert.equal(result.ok, true);
+  assert.equal(result.seeds.preserved, 10);
+  assert.equal(result.seeds.created, 0);
+  for (const [filePath, expected] of protectedFiles) {
+    assert.equal(Buffer.from(farm.state.files.get(filePath).bytes).toString('utf8'), expected, `protected file changed: ${filePath}`);
+  }
+  for (const file of api.descriptor.manifest.files) {
+    assert.ok(farm.state.files.has(`${identity.targetDistPath}/${file.path}`), `release file missing: ${file.path}`);
+  }
+  const runtime = JSON.parse(Buffer.from(farm.state.files.get(`${identity.targetDistPath}/sitebuilder-runtime-config.json`).bytes).toString('utf8'));
+  for (const field of ['siteApiRoot', 'siteDbRoot', 'usersDbRoot', 'siteAssetsRoot', 'imagesRoot', 'targetDistPath']) {
+    assert.equal(runtime[field], identity[field], `runtime ${field} drifted`);
+  }
+  const verifiedLibraries = new Map(result.libraries.map((library) => [library.rootFolder, library]));
+  const client = createSharePointClient({
+    webUrl: identity.sharePointSiteUrl,
+    fetchImpl: farm.fetchImpl,
+    getDigest: async () => 'D',
+    nowToken: () => 'universal-existing',
+  });
+  for (const folderPath of api.descriptor.folders) {
+    const owner = result.libraries.find((library) => folderPath === library.rootFolder || folderPath.startsWith(`${library.rootFolder}/`));
+    const probe = await client.probeFolder(folderPath, {
+      expectLibraryRoot: verifiedLibraries.has(folderPath),
+      libraryTitle: owner.title,
+      libraryId: owner.id,
+      parentPath: folderPath.slice(0, folderPath.lastIndexOf('/')),
+    });
+    assert.equal(probe.ready, true, `${folderPath} is not genuinely ready: ${probe.reason}`);
+  }
+  assert.equal(farm.state.uploadSequence.at(-1), `${identity.targetDistPath}/index.html`);
+  assert.equal(api.state.completed.verification.runtimeConfig.targetDistPath, identity.targetDistPath);
+});
+
 test('deploying target A then target B from the same release leaks no identity', async () => {
   const release = releaseFiles();
   const farm = createFakeSharePoint();
@@ -314,6 +392,46 @@ test('deploying target A then target B from the same release leaks no identity',
   assert.notEqual(runtimeA.targetDistPath, runtimeB.targetDistPath);
 });
 
+test('one universal artifact deploys independently to two sites with custom libraries', async () => {
+  const release = releaseFiles();
+  const identities = [
+    buildSiteIdentity({
+      host: 'portal.army.idf',
+      siteCode: 'alpha',
+      siteDbFolder: 'Alpha Data',
+      usersDbFolder: 'Alpha Users',
+    }),
+    buildSiteIdentity({
+      host: 'portal.army.idf',
+      siteCode: 'beta',
+      siteDbFolder: 'Beta Data',
+      usersDbFolder: 'Beta Users',
+    }),
+  ];
+  const deployed = [];
+  for (const identity of identities) {
+    const farm = createFakeSharePoint({ webUrl: identity.sharePointSiteUrl });
+    farm.state.folders.set(identity.siteRoot, { listItemId: 1 });
+    const api = createFakeApi(identity, release);
+    // eslint-disable-next-line no-await-in-loop
+    const result = await runDeploymentPipeline(pipelineOptions(farm, api, release, {
+      hostname: identity.host,
+      clientId: `worker-${identity.siteCode}`,
+    }));
+    const runtime = JSON.parse(Buffer.from(farm.state.files.get(`${identity.targetDistPath}/sitebuilder-runtime-config.json`).bytes).toString('utf8'));
+    deployed.push({ identity, result, runtime, farm });
+  }
+
+  for (const { identity, result, runtime, farm } of deployed) {
+    assert.equal(result.finalUrl, identity.finalAppUrl);
+    assert.equal(runtime.siteCode, identity.siteCode);
+    assert.equal(runtime.siteDbRoot, identity.siteDbRoot);
+    assert.equal(runtime.usersDbRoot, identity.usersDbRoot);
+    assert.equal(farm.state.uploadSequence.at(-1), `${identity.targetDistPath}/index.html`);
+  }
+  assert.notEqual(deployed[0].runtime.targetDistPath, deployed[1].runtime.targetDistPath);
+});
+
 test('a second worker without the lease cannot deploy the same job', async () => {
   const farm = createFakeSharePoint();
   farm.state.folders.set(FRESH.siteRoot, { listItemId: 1 });
@@ -331,6 +449,28 @@ test('a second worker without the lease cannot deploy the same job', async () =>
     },
   );
   assert.equal(farm.state.uploadSequence.length, 0, 'a worker without the lease must not write to SharePoint');
+});
+
+test('cancellation releases the lease and prevents SharePoint mutation', async () => {
+  const farm = createFakeSharePoint();
+  farm.state.folders.set(FRESH.siteRoot, { listItemId: 1 });
+  const release = releaseFiles();
+  const api = createFakeApi(FRESH, release);
+  const controller = new AbortController();
+  controller.abort();
+
+  await assert.rejects(
+    runDeploymentPipeline(pipelineOptions(farm, api, release, { signal: controller.signal })),
+    (error) => {
+      assert.equal(error.cancelled, true);
+      return true;
+    },
+  );
+  assert.equal(farm.state.lists.size, 0);
+  assert.equal(farm.state.folderCreateCalls.length, 0);
+  assert.equal(farm.state.uploadSequence.length, 0);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(api.state.lease, null);
 });
 
 test('a run resumes without re-uploading assets already verified at the target', async () => {

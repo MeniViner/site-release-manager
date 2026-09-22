@@ -20,7 +20,7 @@ function backupOptions(farm, identity) {
     sourceFiles: buildTxtSeedPlan(identity),
     siteAssetsRoot: identity.siteAssetsRoot,
     host: identity.host,
-    libraryRoots: requiredLibraries(identity).map((library) => library.rootFolder),
+    libraries: [...farm.state.lists.values()],
     sha256: async (bytes) => sha256Hex(bytes),
     retry: RETRY,
     dateNow: () => FIXED_NOW,

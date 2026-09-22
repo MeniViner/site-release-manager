@@ -87,7 +87,10 @@ test('a permission failure while creating folders surfaces as PERMISSION_DENIED'
   });
 
   await assert.rejects(
-    ensureFolderTree(client, [`${IDENTITY.siteDbRoot}/siteAssets`], { retry }),
+    ensureFolderTree(client, [`${IDENTITY.siteDbRoot}/siteAssets`], {
+      retry,
+      libraries: [{ id: 'site-db-list', title: IDENTITY.siteDbFolder, rootFolder: IDENTITY.siteDbRoot }],
+    }),
     (error) => {
       const errorClass = error?.sharePoint?.errorClass || error?.errorClass;
       assert.equal(errorClass, SP_ERROR.PERMISSION_DENIED);

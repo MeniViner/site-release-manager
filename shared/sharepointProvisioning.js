@@ -36,6 +36,9 @@ export const PROVISIONING_ERROR = Object.freeze({
   LIBRARY_NOT_STABLE: 'LIBRARY_NOT_STABLE',
   FOLDER_NOT_STABLE: 'FOLDER_NOT_STABLE',
   FOLDER_CREATE_FAILED: 'FOLDER_CREATE_FAILED',
+  FOLDER_IDENTITY_CONFLICT: 'FOLDER_IDENTITY_CONFLICT',
+  FOLDER_PROBE_AUTHORIZATION_FAILED: 'FOLDER_PROBE_AUTHORIZATION_FAILED',
+  FOLDER_RECONCILIATION_REQUIRED: 'FOLDER_RECONCILIATION_REQUIRED',
   SEED_VERIFY_FAILED: 'SEED_VERIFY_FAILED',
   ASSET_VERIFY_FAILED: 'ASSET_VERIFY_FAILED',
   INDEX_REFERENCE_MISSING: 'INDEX_REFERENCE_MISSING',
@@ -232,82 +235,135 @@ async function stabilizeLibrary(verifyExact, options) {
  * library roots rather than as list-item-backed folders.
  */
 export async function ensureFolderTree(client, folderPaths, options = {}) {
-  const { log = noopLog, retry = {}, signal, libraryRoots = [] } = options;
-  const rootSet = new Set(libraryRoots.map(normalizePath));
+  const {
+    log = noopLog,
+    retry = {},
+    signal,
+    libraryRoots = [],
+    libraries = libraryRoots.map((rootFolder) => ({
+      title: normalizePath(rootFolder).split('/').filter(Boolean).at(-1),
+      rootFolder,
+      id: '',
+    })),
+    createFolderExact = null,
+  } = options;
+  const normalizedLibraries = libraries
+    .map((library) => ({ ...library, rootFolder: normalizePath(library.rootFolder) }))
+    .filter((library) => library.rootFolder)
+    .sort((left, right) => right.rootFolder.length - left.rootFolder.length);
+  const incompleteLibrary = normalizedLibraries.find((library) => !library.id || !library.title);
+  if (incompleteLibrary) {
+    throw new ProvisioningError(
+      PROVISIONING_ERROR.LIBRARY_NOT_STABLE,
+      `Folder provisioning requires verified List ID, title and root metadata for ${incompleteLibrary.rootFolder}.`,
+      { errorClass: SP_ERROR.PERMANENT_FAILURE, library: incompleteLibrary },
+    );
+  }
+  const rootSet = new Set(normalizedLibraries.map((library) => library.rootFolder));
   const ordered = orderParentFirst(folderPaths);
   const results = [];
 
   for (const folderPath of ordered) {
-    const expectLibraryRoot = rootSet.has(normalizePath(folderPath));
-    const probe = () => client.probeFolder(folderPath, { expectLibraryRoot });
+    const normalizedFolder = normalizePath(folderPath);
+    const owner = normalizedLibraries.find((library) => (
+      normalizedFolder.toLowerCase() === library.rootFolder.toLowerCase()
+      || normalizedFolder.toLowerCase().startsWith(`${library.rootFolder.toLowerCase()}/`)
+    ));
+    if (!owner) {
+      throw new ProvisioningError(
+        PROVISIONING_ERROR.FOLDER_IDENTITY_CONFLICT,
+        `Folder ${folderPath} is outside the verified deployment libraries.`,
+        { errorClass: SP_ERROR.PATH_COLLISION, target: folderPath, reason: 'FOLDER_OUTSIDE_VERIFIED_LIBRARIES' },
+      );
+    }
+    const expectLibraryRoot = rootSet.has(normalizedFolder);
+    const parentPath = normalizedFolder.slice(0, normalizedFolder.lastIndexOf('/'));
+    const probe = () => client.probeFolder(folderPath, {
+      expectLibraryRoot,
+      libraryTitle: owner.title,
+      libraryId: owner.id,
+      parentPath,
+    });
 
     // The discovery probe must never abort the run on a transient answer: a
     // busy farm reporting SPException here simply means "unknown yet", and the
     // create + stabilize path below is what resolves it.
-    const initial = await probeTolerant(probe);
+    let initial = await probeTolerant(probe);
+    if (initial.unknown) {
+      initial = (await resolveFolderDiscovery(probe, folderPath, { log, retry, signal })).value;
+    }
     if (initial.ready) {
       results.push({ path: folderPath, created: false, reason: initial.reason });
       continue;
     }
 
+    if (initial.authorization) {
+      throw new ProvisioningError(
+        PROVISIONING_ERROR.FOLDER_PROBE_AUTHORIZATION_FAILED,
+        `SharePoint refused folder readiness evidence for ${folderPath}.`,
+        {
+          errorClass: initial.errorClass || (initial.status === 401 ? SP_ERROR.AUTH_FAILURE : SP_ERROR.PERMISSION_DENIED),
+          httpStatus: initial.status,
+          target: folderPath,
+          reason: initial.reason,
+          probe: initial,
+        },
+      );
+    }
+
+    if (initial.exists || initial.contradiction) {
+      const reconciled = await reconcileExistingFolder(probe, folderPath, initial, { log, retry, signal });
+      results.push({ path: folderPath, created: false, reason: reconciled.value.reason, attempts: reconciled.attempts });
+      continue;
+    }
+
+    if (initial.reason !== 'FOLDER_NOT_FOUND') {
+      throw new ProvisioningError(
+        PROVISIONING_ERROR.FOLDER_NOT_STABLE,
+        `SharePoint did not provide enough consistent evidence to create ${folderPath} (${initial.reason}).`,
+        { errorClass: SP_ERROR.TRANSIENT_NOT_READY, target: folderPath, reason: initial.reason, probe: initial },
+      );
+    }
+
     await log({ stage: 'CREATE_FOLDERS', status: 'started', message: `יוצר תיקייה ${folderPath}.`, details: { reason: initial.reason } });
 
     let createOutcome = null;
+    let createError = null;
     try {
-      createOutcome = await retryOperation(async () => {
-        const outcome = await client.createFolder(folderPath);
-        if (!outcome.created && !outcome.alreadyExisted && outcome.normalized) {
-          throw sharePointError(outcome.normalized);
-        }
-        return outcome;
-      }, {
-        ...DEFAULT_RETRY,
-        ...retry,
-        signal,
-        describe: `create-folder:${folderPath}`,
-        onAttempt: async (attempt) => {
-          if (!attempt.ok) {
-            await log({
-              stage: 'CREATE_FOLDERS',
-              status: 'info',
-              message: `יצירת ${folderPath} נכשלה זמנית (ניסיון ${attempt.attempt}) — ${attempt.errorClass}.`,
-              details: { attempt: attempt.attempt, errorClass: attempt.errorClass, httpStatus: attempt.httpStatus, sharePointCode: attempt.sharePointCode },
-            });
-          }
-        },
+      const creator = createFolderExact || ((input) => client.createFolder(input.folderPath));
+      createOutcome = await creator({
+        folderPath: normalizedFolder,
+        parentPath,
+        leafName: normalizedFolder.slice(normalizedFolder.lastIndexOf('/') + 1),
+        libraryId: owner.id,
+        libraryTitle: owner.title,
+        libraryRoot: owner.rootFolder,
       });
+      if (!createOutcome?.created && !createOutcome?.alreadyExisted && createOutcome?.normalized) {
+        throw sharePointError(createOutcome.normalized);
+      }
     } catch (error) {
       // A create failure may still have committed, so verified state normally
       // decides. But a PERMANENT condition -- no permission, expired session,
       // an illegal path, a cancellation -- can never be resolved by waiting and
       // must surface as itself instead of as "not stable yet".
       if (isFatalProvisioningError(error)) throw error;
+      createError = error;
       await log({ stage: 'CREATE_FOLDERS', status: 'warning', message: `יצירת ${folderPath} החזירה שגיאה; בודק אם התיקייה קיימת בכל זאת.`, details: { error: error?.message || String(error) } });
     }
 
     // --- FOLDER_STABILIZE -------------------------------------------------
     try {
-      const stabilized = await stabilize(async () => {
-        const outcome = await probe();
-        return { ready: outcome.ready, value: outcome, reason: outcome.reason };
-      }, {
-        ...STABILIZE_RETRY,
-        ...retry,
-        signal,
-        describe: `folder:${folderPath}`,
-        onAttempt: async (attempt) => {
-          if (!attempt.ready) {
-            await log({
-              stage: 'FOLDER_STABILIZE',
-              status: 'info',
-              message: `ממתין לייצוב ${folderPath} (ניסיון ${attempt.attempt}) — ${attempt.reason}.`,
-              details: { attempt: attempt.attempt, elapsedMs: attempt.elapsedMs, reason: attempt.reason },
-            });
-          }
-        },
+      const stabilized = await stabilizeFolder(probe, folderPath, { log, retry, signal });
+      results.push({
+        path: folderPath,
+        created: Boolean(createOutcome?.created),
+        recoveredAfterCreateError: Boolean(createError),
+        reason: stabilized.value.reason,
+        attempts: stabilized.attempts,
       });
-      results.push({ path: folderPath, created: Boolean(createOutcome), reason: stabilized.value.reason, attempts: stabilized.attempts });
     } catch (error) {
+      if (error instanceof ProvisioningError) throw error;
       throw new ProvisioningError(
         PROVISIONING_ERROR.FOLDER_NOT_STABLE,
         `Folder ${folderPath} did not become writable: ${error.message}`,
@@ -317,6 +373,104 @@ export async function ensureFolderTree(client, folderPaths, options = {}) {
   }
 
   return results;
+}
+
+async function stabilizeFolder(probe, folderPath, { log, retry, signal }) {
+  return stabilize(async () => {
+    const outcome = await probe();
+    if (outcome.authorization) {
+      throw new ProvisioningError(
+        PROVISIONING_ERROR.FOLDER_PROBE_AUTHORIZATION_FAILED,
+        `SharePoint refused folder readiness evidence for ${folderPath}.`,
+        {
+          errorClass: outcome.errorClass || (outcome.status === 401 ? SP_ERROR.AUTH_FAILURE : SP_ERROR.PERMISSION_DENIED),
+          httpStatus: outcome.status,
+          target: folderPath,
+          reason: outcome.reason,
+          probe: outcome,
+        },
+      );
+    }
+    if (outcome.contradiction) {
+      throw new ProvisioningError(
+        PROVISIONING_ERROR.FOLDER_IDENTITY_CONFLICT,
+        `Folder ${folderPath} exposed contradictory SharePoint metadata (${outcome.reason}).`,
+        { errorClass: SP_ERROR.PATH_COLLISION, target: folderPath, reason: outcome.reason, probe: outcome },
+      );
+    }
+    return { ready: outcome.ready, value: outcome, reason: outcome.reason };
+  }, {
+    ...STABILIZE_RETRY,
+    ...retry,
+    signal,
+    describe: `folder:${folderPath}`,
+    onAttempt: async (attempt) => {
+      if (!attempt.ready) {
+        await log({
+          stage: 'FOLDER_STABILIZE',
+          status: 'info',
+          message: `ממתין לייצוב ${folderPath} (ניסיון ${attempt.attempt}) — ${attempt.reason}.`,
+          details: { attempt: attempt.attempt, elapsedMs: attempt.elapsedMs, reason: attempt.reason },
+        });
+      }
+    },
+  });
+}
+
+async function reconcileExistingFolder(probe, folderPath, firstProbe, options) {
+  try {
+    return await stabilizeFolder(probe, folderPath, options);
+  } catch (error) {
+    if (error?.code === PROVISIONING_ERROR.FOLDER_PROBE_AUTHORIZATION_FAILED) throw error;
+    throw new ProvisioningError(
+      PROVISIONING_ERROR.FOLDER_RECONCILIATION_REQUIRED,
+      `SharePoint exposes ${folderPath}, but its exact list-backed identity remains incomplete or inconsistent. No replacement was attempted.`,
+      {
+        errorClass: SP_ERROR.PERMANENT_FAILURE,
+        target: folderPath,
+        reason: firstProbe.reason,
+        firstProbe,
+        cause: error.message,
+        destructiveRepairAllowed: false,
+        mutationAttempted: false,
+      },
+    );
+  }
+}
+
+async function resolveFolderDiscovery(probe, folderPath, { log, retry, signal }) {
+  try {
+    return await stabilize(async () => {
+      const outcome = await probe();
+      return {
+        ready: outcome.ready || outcome.authorization || outcome.contradiction || outcome.exists || outcome.reason === 'FOLDER_NOT_FOUND',
+        value: outcome,
+        reason: outcome.reason,
+      };
+    }, {
+      ...STABILIZE_RETRY,
+      ...retry,
+      signal,
+      describe: `resolve-folder-discovery:${folderPath}`,
+      onAttempt: async (attempt) => {
+        if (!attempt.ready) {
+          await log({
+            stage: 'FOLDER_STABILIZE',
+            status: 'info',
+            message: `ממתין לתשובה חד-משמעית עבור ${folderPath} (ניסיון ${attempt.attempt}).`,
+            details: { attempt: attempt.attempt, elapsedMs: attempt.elapsedMs, reason: attempt.reason },
+          });
+        }
+      },
+    });
+  } catch (error) {
+    if (isFatalProvisioningError(error)) throw error;
+    throw new ProvisioningError(
+      PROVISIONING_ERROR.FOLDER_NOT_STABLE,
+      `Folder ${folderPath} discovery stayed ambiguous: ${error.message}`,
+      { errorClass: error.errorClass || SP_ERROR.TRANSIENT_NOT_READY, target: folderPath, cause: error.message },
+    );
+  }
 }
 
 /**
@@ -329,7 +483,7 @@ async function probeTolerant(probe) {
   } catch (error) {
     const errorClass = error?.sharePoint?.errorClass || error?.errorClass;
     if (errorClass === SP_ERROR.TRANSIENT_NOT_READY || errorClass === SP_ERROR.MISSING) {
-      return { ready: false, reason: `PROBE_${errorClass}`, exists: false };
+      return { ready: false, reason: `PROBE_${errorClass}`, exists: false, unknown: true };
     }
     throw error;
   }
@@ -477,6 +631,8 @@ export async function createTxtBackup(client, options = {}) {
     siteAssetsRoot,
     host,
     libraryRoots = [],
+    libraries = libraryRoots.map((rootFolder) => ({ rootFolder })),
+    createFolderExact = null,
     sha256,
     retry = {},
     signal,
@@ -544,7 +700,7 @@ export async function createTxtBackup(client, options = {}) {
     result.backupPath = selectedPath;
     result.backupUrl = `https://${host}${selectedPath}`;
     await ensureFolderTree(client, [backupRoot, selectedPath], {
-      log, signal, retry, libraryRoots,
+      log, signal, retry, libraryRoots, libraries, createFolderExact,
     });
   } catch (error) {
     for (const source of readable) {
@@ -881,13 +1037,13 @@ function assertExpectedFields(payload, expected, fields, kind, url) {
 }
 
 const RUNTIME_CONFIG_TARGET_FIELDS = Object.freeze([
-  'host', 'siteCode', 'siteDbFolder', 'siteDbRoot', 'usersDbFolder', 'usersDbRoot',
-  'siteAssetsFolder', 'siteAssetsRoot', 'widgetsDbTarget', 'storageBackend',
+  'host', 'siteCode', 'siteRoot', 'siteApiRoot', 'siteDbFolder', 'siteDbRoot', 'usersDbFolder', 'usersDbRoot',
+  'siteAssetsFolder', 'siteAssetsRoot', 'imagesFolder', 'imagesRoot', 'widgetsDbTarget', 'storageBackend',
   'targetDistPath', 'finalAppUrl', 'deploymentJobId', 'releaseId', 'releaseVersion',
 ]);
 
 const DEPLOYMENT_METADATA_TARGET_FIELDS = Object.freeze([
-  'host', 'siteCode', 'siteDbRoot', 'usersDbRoot', 'siteAssetsRoot', 'storageBackend',
+  'host', 'siteCode', 'siteRoot', 'siteApiRoot', 'siteDbRoot', 'usersDbRoot', 'siteAssetsRoot', 'imagesRoot', 'storageBackend',
   'targetDistPath', 'finalAppUrl', 'deploymentJobId', 'releaseId', 'releaseVersion',
 ]);
 

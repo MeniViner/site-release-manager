@@ -15,16 +15,30 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { validateUniversalManifest, MANIFEST_FILE, RUNTIME_BOOTSTRAP_FILE, parseIndexReferencesFromHtml } = require("../src/shared/universalManifest.js");
+const { classifyFolderProbe } = require("../src/shared/sharepointClient.js");
 const { buildSiteIdentity, buildTxtSeedPlan, TXT_DATA_FILES } = require("../src/shared/siteRuntime.js");
 const { RUNTIME_BOOTSTRAP_GLOBAL, RUNTIME_BOOTSTRAP_LEGACY_GLOBAL, RUNTIME_BOOTSTRAP_SCRIPT_TAG, buildRuntimeBootstrapSource, parseRuntimeBootstrapConfig, hasRuntimeBootstrapReference, injectRuntimeBootstrapIntoIndexHtml, findRuntimeBootstrapIndex, findFirstModuleScriptIndex } = require("../src/shared/runtimeBootstrap.js");
+const RELEASE_MANAGER_ROOT = path.resolve(__dirname, '..', '..');
+const coordinatedSiteBuilder = path.resolve(
+  RELEASE_MANAGER_ROOT,
+  '..',
+  '..',
+  'site-builder.worktrees',
+  path.basename(RELEASE_MANAGER_ROOT),
+);
 const SITE_BUILDER_ROOT = process.env.SITE_BUILDER_PATH
-  || path.resolve(process.cwd(), '..', '..', 'site-builder');
+  || (fs.existsSync(path.join(coordinatedSiteBuilder, 'package.json'))
+    ? coordinatedSiteBuilder
+    : path.resolve(RELEASE_MANAGER_ROOT, '..', '..', 'site-builder'));
 
 const hasSiteBuilder = fs.existsSync(path.join(SITE_BUILDER_ROOT, 'package.json'));
 const distUniversal = path.join(SITE_BUILDER_ROOT, 'dist-universal');
 const hasDistUniversal = fs.existsSync(path.join(distUniversal, MANIFEST_FILE));
 const descriptorPath = path.join(SITE_BUILDER_ROOT, 'src', 'config', 'sharepointRuntimeDescriptor.js');
 const hasDescriptor = fs.existsSync(descriptorPath);
+const folderContractPath = path.join(SITE_BUILDER_ROOT, 'test-fixtures', 'sharepoint-folder-contract.json');
+const hasFolderContract = fs.existsSync(folderContractPath);
+const localFolderContractPath = path.join(RELEASE_MANAGER_ROOT, 'test-fixtures', 'sharepoint-folder-contract.json');
 
 test('Site Builder sibling repository is discoverable for contract checks', (t) => {
   if (!hasSiteBuilder) {
@@ -123,6 +137,34 @@ test('Release Manager runtime config is accepted by the real Site Builder descri
     assert.equal(descriptor.bootstrapLibrary, identity.bootstrapLibrary);
     assert.equal(descriptor.bootstrapFolder, identity.bootstrapFolder);
   }
+});
+
+test('Release Manager executes the vendored folder-probe contract fixture', () => {
+  const fixtures = JSON.parse(fs.readFileSync(localFolderContractPath, 'utf8'));
+  for (const fixture of fixtures) {
+    const classification = classifyFolderProbe(fixture);
+    assert.deepEqual(
+      {
+        ready: classification.ready,
+        exists: classification.exists,
+        reason: classification.reason,
+      },
+      fixture.expected,
+      `folder contract drift: ${fixture.name}`,
+    );
+  }
+});
+
+test('Release Manager folder-probe fixture is byte-identical to Site Builder', (t) => {
+  if (!hasFolderContract) {
+    t.skip('Site Builder folder contract fixture is not present.');
+    return;
+  }
+  assert.equal(
+    fs.readFileSync(localFolderContractPath, 'utf8'),
+    fs.readFileSync(folderContractPath, 'utf8'),
+    'vendored folder contract fixture differs from Site Builder',
+  );
 });
 
 test('TXT seed paths match the Site Builder descriptor file paths exactly', async (t) => {

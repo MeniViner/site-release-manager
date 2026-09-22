@@ -6,6 +6,7 @@ import {
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from './api.js';
 import { STAGE_ORDER as CANONICAL_STAGE_ORDER, stageLabel } from '../../shared/deploymentStages.js';
+import { userFacingSharePointFailure } from '../../shared/userFacingErrors.js';
 import { useBackendMode } from './context/BackendModeContext.jsx';
 
 const STATE_LABELS = {
@@ -205,6 +206,7 @@ export default function RunsPage() {
       <div className="runs-list">
         {filtered.map((run) => {
           const failed = run.failureInfo || run.error;
+          const safePreview = run.failureInfo ? userFacingSharePointFailure(run.failureInfo).message : run.error;
           const elapsed = run.finishedAt && run.startedAt ? new Date(run.finishedAt) - new Date(run.startedAt) : null;
           return <button className={`run-row ${run.state === 'FAILED' ? 'run-row-failed' : ''}`} key={run.id} onClick={() => openRun(run.id)}>
             <div className="run-main"><div className="run-title"><strong>{run.site?.name || 'אתר לא ידוע'}</strong><StateBadge value={run.state} /></div><span dir="ltr">{run.site?.host || '—'}/sites/{run.site?.siteCode || '—'}</span></div>
@@ -213,7 +215,7 @@ export default function RunsPage() {
             <div className="run-cell"><small>התחיל</small><strong>{formatDate(run.startedAt || run.createdAt)}</strong></div>
             <div className="run-cell"><small>משך</small><strong>{duration(elapsed)}</strong></div>
             <div className="run-progress-mini"><span style={{ width: `${run.progress || 0}%` }} /></div>
-            {failed && <div className="run-failure-preview"><FileWarning size={16} /><span>{run.failureInfo?.message || run.error}</span></div>}
+            {failed && <div className="run-failure-preview"><FileWarning size={16} /><span>{safePreview}</span></div>}
           </button>;
         })}
         {!filtered.length && <div className="empty">אין ריצות להצגה.</div>}
@@ -231,6 +233,7 @@ function RunDetailModal({ run, loading, onClose, onRefresh }) {
   const events = run?.runEvents || [];
   const succeeded = run?.state === 'SUCCEEDED';
   const failed = run?.state === 'FAILED';
+  const safeFailure = run?.failureInfo ? userFacingSharePointFailure(run.failureInfo) : null;
 
   /**
    * Retry resumes at the first incomplete stage rather than restarting, so
@@ -300,7 +303,7 @@ function RunDetailModal({ run, loading, onClose, onRefresh }) {
 
         {run.failureInfo && <section className="run-failure-focus">
           <div className="failure-icon"><XCircle size={22} /></div>
-          <div><h3>נקודת הכשל</h3><strong>{run.failureInfo.stageLabel || run.failureInfo.stage}</strong><p>{run.failureInfo.message}</p>
+          <div><h3>נקודת הכשל</h3><strong>{run.failureInfo.stageLabel || run.failureInfo.stage}</strong><p>{safeFailure.message}</p>
             <div className="failure-meta">
               {run.failureInfo.errorClass && <span className="failure-class" dir="ltr">{run.failureInfo.errorClass}</span>}
               {run.failureInfo.currentFile && <code>{run.failureInfo.currentFile}</code>}
@@ -312,7 +315,7 @@ function RunDetailModal({ run, loading, onClose, onRefresh }) {
               {run.failureInfo.attempt != null && <span>ניסיון {run.failureInfo.attempt}</span>}
               {run.failureInfo.method && <span dir="ltr">{run.failureInfo.method}</span>}
             </div>
-            {run.failureInfo.nextAction && <p className="failure-next-action">{run.failureInfo.nextAction}</p>}
+            {safeFailure.nextAction && <p className="failure-next-action">{safeFailure.nextAction}</p>}
             {run.failureInfo.url && <code className="run-url" dir="ltr">{run.failureInfo.url}</code>}
             {run.failureInfo.details?.responsePreview && <pre className="failure-preview">{run.failureInfo.details.responsePreview}</pre>}
           </div>

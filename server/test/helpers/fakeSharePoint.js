@@ -87,6 +87,57 @@ const decodeODataArg = (value) => String(value)
 
 const stripQuery = (url) => url.split('?')[0];
 
+function folderProbeFixture({
+  path = '/sites/schedule/siteDB/parent/child',
+  parentPath = path.slice(0, path.lastIndexOf('/')),
+  listId = 'list-1',
+  expectedLibraryId = 'list-1',
+  listItemId = 17,
+  fileSystemObjectType = 1,
+  fileRef = path,
+  folderRef = path,
+  folderObjectPath = path,
+  folderExists = true,
+  parentEntryPath = path,
+  parentListId = listId,
+  parentListItemId = listItemId,
+  parentObjectType = fileSystemObjectType,
+  parentFileRef = fileRef,
+} = {}) {
+  return {
+    expectedPath: path,
+    expectedParentPath: parentPath,
+    expectedLibraryId,
+    listItem: {
+      d: {
+        Id: listItemId,
+        FileSystemObjectType: fileSystemObjectType,
+        FileRef: fileRef,
+        Folder: { ServerRelativeUrl: folderRef },
+        ParentList: { Id: listId },
+      },
+    },
+    folder: {
+      value: {
+        Exists: folderExists,
+        ServerRelativeUrl: folderObjectPath,
+      },
+    },
+    parentEntries: {
+      value: [{
+        Exists: true,
+        ServerRelativeUrl: parentEntryPath,
+        ListItemAllFields: {
+          Id: parentListItemId,
+          FileSystemObjectType: parentObjectType,
+          FileRef: parentFileRef,
+          ParentList: { Id: parentListId },
+        },
+      }],
+    },
+  };
+}
+
 function createFakeSharePoint(config = {}) {
   const {
     webUrl = 'https://portal.army.idf/sites/schedule',
@@ -104,6 +155,10 @@ function createFakeSharePoint(config = {}) {
      * REST `$value` endpoint returns the correct bytes.
      */
     directJsonReturnsHtml = false,
+    /** Return OData minimal envelopes instead of verbose `d` envelopes. */
+    odataMode = 'verbose',
+    /** Folder creation reports an ambiguous failure after committing. */
+    folderCreateReportsError = false,
   } = config;
 
   const state = {
@@ -117,9 +172,12 @@ function createFakeSharePoint(config = {}) {
     directReads: [],
     /** Direct .json GETs the farm answered with HTML, as the real farm does. */
     directJsonHtmlServed: [],
+    folderCreateCalls: [],
   };
 
   const base = webUrl.replace(/\/+$/, '');
+  const recordEnvelope = (record) => (odataMode === 'minimal' ? record : { d: record });
+  const collectionEnvelope = (records) => (odataMode === 'minimal' ? { value: records } : { d: { results: records } });
 
   function markPending(key) {
     if (notReadyReads > 0) state.pending.set(key, notReadyReads);
@@ -146,12 +204,50 @@ function createFakeSharePoint(config = {}) {
   /** Seed pre-existing state (an already-provisioned site). */
   function addLibrary(title, rootFolder, { baseTemplate = 101, id = `list-${state.lists.size + 1}` } = {}) {
     state.lists.set(title, { id, title, baseTemplate, rootFolder });
-    state.folders.set(rootFolder, { listItemId: 0, isLibraryRoot: true });
+    state.folders.set(rootFolder, {
+      listItemId: 0,
+      listId: id,
+      isLibraryRoot: true,
+      exists: true,
+      fileSystemObjectType: 1,
+      fileRef: rootFolder,
+      folderRef: rootFolder,
+    });
     return state.lists.get(title);
   }
 
-  function addFolder(path) {
-    state.folders.set(path, { listItemId: state.folders.size + 100 });
+  function owningList(path) {
+    return [...state.lists.values()]
+      .filter((list) => path === list.rootFolder || path.startsWith(`${list.rootFolder}/`))
+      .sort((left, right) => right.rootFolder.length - left.rootFolder.length)[0] || null;
+  }
+
+  function addFolder(path, overrides = {}) {
+    const owner = owningList(path);
+    state.folders.set(path, {
+      listItemId: state.folders.size + 100,
+      listId: owner?.id || '',
+      exists: true,
+      fileSystemObjectType: 1,
+      fileRef: path,
+      folderRef: path,
+      serverRelativeUrl: path,
+      ...overrides,
+    });
+  }
+
+  function addVisibleManualFolder(path, overrides = {}) {
+    addFolder(path, { source: 'manual', ...overrides });
+  }
+
+  function addIncompleteAppFolder(path, overrides = {}) {
+    addFolder(path, {
+      source: 'app-incomplete',
+      listItemId: null,
+      fileRef: '',
+      folderRef: '',
+      ...overrides,
+    });
   }
 
   function addFile(path, content) {
@@ -175,23 +271,19 @@ function createFakeSharePoint(config = {}) {
       const list = state.lists.get(title);
       if (!list) return notReadyShape === '404' ? jsonResponse(404, notFoundPayload()) : jsonResponse(400, notFoundPayload());
       if (consumePending(`list:${title}`)) return notReadyResponse();
-      return jsonResponse(200, {
-        d: {
+      return jsonResponse(200, recordEnvelope({
           Id: list.id, Title: list.title, BaseTemplate: list.baseTemplate, BaseType: 1, OnQuickLaunch: true,
           RootFolder: { ServerRelativeUrl: list.rootFolder, WelcomePage: 'Forms/AllItems.aspx' },
-        },
-      });
+      }));
     }
 
     if (clean === `${base}/_api/web/lists` && method === 'GET') {
-      return jsonResponse(200, {
-        d: {
-          results: [...state.lists.values()].map((list) => ({
+      return jsonResponse(200, collectionEnvelope(
+        [...state.lists.values()].map((list) => ({
             Id: list.id, Title: list.title, BaseTemplate: list.baseTemplate, BaseType: 1, OnQuickLaunch: true,
             RootFolder: { ServerRelativeUrl: list.rootFolder },
           })),
-        },
-      });
+      ));
     }
 
     // --- folder probe -----------------------------------------------------
@@ -201,9 +293,47 @@ function createFakeSharePoint(config = {}) {
       const folder = state.folders.get(folderPath);
       if (!folder) return notReadyResponse();
       if (consumePending(`folder:${folderPath}`)) return notReadyResponse();
-      return jsonResponse(200, {
-        d: { Id: folder.listItemId || 1, FileSystemObjectType: 1, FileRef: folderPath, Folder: { ServerRelativeUrl: folderPath } },
-      });
+      return jsonResponse(200, recordEnvelope({
+        Id: folder.listItemId,
+        FileSystemObjectType: folder.fileSystemObjectType,
+        FileRef: folder.fileRef,
+        Folder: { ServerRelativeUrl: folder.folderRef },
+        ParentList: { Id: folder.listId },
+      }));
+    }
+
+    const folderObject = clean.match(/\/_api\/web\/GetFolderByServerRelativeUrl\('(.+?)'\)$/);
+    if (folderObject && method === 'GET') {
+      const folderPath = decodeODataArg(folderObject[1]);
+      const folder = state.folders.get(folderPath);
+      if (!folder) return notReadyResponse();
+      if (consumePending(`folder-object:${folderPath}`)) return notReadyResponse();
+      return jsonResponse(200, recordEnvelope({
+        Exists: folder.exists,
+        Name: folderPath.split('/').at(-1),
+        ServerRelativeUrl: folder.serverRelativeUrl,
+      }));
+    }
+
+    const enumerateChildren = clean.match(/\/_api\/web\/GetFolderByServerRelativeUrl\('(.+?)'\)\/Folders$/);
+    if (enumerateChildren && method === 'GET') {
+      const parent = decodeODataArg(enumerateChildren[1]);
+      if (!state.folders.has(parent)) return notReadyResponse();
+      const prefix = `${parent}/`;
+      const children = [...state.folders.entries()]
+        .filter(([folderPath]) => folderPath.startsWith(prefix) && !folderPath.slice(prefix.length).includes('/'))
+        .map(([folderPath, folder]) => ({
+          Exists: folder.exists,
+          Name: folderPath.slice(prefix.length),
+          ServerRelativeUrl: folder.serverRelativeUrl,
+          ListItemAllFields: {
+            Id: folder.listItemId,
+            FileSystemObjectType: folder.fileSystemObjectType,
+            FileRef: folder.fileRef,
+            ParentList: { Id: folder.listId },
+          },
+        }));
+      return jsonResponse(200, collectionEnvelope(children));
     }
 
     // --- folder create ----------------------------------------------------
@@ -295,7 +425,37 @@ function createFakeSharePoint(config = {}) {
     return { title, rootFolder };
   }
 
-  return { webUrl: base, state, fetchImpl, createLibraryExact, addLibrary, addFolder, addFile, sha256Hex };
+  async function createFolderExact({ libraryId, parentPath, leafName, folderPath }) {
+    state.folderCreateCalls.push({ libraryId, parentPath, leafName, folderPath });
+    const owner = [...state.lists.values()].find((list) => String(list.id).toLowerCase() === String(libraryId).toLowerCase());
+    if (!owner) throw Object.assign(new Error('verified list not found'), { errorClass: 'PERMANENT_FAILURE' });
+    if (!state.folders.has(parentPath)) throw Object.assign(new Error('parent missing'), { httpStatus: 400 });
+    if (folderPath !== `${parentPath}/${leafName}` || !folderPath.startsWith(`${owner.rootFolder}/`)) {
+      throw Object.assign(new Error('folder identity mismatch'), { errorClass: 'INVALID_PATH' });
+    }
+    if (state.folders.has(folderPath)) return { created: false, alreadyExisted: true };
+    addFolder(folderPath, { listId: owner.id });
+    markPending(`folder:${folderPath}`);
+    markPending(`folder-object:${folderPath}`);
+    if (folderCreateReportsError) {
+      throw Object.assign(new Error('JSOM folder executeQueryAsync reported a failure'), { httpStatus: 500 });
+    }
+    return { created: true };
+  }
+
+  return {
+    webUrl: base,
+    state,
+    fetchImpl,
+    createLibraryExact,
+    createFolderExact,
+    addLibrary,
+    addFolder,
+    addVisibleManualFolder,
+    addIncompleteAppFolder,
+    addFile,
+    sha256Hex,
+  };
 }
 
 /** Fast, deterministic substitutes so tests never spend real wall-clock time. */
@@ -311,5 +471,6 @@ module.exports = {
   notFoundPayload: notFoundPayload,
   directoryNotFoundPayload: directoryNotFoundPayload,
   alreadyExistsPayload: alreadyExistsPayload,
+  folderProbeFixture: folderProbeFixture,
   instantRetry: instantRetry,
 };

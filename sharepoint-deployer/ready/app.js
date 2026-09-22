@@ -15,6 +15,7 @@
 
 import { runDeploymentPipeline } from './shared/deploymentPipeline.js';
 import { stageLabel } from './shared/deploymentStages.js';
+import { userFacingSharePointFailure } from './shared/userFacingErrors.js';
 
 const params = new URLSearchParams(location.search);
 const jobId = params.get('jobId') || '';
@@ -145,6 +146,73 @@ function createExactLibraryViaJsom(webUrl) {
   };
 }
 
+function createLibraryBoundFolderViaJsom(webUrl) {
+  return async function createFolderExact({ libraryId, parentPath, leafName, folderPath }) {
+    if (!window.SP?.ClientContext || !window.SP?.ListItemCreationInformation) {
+      const web = new URL(webUrl);
+      const layouts = `${web.origin}${web.pathname.replace(/\/+$/, '')}/_layouts/15/`;
+      for (const script of JSOM_SCRIPTS) {
+        // eslint-disable-next-line no-await-in-loop
+        await loadScript(`${layouts}${script}`);
+      }
+    }
+    if (!window.SP?.ClientContext || !window.SP?.ListItemCreationInformation) {
+      const error = new Error('SharePoint JSOM is unavailable for exact folder creation.');
+      error.code = 'SHAREPOINT_JSOM_UNAVAILABLE';
+      error.errorClass = 'PERMANENT_FAILURE';
+      throw error;
+    }
+    const exactLeaf = String(leafName ?? '');
+    if (!exactLeaf || exactLeaf.trim() !== exactLeaf || exactLeaf === '.' || exactLeaf === '..' || /[/\\"*:<>|]/.test(exactLeaf)) {
+      const error = new Error('SharePoint folder name is invalid.');
+      error.code = 'INVALID_FOLDER_NAME';
+      error.errorClass = 'INVALID_PATH';
+      throw error;
+    }
+    const expectedPath = `${String(parentPath).replace(/\/+$/, '')}/${exactLeaf}`.normalize('NFC');
+    if (!libraryId || expectedPath.toLowerCase() !== String(folderPath).normalize('NFC').toLowerCase()) {
+      const error = new Error('Verified SharePoint folder identity is required.');
+      error.code = 'FOLDER_IDENTITY_REQUIRED';
+      error.errorClass = 'PERMANENT_FAILURE';
+      throw error;
+    }
+
+    const SP = window.SP;
+    const context = new SP.ClientContext(webUrl);
+    const list = context.get_web().get_lists().getById(libraryId);
+    const creation = new SP.ListItemCreationInformation();
+    creation.set_underlyingObjectType(SP.FileSystemObjectType.folder);
+    creation.set_folderUrl(parentPath);
+    creation.set_leafName(exactLeaf.normalize('NFC'));
+    const item = list.addItem(creation);
+    item.update();
+    context.load(item, 'Id', 'FileSystemObjectType', 'FileRef');
+
+    return new Promise((resolve, reject) => {
+      context.executeQueryAsync(
+        () => resolve({ created: true }),
+        (_sender, args) => {
+          const error = new Error(args?.get_message?.() || 'JSOM folder creation failed.');
+          error.code = 'JSOM_FOLDER_QUERY_FAILED';
+          error.operation = `create-folder:${folderPath}`;
+          const errorCode = Number(args?.get_errorCode?.());
+          const errorType = String(args?.get_errorTypeName?.() || '');
+          const message = String(args?.get_message?.() || '');
+          error.sharePointCode = Number.isFinite(errorCode) ? String(errorCode) : '';
+          if (errorCode === -2147024891 || /UnauthorizedAccess|AccessDenied/i.test(`${errorType} ${message}`)) {
+            error.errorClass = 'PERMISSION_DENIED';
+          } else if (/security validation|formdigest|sign.?in|authentication/i.test(`${errorType} ${message}`)) {
+            error.errorClass = 'AUTH_FAILURE';
+          } else if ([-2130575257, -2130245363].includes(errorCode) || /already exists/i.test(message)) {
+            error.errorClass = 'ALREADY_EXISTS';
+          }
+          reject(error);
+        },
+      );
+    });
+  };
+}
+
 async function downloadStagedFile(file) {
   const url = `${apiBase}/api/deployments/${encodeURIComponent(jobId)}/file?path=${encodeURIComponent(file.path)}`;
   const response = await fetch(url, { cache: 'no-store' });
@@ -184,6 +252,7 @@ async function run() {
       fetchImpl: fetch.bind(window),
       sha256: sha256Hex,
       createLibraryExact: createExactLibraryViaJsom,
+      createFolderExact: createLibraryBoundFolderViaJsom,
       hostname: window.location.hostname,
       clientId: `standalone-deployer-${window.location.hostname}`,
       downloadFile: downloadStagedFile,
@@ -204,17 +273,18 @@ async function run() {
   } catch (error) {
     setBadge('failed', 'נכשל');
     const failure = error.failureInfo || {};
+    const safe = userFacingSharePointFailure(error);
     const detail = [
       failure.stage ? `שלב: ${stageLabel(failure.stage)}` : '',
       failure.errorClass ? `סיווג: ${failure.errorClass}` : '',
       failure.httpStatus != null ? `HTTP ${failure.httpStatus}` : '',
       failure.sharePointCode ? `SP ${failure.sharePointCode}` : '',
     ].filter(Boolean).join(' · ');
-    ui.errorBox.textContent = [error.message, detail, failure.nextAction].filter(Boolean).join('\n');
+    ui.errorBox.textContent = [safe.message, detail, safe.nextAction].filter(Boolean).join('\n');
     ui.errorBox.classList.remove('hidden');
     ui.retryButton.classList.remove('hidden');
     log(`Deployment failed: ${error.message}`);
-    notifyParent('deployment-failed', { error: error.message, stage: failure.stage || '' });
+    notifyParent('deployment-failed', { error: safe.message, stage: failure.stage || '' });
   } finally {
     running = false;
     ui.startButton.disabled = false;
@@ -237,10 +307,11 @@ async function init() {
     setTimeout(run, embedded ? 100 : 500);
   } catch (error) {
     setBadge('failed', 'לא ניתן להתחיל');
-    ui.errorBox.textContent = error.message;
+    const safe = userFacingSharePointFailure(error);
+    ui.errorBox.textContent = safe.message;
     ui.errorBox.classList.remove('hidden');
     log(`Initialization failed: ${error.message}`);
-    notifyParent('deployer-init-failed', { error: error.message });
+    notifyParent('deployer-init-failed', { error: safe.message });
   }
 }
 
