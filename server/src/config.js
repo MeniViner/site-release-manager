@@ -110,6 +110,11 @@ const config = Object.freeze({
   trustedIdentityEnabled: String(process.env.TRUSTED_IDENTITY_ENABLED || 'false').toLowerCase() === 'true',
   dailyDataDevIdentityHeader: String(process.env.DAILY_DATA_DEV_IDENTITY_HEADER || 'x-daily-data-dev-user').toLowerCase(),
   trustedSiteAccessEnabled: String(process.env.TRUSTED_SITE_ACCESS_ENABLED || 'false').toLowerCase() === 'true',
+  // Names the server-side component that populates the per-site access header.
+  // 'iis-rewrite' is NOT accepted: URL Rewrite has no per-site membership to
+  // stamp, so enabling site access without a real adapter would make the header
+  // browser-supplied and let any caller self-assign baseline access.
+  trustedSiteAccessSource: String(process.env.TRUSTED_SITE_ACCESS_SOURCE || '').trim().toLowerCase(),
   trustedSiteAccessHeader: String(process.env.TRUSTED_SITE_ACCESS_HEADER || 'x-iisnode-sharepoint-sites').toLowerCase(),
   storageRoot: resolveFromRoot(process.env.STORAGE_ROOT, './storage'),
   sharePointHosts,
@@ -117,6 +122,10 @@ const config = Object.freeze({
   maxReleaseBytes: Number(process.env.MAX_RELEASE_MB || 500) * 1024 * 1024,
   maxReleaseFiles: Number(process.env.MAX_RELEASE_FILES || 12000),
 });
+
+// Adapters that derive per-site membership on the server. Deliberately does not
+// include any value meaning "read it off the request".
+const SUPPORTED_SITE_ACCESS_SOURCES = new Set(['mongo-membership']);
 
 if (config.nodeEnv === 'production') {
   const missing = [
@@ -131,6 +140,16 @@ if (config.nodeEnv === 'production') {
   }
   if (!config.trustedIdentityEnabled) {
     throw new Error('Production requires TRUSTED_IDENTITY_ENABLED=true; Mongo management and daily-data access fail closed without a trusted identity boundary.');
+  }
+  // Per-site access is the one header nothing in IIS can derive today. web.config
+  // blanks it on every request, so turning it on without naming a real
+  // server-side adapter can only ever read caller-supplied input.
+  if (config.trustedSiteAccessEnabled && !SUPPORTED_SITE_ACCESS_SOURCES.has(config.trustedSiteAccessSource)) {
+    throw new Error(
+      'TRUSTED_SITE_ACCESS_ENABLED=true requires TRUSTED_SITE_ACCESS_SOURCE to name a server-side adapter '
+      + `(one of: ${[...SUPPORTED_SITE_ACCESS_SOURCES].join(', ')}). `
+      + 'Without one the per-site access header is browser-supplied and must not be trusted.',
+    );
   }
 }
 
@@ -148,5 +167,6 @@ module.exports = {
   parseListenTarget: parseListenTarget,
   absoluteHttpUrl: absoluteHttpUrl,
   dailyDataApiUrl: dailyDataApiUrl,
+  SUPPORTED_SITE_ACCESS_SOURCES: SUPPORTED_SITE_ACCESS_SOURCES,
   trustedHeaderName: trustedHeaderName,
 };

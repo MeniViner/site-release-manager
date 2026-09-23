@@ -135,9 +135,24 @@ test('existing Mongo registration is blocked without allocating a replacement id
 });
 
 test('daily data refuses an unauthenticated browser identity', async () => {
-  const { status, body } = await call('/api/daily-data/v1/healthz');
+  // Probes a real site DATA route. This used to probe /healthz, which encoded
+  // the defect: Site Builder's canonical deploy readiness calls
+  // {dailyDataApiUrl}/readyz unauthenticated and only accepts JSON ok===true,
+  // so health and readiness must sit in front of the identity middleware.
+  const { status, body } = await call('/api/daily-data/v1/sites/any-site/data/alerts');
   assert.equal(status, 401);
   assert.equal(body.error.code, 'development_identity_required');
+});
+
+test('daily data health and readiness answer without an identity', async () => {
+  const health = await call('/api/daily-data/v1/healthz');
+  assert.equal(health.status, 200);
+  assert.equal(health.body.ok, true);
+
+  const ready = await call('/api/daily-data/v1/readyz');
+  assert.equal(ready.status, 200);
+  assert.equal(typeof ready.body.ok, 'boolean');
+  assert.equal(ready.headers.get('www-authenticate'), null);
 });
 
 test('an unconfigured origin gets an actionable 403 instead of an opaque 500', async () => {
