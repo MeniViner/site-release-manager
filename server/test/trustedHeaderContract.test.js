@@ -18,6 +18,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const { SUPPORTED_SITE_ACCESS_SOURCES } = require('../src/config.js');
 
 const WEB_CONFIG = path.resolve(__dirname, '..', '..', 'web.config');
 const xml = fs.readFileSync(WEB_CONFIG, 'utf8');
@@ -125,4 +126,22 @@ test('production accepts a recognised server-side adapter', () => {
 test('production still starts with per-site access disabled', () => {
   const result = loadConfigWith({ TRUSTED_SITE_ACCESS_ENABLED: 'false' });
   assert.equal(result.status, 0, result.stderr);
+});
+
+test('the shipped IIS env template cannot fail the per-site access guard', () => {
+  const template = fs.readFileSync(path.resolve(__dirname, '..', '..', '.env.iis.example'), 'utf8');
+  const setting = (key) => {
+    const line = template.split(/\r?\n/).find((row) => row.trim().startsWith(`${key}=`));
+    return line ? line.split('=').slice(1).join('=').trim() : '';
+  };
+  const enabled = setting('TRUSTED_SITE_ACCESS_ENABLED').toLowerCase() === 'true';
+  if (enabled) {
+    assert.ok(
+      SUPPORTED_SITE_ACCESS_SOURCES.has(setting('TRUSTED_SITE_ACCESS_SOURCE').toLowerCase()),
+      'the template enables per-site access, so it must also name a supported adapter '
+      + 'or an operator copying it verbatim gets a server that refuses to start',
+    );
+  }
+  assert.equal(setting('TRUSTED_IDENTITY_ENABLED').toLowerCase(), 'true',
+    'the trusted identity boundary must stay on in the IIS profile');
 });
