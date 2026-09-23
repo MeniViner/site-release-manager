@@ -443,6 +443,34 @@ async function stabilizeFolder(probe, folderPath, { log, retry, signal }) {
   });
 }
 
+function buildFolderOperatorWorkflow(folderPath, probe = {}) {
+  return {
+    evidence: {
+      reason: String(probe.reason || 'FOLDER_IDENTITY_INCOMPLETE'),
+      expectedPath: String(probe.expectedPath || folderPath || ''),
+      actualPath: String(probe.actualPath || ''),
+      parentPath: String(probe.parentPath || probe.expectedParentPath || ''),
+      listItemId: Number(probe.listItemId || probe.id) || null,
+      fileSystemObjectType: Number.isFinite(Number(probe.fileSystemObjectType))
+        ? Number(probe.fileSystemObjectType)
+        : null,
+      ownerLibraryId: String(probe.libraryId || probe.ownerListId || probe.actualLibraryId || ''),
+    },
+    repairPreview: {
+      destructive: false,
+      preservesExistingContent: true,
+      automaticMutationAllowed: false,
+      action: 'COMPARE_WITH_HEALTHY_SIBLING_THEN_LINK_OR_ESCALATE',
+    },
+    operatorSteps: [
+      'Compare the folder with a healthy manually created sibling in the same library: exact path, list-item ID, object type, owner library and parent enumeration.',
+      'If every identity matches, explicitly link the healthy existing target; do not create a replacement.',
+      'If identities differ, export and preserve all content before requesting a supported SharePoint list-item repair.',
+      'Do not delete, rename, recreate or adopt any folder while the evidence is ambiguous.',
+    ],
+  };
+}
+
 async function reconcileExistingFolder(probe, folderPath, firstProbe, options) {
   try {
     return await stabilizeFolder(probe, folderPath, options);
@@ -459,6 +487,7 @@ async function reconcileExistingFolder(probe, folderPath, firstProbe, options) {
         cause: error.message,
         destructiveRepairAllowed: false,
         mutationAttempted: false,
+        operatorWorkflow: buildFolderOperatorWorkflow(folderPath, firstProbe),
       },
     );
   }
@@ -1260,6 +1289,7 @@ async function finalAppSmoke(client, distRoot, options = {}) {
 
 module.exports = {
   ProvisioningError: ProvisioningError,
+  buildFolderOperatorWorkflow: buildFolderOperatorWorkflow,
   isFatalProvisioningError: isFatalProvisioningError,
   ensureExactLibrary: ensureExactLibrary,
   ensureFolderTree: ensureFolderTree,
