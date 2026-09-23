@@ -22,7 +22,8 @@ const { parseReleaseVersion } = require("../utils/versioning.js");
 const { backendQuery, normalizeBackend } = require("../utils/backendMode.js");
 const { assertReleaseCompatibility, buildBackendDeploymentPlan } = require("../services/deploymentProfiles.js");
 const { verifyStoredReleaseIntegrity } = require("../services/releaseValidation.js");
-const { accessForCreator, hasRole, trustedIdentityForRequest } = require("../daily-data/v1/identity.js");
+const { accessForCreator, hasRole } = require("../daily-data/v1/identity.js");
+const { requireManagementPrincipal } = require("./auth.js");
 const { provisionSite } = require("../daily-data/v1/service.js");
 const sitesRouter = Router();
 
@@ -232,7 +233,21 @@ sitesRouter.get('/:id', async (req, res, next) => {
   }
 });
 
-sitesRouter.post('/', async (req, res, next) => {
+/**
+ * Mongo creation is authorized by a management SESSION, never by an identity
+ * header on this request. The session is established once at
+ * POST /api/auth/session -- the only credentialed call -- so an ordinary create
+ * click can never be escalated by IIS into a native credential dialog, and a
+ * forged trusted header on this route authorizes nothing.
+ *
+ * The gate runs before validation and before any database read so that an
+ * unauthorized caller cannot use this endpoint to probe releases or sites.
+ */
+const authorizeMongoCreate = (req, res, next) => (normalizeBackend(req.body?.storageBackend) === 'mongo'
+  ? requireManagementPrincipal(req, res, next)
+  : next());
+
+sitesRouter.post('/', authorizeMongoCreate, async (req, res, next) => {
   try {
     const body = req.body || {};
     const { mode = 'existing', unit, name, managerName, currentVersion, firstPublishedAt, lastPublishedAt, releaseId } = body;
@@ -276,7 +291,15 @@ sitesRouter.post('/', async (req, res, next) => {
       bootstrapFolder: 'sitebuilder-bootstrap',
     } : body;
     const identity = resolveIdentity(candidate);
-    const creator = identity.storageBackend === 'mongo' ? trustedIdentityForRequest(req) : null;
+    // The verified session principal becomes the site's initial administrator,
+    // so a Mongo site can never be created without an owner.
+    const creator = identity.storageBackend === 'mongo' ? req.managementPrincipal : null;
+    if (identity.storageBackend === 'mongo' && !creator) {
+      return res.status(401).json({
+        error: 'לא ניתן ליצור אתר Mongo ללא בעלים מאומת.',
+        code: 'management_session_required',
+      });
+    }
     const now = new Date();
     const document = {
       ...(mongoSiteObjectId ? { _id: mongoSiteObjectId } : {}),
@@ -503,14 +526,14 @@ sitesRouter.patch('/:id', async (req, res, next) => {
   }
 });
 
-sitesRouter.patch('/:id/data-access', async (req, res, next) => {
+sitesRouter.patch('/:id/data-access', requireManagementPrincipal, async (req, res, next) => {
   try {
     if (!ObjectId.isValid(req.params.id)) return res.status(404).json({ error: 'האתר לא נמצא.' });
     const db = getDb();
     const objectId = new ObjectId(req.params.id);
     const existing = await db.collection('sites').findOne({ _id: objectId, storageBackend: 'mongo' });
     if (!existing) return res.status(404).json({ error: 'אתר Mongo לא נמצא.' });
-    const principal = trustedIdentityForRequest(req);
+    const principal = req.managementPrincipal;
     if (!hasRole(existing, principal, 'administrators', req)) {
       return res.status(403).json({ error: 'Only a site data administrator can change data access.', code: 'SITE_ACCESS_FORBIDDEN' });
     }

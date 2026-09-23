@@ -38,43 +38,35 @@ function accessForCreator(principal) {
   };
 }
 
-function createSharePointAccessResolver({ enabled, headerName } = {}) {
-  return Object.freeze({
-    allows(req, site, capability) {
-      const access = site.dataAccess || {};
-      const accessFlag = capability === 'submitters'
-        ? access.sharePointInteractionAccess === true
-        : access.sharePointReadAccess === true;
-      if (!enabled || !accessFlag) return false;
-      const values = String(req.get(headerName) || '')
-        .split(',')
-        .map((value) => value.trim().toLowerCase())
-        .filter(Boolean);
-      return values.includes(normalizedPrincipal(site.builderSiteId));
-    },
-  });
-}
-
-const sharePointAccessResolver = createSharePointAccessResolver({
-  enabled: config.trustedSiteAccessEnabled,
-  headerName: config.trustedSiteAccessHeader,
-});
-
-function hasRole(site, principal, role, req) {
-  const access = site.dataAccess || {};
+/**
+ * Per-site access is granted ONLY by each site's explicit dataAccess lists.
+ *
+ * There was previously a second path that derived baseline viewer/submitter
+ * access from an `x-iisnode-sharepoint-sites` request header. Nothing on the
+ * server could populate that header -- this process has no AD, LDAP, Graph or
+ * SharePoint client, and URL Rewrite cannot derive per-site membership -- so its
+ * only possible source was the caller. Any user could have listed a site id and
+ * granted themselves access to it. The path is removed rather than left as a
+ * disabled placeholder.
+ *
+ * `dataAccess.sharePointReadAccess` / `sharePointInteractionAccess` are still
+ * PERSISTED for backward compatibility with existing documents, but they no
+ * longer grant anything on their own.
+ */
+function hasRole(site, principal, role) {
+  const subject = normalizedPrincipal(principal);
+  // An absent principal can never match a grant.
+  if (!subject) return false;
+  const access = site?.dataAccess || {};
   const values = Array.isArray(access[role]) ? access[role] : [];
-  const normalized = new Set(values.map(normalizedPrincipal));
-  if (normalized.has(principal)) return true;
-  if (role !== 'administrators' && hasRole(site, principal, 'administrators', req)) return true;
-  if (role === 'viewers' || role === 'submitters') {
-    return sharePointAccessResolver.allows(req, site, role);
-  }
+  if (values.map(normalizedPrincipal).includes(subject)) return true;
+  // Administrators inherit the lesser roles, but nothing inherits upward.
+  if (role !== 'administrators') return hasRole(site, subject, 'administrators');
   return false;
 }
 
 module.exports = {
   accessForCreator,
-  createSharePointAccessResolver,
   hasRole,
   normalizedPrincipal,
   trustedIdentityForRequest,

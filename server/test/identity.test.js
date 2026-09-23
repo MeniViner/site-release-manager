@@ -2,33 +2,80 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { createSharePointAccessResolver, hasRole } = require('../src/daily-data/v1/identity.js');
+const { accessForCreator, hasRole } = require('../src/daily-data/v1/identity.js');
 const { trustedHeaderName } = require('../src/config.js');
 
-function request(siteIds) {
-  return { get: (name) => name === 'x-iisnode-sharepoint-sites' ? siteIds : '' };
-}
-
-test('trusted SharePoint access grants only the matching site baseline capabilities', () => {
-  const resolver = createSharePointAccessResolver({ enabled: true, headerName: 'x-iisnode-sharepoint-sites' });
-  const site = {
-    builderSiteId: 'srm-alpha',
-    dataAccess: { viewers: [], submitters: [], editors: [], administrators: [], sharePointReadAccess: true, sharePointInteractionAccess: true },
-  };
-  assert.equal(resolver.allows(request('srm-alpha'), site, 'viewers'), true);
-  assert.equal(resolver.allows(request('srm-alpha'), site, 'submitters'), true);
-  assert.equal(resolver.allows(request('srm-bravo'), site, 'viewers'), false);
-  assert.equal(resolver.allows(request('srm-alpha'), { ...site, builderSiteId: 'srm-bravo' }, 'viewers'), false);
+const siteWith = (overrides = {}) => ({
+  builderSiteId: 'srm-alpha',
+  dataAccess: {
+    viewers: [], submitters: [], editors: [], administrators: [],
+    sharePointReadAccess: true, sharePointInteractionAccess: true,
+    ...overrides,
+  },
 });
 
-test('baseline SharePoint access never escalates to editor or administrator', () => {
-  const site = {
-    builderSiteId: 'srm-alpha',
-    dataAccess: { viewers: [], submitters: [], editors: [], administrators: [], sharePointReadAccess: true, sharePointInteractionAccess: true },
-  };
-  const req = request('srm-alpha');
-  assert.equal(hasRole(site, 'ordinary-user', 'editors', req), false);
-  assert.equal(hasRole(site, 'ordinary-user', 'administrators', req), false);
+// A request carrying a self-asserted site list. Nothing server-side can populate
+// this header, so it must never influence a decision.
+const spoofingRequest = { get: (name) => (name === 'x-iisnode-sharepoint-sites' ? 'srm-alpha' : '') };
+
+test('a self-asserted site-access header grants nothing', () => {
+  const site = siteWith();
+  for (const role of ['viewers', 'submitters', 'editors', 'administrators']) {
+    assert.equal(
+      hasRole(site, 'ordinary-user', role, spoofingRequest), false,
+      `a caller-supplied site list must not grant ${role}`,
+    );
+  }
+});
+
+test('explicit dataAccess lists are the grant path, and roles stay distinct', () => {
+  const site = siteWith({ viewers: ['reader'], submitters: ['submitter'], editors: ['editor'], administrators: ['owner'] });
+
+  assert.equal(hasRole(site, 'reader', 'viewers'), true);
+  assert.equal(hasRole(site, 'reader', 'submitters'), false, 'a viewer cannot submit');
+  assert.equal(hasRole(site, 'reader', 'editors'), false, 'a viewer cannot edit');
+  assert.equal(hasRole(site, 'reader', 'administrators'), false);
+
+  assert.equal(hasRole(site, 'submitter', 'submitters'), true);
+  assert.equal(hasRole(site, 'submitter', 'editors'), false, 'submit does not imply edit');
+
+  assert.equal(hasRole(site, 'editor', 'editors'), true);
+  assert.equal(hasRole(site, 'editor', 'administrators'), false, 'edit does not imply admin');
+});
+
+test('administrators inherit the lesser roles but nothing inherits upward', () => {
+  const site = siteWith({ administrators: ['owner'] });
+  for (const role of ['viewers', 'submitters', 'editors', 'administrators']) {
+    assert.equal(hasRole(site, 'owner', role), true, `an administrator must satisfy ${role}`);
+  }
+  assert.equal(hasRole(site, 'nobody', 'viewers'), false);
+});
+
+test('the creator is seeded as a full administrator, so no site is ownerless', () => {
+  const access = accessForCreator('domain\\owner');
+  for (const role of ['viewers', 'submitters', 'editors', 'administrators']) {
+    assert.deepEqual(access[role], ['domain\\owner']);
+  }
+});
+
+test('a principal cannot reach another site\'s grants', () => {
+  const alpha = siteWith({ viewers: ['reader'] });
+  const bravo = { builderSiteId: 'srm-bravo', dataAccess: { viewers: ['other'], submitters: [], editors: [], administrators: [] } };
+  assert.equal(hasRole(alpha, 'reader', 'viewers'), true);
+  assert.equal(hasRole(bravo, 'reader', 'viewers'), false, 'access is per site, never global');
+});
+
+test('an absent or blank principal never matches a grant', () => {
+  const site = siteWith({ viewers: ['reader'] });
+  for (const principal of [undefined, null, '', '   ']) {
+    assert.equal(hasRole(site, principal, 'viewers'), false);
+  }
+});
+
+test('legacy SharePoint access flags no longer grant anything on their own', () => {
+  const site = siteWith({ sharePointReadAccess: true, sharePointInteractionAccess: true });
+  assert.equal(hasRole(site, 'anyone', 'viewers', spoofingRequest), false);
+  assert.equal(hasRole(site, 'anyone', 'submitters', spoofingRequest), false);
 });
 
 test('the IIS rewrite header uses the canonical hyphenated HTTP name', () => {

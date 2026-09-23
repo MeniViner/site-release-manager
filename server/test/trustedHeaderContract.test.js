@@ -18,7 +18,6 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { SUPPORTED_SITE_ACCESS_SOURCES } = require('../src/config.js');
 
 const WEB_CONFIG = path.resolve(__dirname, '..', '..', 'web.config');
 const xml = fs.readFileSync(WEB_CONFIG, 'utf8');
@@ -80,68 +79,18 @@ test('web.config declares no local iisnode section', () => {
   assert.ok(!/<iisnode\b/.test(xml), 'a local <iisnode> section breaks the locked-down profile');
 });
 
-// ------------------------------------------------ per-site access config guard
-
-function loadConfigWith(env) {
-  return spawnSync(process.execPath, ['-e', 'require("./src/config.js"); console.log("LOADED");'], {
-    cwd: path.resolve(__dirname, '..'),
-    encoding: 'utf8',
-    env: {
-      ...process.env,
-      NODE_ENV: 'production',
-      PUBLIC_API_URL: 'https://srm.army.idf',
-      PUBLIC_DAILY_DATA_API_URL: 'https://srm.army.idf/api/daily-data/v1',
-      MONGO_URI: 'mongodb://127.0.0.1:27017',
-      MONGO_DB_NAME: 'srm',
-      BUILDER_DATA_MONGO_DB_NAME: 'srm_data',
-      TRUSTED_IDENTITY_ENABLED: 'true',
-      ...env,
-    },
-  });
-}
-
-test('production refuses per-site access without a named server-side adapter', () => {
-  const result = loadConfigWith({ TRUSTED_SITE_ACCESS_ENABLED: 'true' });
-  assert.notEqual(result.status, 0, 'startup must fail closed');
-  assert.match(result.stderr, /TRUSTED_SITE_ACCESS_SOURCE/);
-});
-
-test('production refuses an adapter source that just reads the request', () => {
-  const result = loadConfigWith({
-    TRUSTED_SITE_ACCESS_ENABLED: 'true',
-    TRUSTED_SITE_ACCESS_SOURCE: 'iis-rewrite',
-  });
-  assert.notEqual(result.status, 0, 'no value may mean "trust the caller"');
-});
-
-test('production accepts a recognised server-side adapter', () => {
-  const result = loadConfigWith({
-    TRUSTED_SITE_ACCESS_ENABLED: 'true',
-    TRUSTED_SITE_ACCESS_SOURCE: 'mongo-membership',
-  });
-  assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /LOADED/);
-});
-
-test('production still starts with per-site access disabled', () => {
-  const result = loadConfigWith({ TRUSTED_SITE_ACCESS_ENABLED: 'false' });
-  assert.equal(result.status, 0, result.stderr);
-});
-
-test('the shipped IIS env template cannot fail the per-site access guard', () => {
+// The per-site access header is no longer read by the application at all; the
+// remaining contract is simply that web.config keeps blanking it.
+test('the shipped IIS env template keeps the trusted identity boundary on', () => {
   const template = fs.readFileSync(path.resolve(__dirname, '..', '..', '.env.iis.example'), 'utf8');
   const setting = (key) => {
     const line = template.split(/\r?\n/).find((row) => row.trim().startsWith(`${key}=`));
     return line ? line.split('=').slice(1).join('=').trim() : '';
   };
-  const enabled = setting('TRUSTED_SITE_ACCESS_ENABLED').toLowerCase() === 'true';
-  if (enabled) {
-    assert.ok(
-      SUPPORTED_SITE_ACCESS_SOURCES.has(setting('TRUSTED_SITE_ACCESS_SOURCE').toLowerCase()),
-      'the template enables per-site access, so it must also name a supported adapter '
-      + 'or an operator copying it verbatim gets a server that refuses to start',
-    );
-  }
-  assert.equal(setting('TRUSTED_IDENTITY_ENABLED').toLowerCase(), 'true',
-    'the trusted identity boundary must stay on in the IIS profile');
+  assert.equal(setting('TRUSTED_IDENTITY_ENABLED').toLowerCase(), 'true');
+  assert.ok(setting('MANAGEMENT_SESSION_SECRET'), 'the template must prompt for a signing secret');
+  assert.ok(
+    !template.includes('TRUSTED_SITE_ACCESS_ENABLED'),
+    'the removed header-derived access path must not reappear in the template',
+  );
 });

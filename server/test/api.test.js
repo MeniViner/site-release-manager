@@ -37,6 +37,23 @@ test.before(async () => {
   base = `http://127.0.0.1:${server.address().port}`;
 });
 
+/**
+ * Mongo creation now authorizes from a management SESSION, not from an identity
+ * header on the create request. POST /api/auth/session is the single credentialed
+ * call and the only consumer of the Windows identity; everything else carries a
+ * bearer token. Daily Data calls keep using the end-user identity header, which
+ * is a deliberately separate boundary.
+ */
+const openManagementSession = async (principal) => {
+  const response = await fetch(`${base}/api/auth/session`, {
+    method: 'POST',
+    headers: { 'x-daily-data-dev-user': principal },
+  });
+  const body = await response.json();
+  if (!response.ok) throw new Error(`session exchange failed: ${JSON.stringify(body)}`);
+  return body.token;
+};
+
 const call = async (pathname, options = {}) => {
   const response = await fetch(`${base}${pathname}`, options);
   const text = await response.text();
@@ -105,8 +122,9 @@ test('daily data preflight supports credentialed PUT without changing management
   assert.ok(String(headers.get('access-control-allow-headers')).toLowerCase().includes('if-match'));
 });
 
-test('Mongo management creation preflight is credentialed only at its trusted-identity boundary', async () => {
-  const { status, headers } = await call('/api/sites', {
+test('only the session exchange is a credentialed preflight boundary', async () => {
+  // The session exchange is the ONE call allowed to negotiate a Windows identity.
+  const session = await call('/api/auth/session', {
     method: 'OPTIONS',
     headers: {
       Origin: 'https://portal.army.idf',
@@ -114,20 +132,46 @@ test('Mongo management creation preflight is credentialed only at its trusted-id
       'Access-Control-Request-Headers': 'content-type,accept',
     },
   });
-  assert.equal(status, 204);
-  assert.equal(headers.get('access-control-allow-origin'), 'https://portal.army.idf');
-  assert.equal(headers.get('access-control-allow-credentials'), 'true');
-  const allowed = String(headers.get('access-control-allow-headers')).toLowerCase();
-  for (const header of MANAGEMENT_IDENTITY_REQUEST_HEADERS) assert.ok(allowed.includes(header.toLowerCase()));
+  assert.equal(session.status, 204);
+  assert.equal(session.headers.get('access-control-allow-origin'), 'https://portal.army.idf');
+  assert.equal(session.headers.get('access-control-allow-credentials'), 'true');
+  const sessionAllowed = String(session.headers.get('access-control-allow-headers')).toLowerCase();
+  for (const header of MANAGEMENT_IDENTITY_REQUEST_HEADERS) {
+    assert.ok(sessionAllowed.includes(header.toLowerCase()));
+  }
+
+  // Creation is bearer-authorized and must NOT be credentialed: allowing browser
+  // credentials here is what let an IIS challenge become a native login dialog.
+  const create = await call('/api/sites', {
+    method: 'OPTIONS',
+    headers: {
+      Origin: 'https://portal.army.idf',
+      'Access-Control-Request-Method': 'POST',
+      'Access-Control-Request-Headers': 'content-type,accept,authorization',
+    },
+  });
+  assert.equal(create.status, 204);
+  assert.equal(create.headers.get('access-control-allow-origin'), 'https://portal.army.idf');
+  assert.notEqual(create.headers.get('access-control-allow-credentials'), 'true');
+  assert.ok(
+    String(create.headers.get('access-control-allow-headers')).toLowerCase().includes('authorization'),
+    'the bearer token must survive preflight',
+  );
 
   const health = await call('/api/health', { headers: { Origin: 'https://portal.army.idf' } });
   assert.equal(health.headers.get('access-control-allow-credentials'), null);
 });
 
 test('existing Mongo registration is blocked without allocating a replacement identity', async () => {
+  // A management session is needed just to REACH this check: authorization now
+  // runs before validation so the endpoint cannot be used as an unauthenticated
+  // probe of releases or existing sites.
   const { status, body } = await call('/api/sites', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${await openManagementSession('registration-probe')}`,
+    },
     body: JSON.stringify({ unit: 'u', name: 'n', managerName: 'm', host: 'portal.army.idf', siteCode: 'existing', storageBackend: 'mongo', mode: 'existing' }),
   });
   assert.equal(status, 409);
@@ -230,7 +274,10 @@ test('central Mongo sites allocate isolated identities and enforce data authoriz
     await db.collection('sites').deleteMany({});
     const createMongoSite = async (principal, name) => call('/api/sites', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-daily-data-dev-user': principal },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${await openManagementSession(principal)}`,
+      },
       body: JSON.stringify({
         mode: 'install',
         unit: 'unit',
@@ -268,12 +315,19 @@ test('central Mongo sites allocate isolated identities and enforce data authoriz
         Origin: 'https://portal.army.idf',
         Cookie: 'iis-session=trusted',
         'Content-Type': 'application/json',
-        'x-daily-data-dev-user': 'browser-user',
+        Authorization: `Bearer ${await openManagementSession('browser-user')}`,
       },
       body: JSON.stringify({ mode: 'install', unit: 'unit', name: 'Browser', managerName: 'browser-user', host: 'portal.army.idf', siteCode: 'browser-web', storageBackend: 'mongo' }),
     });
     assert.equal(browserCreation.status, 201);
-    assert.equal(browserCreation.headers.get('access-control-allow-credentials'), 'true');
+    // Creation must NOT be a credentialed boundary any more. Allowing browser
+    // credentials here is precisely what let an IIS 401 escalate into a native
+    // username/password dialog on an ordinary create click.
+    assert.notEqual(
+      browserCreation.headers.get('access-control-allow-credentials'), 'true',
+      'the create endpoint must stay non-credentialed',
+    );
+    assert.equal(browserCreation.headers.get('www-authenticate'), null);
     assert.deepEqual(browserCreation.body.site.dataAccess.viewers, ['browser-user']);
 
     const dailyPath = `/api/daily-data/v1/sites/${encodeURIComponent(first.body.site.builderSiteId)}/legacy-object`;
