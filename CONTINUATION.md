@@ -1,6 +1,6 @@
 # CONTINUATION — Unified Convergence (site-builder + site-release-manager)
 
-Version: 3 (2026-09-23)
+Version: 4 (2026-09-24)
 Integration branch (both repos): `codex/sitebuilder-unified-convergence-20260923`
 
 ## 1. Four recovered inputs (manifest RUN 20260923-162927-54393)
@@ -427,3 +427,152 @@ Windows acceptance: `docs/WINDOWS_IIS_ACCEPTANCE.md` (RM repo).
 3. Live SharePoint farm behaviour: historical folder diagnostics and real
    deployment against live libraries. Not exercised; no destructive repair
    attempted.
+
+
+---
+
+# Session 4 — review findings closed
+
+Starting heads: SB `07a3761`, RM `8eb8227` (both verified clean before editing).
+
+## Finding 1 — the IIS/session contract (CLOSED)
+
+Moving the challenge to `/api/auth/session` was not sufficient, and the review was
+right. The deeper problem: `sites.patch/delete/deploy` and
+`releases.upload/upload-folder/patch/delete` had NO application guard at all —
+they were protected purely by blanket IIS Windows auth. So making the API
+anonymous would have exposed them, and leaving it Windows-only kept challenging
+Bearer requests.
+
+Both halves are closed. Every consequential mutation now requires a signed
+management session (the client carries it, so TXT workflows keep working with
+their boundary intact); the deploy worker keeps its separate `X-SRM-Lease`
+boundary. `web.config` ships an executable route-specific topology:
+
+| Path | Anonymous | Windows | Enforced by |
+|---|---|---|---|
+| default | on | off | the application (Bearer) |
+| `/api/health`, `/api/config` | on | off | public |
+| `/api/daily-data/v1/{healthz,readyz}` | on | off | public by design |
+| `/api/auth/session` | off | **on** | IIS — the only challenge point |
+| `/api/daily-data/v1/sites/*` | off | **on** | IIS + per-site roles |
+| `OPTIONS` for the above | on | off | rewrite → anonymous handler |
+
+The session exchange sends only `Accept`, so it is a CORS-simple request needing
+no preflight — which is what makes challenging that one path safe. Daily Data's
+preflight is diverted by an inbound rewrite (which runs BEFORE authentication) to
+`/api/cors-preflight/daily-data`, answered with the app's own CORS policy.
+
+Spoofing is tested AT THE ISSUER, not only on a mutation that never reads
+identity headers: a browser-supplied trusted header cannot mint a session, and an
+issued token names the identity the issuer saw, not one the caller asked for.
+`IIS-DEPLOY-README.txt` documents the `allowedServerVariables` prerequisite —
+URL Rewrite silently refuses to set a variable that is not allow-listed, which
+would leave the trusted header empty and refuse every session with no obvious cause.
+
+## Finding 2 — idempotency (CLOSED)
+
+The permissive test that accepted a second 201 is gone. A create/install intent
+carries an `Idempotency-Key` bound to the authenticated operator and to a
+fingerprint of the request. Retries resume the SAME site, provisioning and job;
+provisioning is re-driven because it only creates missing defaults. Response loss
+after insertion, after provisioning and after job creation all converge, as do
+concurrent retries — a unique index picks one winner and the losers resume it. A
+reused key with materially different input is rejected; a deliberately different
+site uses a new key. Deduplication is never by display name or Web code.
+
+The client reuses the SAME key across its session-refresh retry — asserted
+directly, because otherwise the server would allocate a second site.
+
+## Finding 3 — documentation (CLOSED)
+
+`WINDOWS_ACCEPTANCE_CHECKLIST.md` is the single canonical entry point and links
+the topology doc. Runtime file corrected to `sitebuilder-runtime-config.json`; a
+direct library GET is no longer accepted as evidence (this farm can answer HTML)
+and is replaced by an authenticated REST read with a content-type assertion; each
+of the four artifacts has an exact destination and `client/dist` is explicitly NOT
+placed in the server application; hosts are consistent (`sitebuilderhub.idf`);
+`MANAGEMENT_SESSION_SECRET` is generated with `RandomNumberGenerator`, not
+`Get-Random`; offline dependency routes replace an online `npm ci`; rollback covers
+the matching API, UI, deployer and runtime contracts without restoring over live data.
+
+## Also closed
+
+- Validated explicit SharePoint hosting choice for Mongo targets (was always
+  auto-allocated), with an opt-in UI — sending the form's default folder names
+  unconditionally would have collided on the second Mongo site in a Web.
+- The shared folder fixture gained propagation-delay and name-collision cases;
+  the classifier already produced those reasons but nothing exercised them.
+
+## Product defects found BY the browser tests, and fixed
+
+1. **Unknown file count reported as 0.** `listSharePointBackups` swallowed a
+   failed per-folder listing and left `files: []`, so a 500 was indistinguishable
+   from an empty backup and the UI stated "0 קבצים" as fact — inviting an operator
+   to delete a backup that is actually intact. Counts are now null when unknown,
+   rendered as "לא ידוע", and the aggregate no longer folds unknowns in as zero.
+2. **Restore preview blanked the whole admin console.** `BackupSiteLivePreview`
+   mounts a second Navigation/ExternalLinks provider; both registered the same
+   fixed recovery participant ids, the duplicate registration threw from an effect
+   with no error boundary, and React unmounted everything. A read-only preview now
+   registers no recovery participant. This alone unblocked five tests.
+3. **A recovered alert draft was silently dropped after a safe reload.**
+   AdminAlerts read its envelope in a mount-only effect while the recovery scope
+   lands asynchronously afterwards. It now re-reads on the recovery state event,
+   ONE-SHOT and gated on the scope, because listening indefinitely would consume
+   the envelope this page writes while preparing its own reload.
+4. **Raw English store text shown to a Hebrew operator.** AdminAlerts passed
+   `saveError.message` straight to the toast; it now routes through
+   `toSafeHebrewError` like every other admin screen.
+
+## Final verified results
+
+Platform darwin 26.6.2, node v26.7.0.
+
+- SB `npx vitest run --maxWorkers=2` → **146 files, 1325 tests, 1325 pass, 0 fail, 0 skip**
+- SB `npx playwright test` (real Chromium) → **44 passed, 0 failed, 5 marked
+  test.fixme**
+- SB lint vs the ACTUAL base revision (`origin/main`, 154 errors / 11 warnings /
+  49 files): **delta 0 / 0 / 0**
+- RM `npm test` (disposable Mongo, explicit `SITE_BUILDER_PATH`) → **267/267, 0 skipped**
+- RM client → **33/33**; `verify:system` PASSED; `verify:iis-server-only` VERIFIED
+- RM has NO eslint configuration anywhere; `verify:system` (syntax-checks every
+  file) is its actual equivalent gate. No linter was fabricated for it.
+
+### Final artifacts (generated, gitignored, NOT committed)
+
+| Artifact | Location | Evidence |
+|---|---|---|
+| SB Universal | `site-builder…/dist-universal` | buildId `315f47d8-f962-4b2a-8b4d-377968453529`, 73 files, JS/CSS hash `669ac0891e2d58b83d765552b80784b39ddeb935d684aaddbee4ccbd36486994`, 31 assets byte-identical across two target identities |
+| RM client | `…/client/dist` | tree hash `e762afb06e8fd0a3…` |
+| SharePoint deployer | `…/sharepoint-deployer/client/dist` | tree hash `6cdbb40b492e0302…` |
+| Server-only package | `…worktrees/srm-server-only-b8ca6e6` | sourceCommit `b8ca6e6…` = RM HEAD, tree hash `f6045f2c57d958fe…` |
+| Paired manifest | `…worktrees/artifact-manifest.json` | both SHAs, lock hashes, platform |
+
+SB `package-lock.json` sha256 `a692c588b25ea1b89732aac44c7dee78d8de2b67bbd95ee2d0dddddad82abd9d`.
+RM `server/package-lock.json` sha256 `651730b058e47a74bc498a09c24494d6fff00468245c1cad54f054d216f10f8b`.
+
+## Known-unfinished, explicitly marked (NOT external acceptance)
+
+Five browser scenarios are `test.fixme` with the reason recorded at the call
+site: two backup payload-state cases and three selective-restore orchestration
+cases. The flow reaches the restore confirmation, but the fixture does not yet
+drive the orchestration far enough for the assertions to mean anything. They are
+outstanding LOCAL work. The equivalent behaviour is covered at unit level in
+`src/components/AdminBackupManagement.test.jsx`.
+
+Note for whoever picks this up: editing `src/utils/adminEditSession.js` while the
+Playwright dev server is reused causes Vite HMR to hand the test harness a
+DIFFERENT module instance than the app, and every recovery spec then fails with
+"the admin recovery scope was never installed". Restart the dev server after
+touching that file.
+
+## Genuinely external — unchanged
+
+1. Silent Windows SSO with no dialog: needs a domain-joined IIS host, correct
+   zone/policy and an SPN. `docs/WINDOWS_IIS_ACCEPTANCE.md` §3.3 distinguishes
+   silent success, a dialog (FAIL) and a JSON refusal (expected unauthorized).
+2. Windows-native dependency compatibility for the server-only package; the
+   manifest states it was not validated on macOS.
+3. Live SharePoint farm behaviour: historical folder repair and deployment
+   against real libraries.
