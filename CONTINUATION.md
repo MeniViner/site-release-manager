@@ -1,6 +1,6 @@
 # CONTINUATION — Unified Convergence (site-builder + site-release-manager)
 
-Version: 2 (2026-09-23)
+Version: 3 (2026-09-23)
 Integration branch (both repos): `codex/sitebuilder-unified-convergence-20260923`
 
 ## 1. Four recovered inputs (manifest RUN 20260923-162927-54393)
@@ -236,3 +236,194 @@ represented across `.env.example` + `.env.local.example` (63 keys). No values re
 - The `mongo-membership` per-site access adapter: not implemented.
 - Convergence review's blocking findings: text still not recovered.
 - Silent Windows SSO: requires real IIS/domain/SPN. External.
+
+
+---
+
+# Session 3 — blockers closed, browser acceptance, final artifacts
+
+Starting heads: SB `34e8594c6ec1b8ace29833a0a93037f296244160`,
+RM `8059e209517a415ea8a0db0417b7f2339d032fd4` (both verified clean before editing).
+No reset, no main merge, no force push.
+
+## Blocker A — native Windows credential popup: CLOSED on the application side
+
+Root cause, corrected from session 2's partial finding. The Node app never emits
+`WWW-Authenticate`; IIS challenges before Express sees the request. But the
+application made that challenge reachable from ORDINARY traffic: `POST /api/sites`
+authorized straight off the IIS-injected identity header while the client opted in
+with `credentials: 'include'`. A failed silent SSO therefore escalated into a
+native username/password dialog on a routine create click.
+
+New architecture:
+- `POST /api/auth/session` is the ONLY credentialed call and the ONLY consumer of
+  the Windows identity. It returns an HMAC-signed, short-lived bearer token
+  (`server/src/managementSession.js`, `server/src/routes/auth.js`).
+- Consequential management operations (create Mongo site, change data access)
+  authorize from that token and are explicitly NON-credentialed, so routine
+  traffic can never be drawn into an authentication handshake.
+- `GET /api/auth/whoami` is a non-credentialed probe, so the UI can render state
+  without provoking authentication.
+- Neither route emits `WWW-Authenticate`; refusals are application JSON with
+  Hebrew messages.
+- Authorization runs BEFORE validation and before any database read, so the
+  create endpoint cannot be used as an unauthenticated probe.
+- The verified session principal becomes the site's initial administrator, so no
+  Mongo site can be ownerless.
+- `MANAGEMENT_SESSION_SECRET` is required in production (32+ chars); development
+  derives a per-process random secret so tokens are never forgeable.
+
+Also fixed in `web.config`: the rule stamping `X-IISNode-Auth-User` was guarded by
+`{REQUEST_FILENAME}` IsFile-negate, so a request resolving to a real file
+(`index.cjs` IS the iisnode handler) skipped the stamp and carried the caller's own
+header into Node. Stamping moved to an unconditional first rule.
+
+REMAINING and genuinely external: proving Windows Integrated Auth completes
+SILENTLY needs a real IIS host, domain membership and an SPN. See
+`docs/WINDOWS_IIS_ACCEPTANCE.md` §4 and §8. No simulated acceptance is claimed.
+
+## Blocker B — ordinary Mongo user authorization: CLOSED
+
+There is no trustworthy server-side membership source: the RM server has no AD,
+LDAP, Graph or SharePoint client (production deps are adm-zip, cors, dotenv,
+express, mongodb, multer, zod) and URL Rewrite cannot derive per-site membership.
+Per instruction, the placeholder path was REMOVED rather than shipped disabled:
+`createSharePointAccessResolver` and the `x-iisnode-sharepoint-sites` branch of
+`hasRole`, plus the `TRUSTED_SITE_ACCESS_*` config and the `mongo-membership`
+setting, are gone. Any caller could previously have self-granted access to any
+site whose `dataAccess` allowed SharePoint access.
+
+Supported model: each site's explicit `dataAccess` lists. Administrators inherit
+the lesser roles; nothing inherits upward; an absent principal never matches.
+Legacy `sharePointReadAccess`/`sharePointInteractionAccess` fields are still
+persisted for document compatibility but grant nothing.
+
+`updateSiteDataAccess` was wired to no UI, so the model was correct but unusable.
+A data-access panel was added to the Mongo site workspace
+(`client/src/SitePage.jsx`): one list per role, saving blocked while the
+administrator list is empty, management refusals rendered in Hebrew.
+
+## SmartTextEditor — real defect found and fixed
+
+The interrupted gate. The contenteditable's React key was derived from its own
+content (`editorKey = JSON.stringify(tokens)`), so React unmounted and remounted
+the editor on EVERY token change. With the 80ms debounce and caret restore,
+keystrokes inside that window were dropped or reordered.
+
+Reproduced in Chromium at 80ms/keystroke (~30wpm, ordinary typing):
+`שורה ראשונה` + Enter + `שורה שנייה` persisted as `שר ראשנה\nשה שנייר` — characters
+lost AND transposed. `abcdefghij` came out `abcefgij`.
+
+Fix: the rendered key advances only for tokens that did not originate in this
+editor's DOM, and children are memoised on that key so React bails out of
+reconciliation while the user types. (Removing the key alone was NOT enough — it
+produced `abcdefghijabcdefghijabcdefghi...` because React diffed fresh elements
+against DOM the user had mutated.) Enter still forces a rebuild, because it can
+leave the caret on a trailing blank line that only exists once the editor-only
+caret filler is rendered.
+
+## Readiness robustness
+
+`/readyz` forwarded a database error to the error handler, so an unreachable Mongo
+produced a 500 instead of a readiness answer. It now always returns parseable JSON;
+unreadiness is `ok:false` with a short non-sensitive reason, asserted to carry no
+stack and no connection URI.
+
+## Gate 8 — one real leak fixed
+
+`RunsPage.jsx` rendered `run.failureInfo.details.responsePreview` verbatim in a
+`<pre>` while every sibling diagnostic was already sanitised. That preview is the
+raw server response and can carry HTML, escaped JSON, auth headers, cookies or
+token-bearing URLs. Now passed through `sanitizeReleaseDiagnostic`.
+
+Site Builder side audited: `toSafeHebrewError` never returns `error.message` — it
+maps to canned Hebrew or the caller's fallback — and is used in 37 places. No raw
+`{error.message}` rendering found in SB admin components.
+
+## Gate 9 — cross-repository semantic review: CLOSED
+
+`ConfigAdapter.load()/_saveSelected()` branch on `isMongoStorageBackend()` at the
+top and RETHROW on error; there is no catch-and-fallback, so no Mongo→TXT
+degradation. `isStrictPersistentBackend()` is unconditionally strict.
+`ConfigProvider`'s TXT bootstrap is guarded by `!isMongoStorageBackend()`.
+
+Paired contract tests (run with explicit `SITE_BUILDER_PATH`) cover: the Mongo
+overlay selecting the real SB central transport without legacy path rewriting (no
+duplicated `/api`); RM runtime config accepted by the real SB descriptor; TXT seed
+paths matching the SB descriptor exactly; SB reading the runtime globals the
+bootstrap defines; bootstrap injected ahead of the real module bundle; and the
+bootstrap parsing back to exactly the runtime config.
+
+## Gate 10 — server-only package: VERIFIED from final source
+
+Built and verified, then independently checked rather than trusting the verifier:
+flat topology (`index.cjs`, `web.config`, `package.json`, `package-lock.json`,
+`.env.example`, `src/`, `node_modules/`, `deployment-manifest.json`); no client or
+deployer UI, no `.git`, no `storage`, no tests, no real `.env`; no file named
+`node.exe`; no local `<iisnode>` section; upload ceiling 629145600.
+
+Proven live by booting the package from `/`:
+- working-directory independent — `/api/health` 200;
+- an unrelated parent `package.json` (version 9.9.9) placed above it did NOT
+  hijack root resolution — the app still reported its own 0.3.7;
+- named-pipe PORT stays a string (`\\.\pipe\...`), numeric ports parse, blanks
+  fall back — no NaN;
+- `/readyz` anonymous JSON; site data 401; create 401 JSON with NO
+  `WWW-Authenticate`;
+- full authorized flow: session → create → `srm-` siteId → creator as
+  administrator → 10 defaults provisioned → `/readyz` flips to `ok:true`;
+- spoofed `x-iisnode-auth-user` on create → 401.
+
+Manifest is honest: `windowsRuntimeIncluded: false`,
+`windowsDependencyCompatibilityValidated: false`.
+
+## Final verified results
+
+Platform darwin 26.6.2, node v26.7.0.
+
+Site Builder `npx vitest run --maxWorkers=2`:
+**146 files, 1321 tests, 1321 pass, 0 fail, 0 skip.**
+(`e2e/` is excluded from vitest; Playwright owns it.)
+
+Site Builder `npm run test:e2e` (real Chromium, headless, 1 worker):
+**18/18 pass** — BOOM picker reopen after exact-identity resolution, cancel while
+pending then reopen, late response for an abandoned query, failed lookup stays
+retryable, name-search pick; inactivity modal copy/focus/Escape/backdrop/
+translucency/exactly-one-reload; SmartText one-Enter, intentional blank line,
+Shift+Enter, caret at start/middle/end, save+reopen with no persisted caret
+placeholder; typing fidelity at 30wpm and at 20ms.
+
+Site Builder lint: changed-file lint CLEAN. Full `eslint .` → 155 errors,
+11 warnings across 50 files; machine-checked intersection with the 11 files changed
+this session is EMPTY, so all are baseline.
+
+Release Manager `npm test` (disposable Mongo on 27977, explicit
+`SITE_BUILDER_PATH`): **242 tests, 242 pass, 0 fail, 0 skipped.**
+Release Manager client: **22/22 pass**; production build OK.
+`npm run verify:system`: **PASSED**. `npm run verify:transfer`: READY.
+`npm run verify:iis-server-only`: VERIFIED.
+
+## Final artifacts (all generated, all gitignored — none are committed)
+
+- SB Universal: buildId `c8b29c04-f175-4357-87ce-2c40ba0aba12`, 73 files,
+  JS/CSS hash `cfcd99edf8355b00411d3808ba204179cc82583ad1339031e5bdbd91390064aa`,
+  31 assets byte-identical across two target identities, no baked identity or
+  secrets. Supersedes `54a64fdb…`, which is NOT reused.
+- SB `package-lock.json` sha256 `a692c588b25ea1b89732aac44c7dee78d8de2b67bbd95ee2d0dddddad82abd9d`
+- RM `server/package-lock.json` sha256 `651730b058e47a74bc498a09c24494d6fff00468245c1cad54f054d216f10f8b`
+- RM client dist, SharePoint deployer dist, and the server-only package: see
+  `artifact-manifest.json` generated alongside them.
+
+Transfer, preservation and rollback: `docs/TRANSFER_AND_ROLLBACK.md` (RM repo).
+Windows acceptance: `docs/WINDOWS_IIS_ACCEPTANCE.md` (RM repo).
+
+## Genuinely external — nothing else blocks
+
+1. Silent Windows SSO (no native dialog) on a real IIS host with domain membership
+   and an SPN. `docs/WINDOWS_IIS_ACCEPTANCE.md` §4 distinguishes silent success,
+   a dialog (FAIL) and a JSON refusal (expected unauthorized behavior).
+2. Windows-native dependency compatibility for the server-only package; the
+   manifest states this was not validated on macOS.
+3. Live SharePoint farm behaviour: historical folder diagnostics and real
+   deployment against live libraries. Not exercised; no destructive repair
+   attempted.
