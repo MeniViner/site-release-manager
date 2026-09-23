@@ -1,35 +1,45 @@
-IIS DEPLOYMENT — SITE RELEASE MANAGER
+IIS DEPLOYMENT - SITE RELEASE MANAGER
 
-This package follows the IISNode layout that previously worked on the closed server:
+Canonical artifacts are separate:
+1. API: npm run package:iis-server-only
+2. Release Manager UI: client/dist
+3. SharePoint deployment worker: sharepoint-deployer/client/dist
 
-Browser / IIS
-  -> web.config URL Rewrite
-  -> index.cjs
-  -> IISNode named pipe
-  -> bundled runtime\node.exe
-  -> Express API + client/dist
-  -> MongoDB
+The API artifact is flat:
+  web.config
+  index.cjs
+  package.json
+  package-lock.json
+  .env.example
+  deployment-manifest.json
+  src/
+  node_modules/
 
-Before creating the final IIS archive on the closed Windows workstation:
-1. Make sure the current project works locally.
-2. Make sure client/dist exists and release-manager-runtime-config.json contains the correct PUBLIC_API_URL.
-3. Make sure server/node_modules is the Windows copy that already works locally.
-4. Double-click CREATE_IIS_PACKAGE.cmd.
+src/index.js is the single startup implementation. index.cjs is a one-line IIS
+handler wrapper that allows src to remain blocked from direct HTTP access.
+web.config intentionally emits no <iisnode> section.
 
-`index.cjs` is the native CommonJS IIS entrypoint. It directly requires the CommonJS server runtime under `server/src`; it is not an ESM bridge. The former root ESM `index.js` was removed and is never packaged or referenced by IIS.
+Never transfer a macOS/Linux executable as node.exe. A package produced away
+from Windows is explicitly marked windowsRuntimeIncluded=false and
+windowsDependencyCompatibilityValidated=false. Install npm ci --omit=dev from
+the matching lockfile on Windows or supply a separately verified Windows
+runtime/dependency payload.
 
-The generated archive contains only what IIS/runtime needs plus storage and .env. It does NOT include client/node_modules, root node_modules, root shared ESM contracts, or SharePoint-deployer node_modules.
+Before replacement:
+- Stop only the siteReleaseManager application pool.
+- Preserve the destination .env and storage directory.
+- Do not copy .env.example over the real .env.
+- Do not delete releases, deployment history, backups, or Mongo data.
 
-IIS prerequisites on the server:
-- IISNode installed.
-- IIS URL Rewrite installed.
-- MongoDB reachable from the server according to .env.
-- Application Pool: No Managed Code.
+Production prerequisites:
+- NODE_ENV=production and every required variable from .env.example.
+- IISNode and URL Rewrite installed; application pool uses No Managed Code.
+- The application is not directly reachable behind the trusted IIS boundary.
+- Integrated Windows Authentication succeeds silently for the approved URL.
+- HTTP_X_IISNODE_AUTH_USER is overwritten from AUTH_USER and reaches Node as
+  x-iisnode-auth-user.
+- httpErrors existingResponse=PassThrough preserves application JSON errors.
 
-The web.config deliberately uses runtime\node.exe copied from the working Windows machine, matching the previous successful deployment pattern and avoiding dependence on PATH.
-
-After extracting on the IIS server:
-- Set the IIS Site/Application Physical Path to the extracted site-release-manager-iis folder.
-- Browse <IIS URL>/api/health. Expected: {"ok":true}
-- Browse <IIS URL>/api/config. Expected: JSON.
-- If the Release Manager UI remains hosted in SharePoint, set its release-manager-runtime-config.json apiBaseUrl to this IIS HTTPS URL.
+After replacement, start only the siteReleaseManager application pool. Verify
+/api/health, then perform an authorized Mongo create/read/write/backup flow and
+a TXT update flow. A health response alone is not acceptance.

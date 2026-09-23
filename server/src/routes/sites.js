@@ -20,8 +20,10 @@ const { canonicalState, isResumable, stateLabel } = require("../services/jobStat
 const { publicBackup } = require("../services/backupService.js");
 const { parseReleaseVersion } = require("../utils/versioning.js");
 const { backendQuery, normalizeBackend } = require("../utils/backendMode.js");
-const { buildBackendDeploymentPlan } = require("../services/deploymentProfiles.js");
+const { assertReleaseCompatibility, buildBackendDeploymentPlan } = require("../services/deploymentProfiles.js");
+const { verifyStoredReleaseIntegrity } = require("../services/releaseValidation.js");
 const { accessForCreator, hasRole, trustedIdentityForRequest } = require("../daily-data/v1/identity.js");
+const { provisionSite } = require("../daily-data/v1/service.js");
 const sitesRouter = Router();
 
 const toDateOrNull = (value) => (value ? new Date(value) : null);
@@ -243,6 +245,20 @@ sitesRouter.post('/', async (req, res, next) => {
         code: 'MONGO_EXISTING_DISCOVERY_UNSUPPORTED',
       });
     }
+    if (mode === 'install' && releaseId) {
+      if (!ObjectId.isValid(releaseId)) {
+        return res.status(400).json({ error: 'מזהה הריליס אינו תקין.', code: 'INVALID_RELEASE_ID' });
+      }
+      const release = await getDb().collection('releases').findOne({ _id: new ObjectId(releaseId), status: 'READY' });
+      if (!release) {
+        return res.status(404).json({ error: 'הריליס המוכן לא נמצא.', code: 'RELEASE_NOT_FOUND' });
+      }
+      if (release.artifactType !== 'universal-dist') {
+        return res.status(400).json({ error: 'הריליס אינו Universal dist.', code: 'RELEASE_NOT_UNIVERSAL' });
+      }
+      assertReleaseCompatibility(release, requestedBackend);
+      verifyStoredReleaseIntegrity(release);
+    }
     const mongoSiteObjectId = requestedBackend === 'mongo' ? new ObjectId() : null;
     const allocationSuffix = mongoSiteObjectId?.toHexString().slice(-10);
     // Mongo targets are centrally allocated. Browser input cannot select a
@@ -294,6 +310,34 @@ sitesRouter.post('/', async (req, res, next) => {
     };
 
     const result = await getDb().collection('sites').insertOne(document);
+    let mongoProvisioning = null;
+    if (identity.storageBackend === 'mongo') {
+      try {
+        mongoProvisioning = await provisionSite(document, creator);
+        document.mongoProvisioning = { ...mongoProvisioning, verifiedAt: new Date() };
+        await getDb().collection('sites').updateOne(
+          { _id: result.insertedId },
+          { $set: { mongoProvisioning: document.mongoProvisioning, updatedAt: new Date() } },
+        );
+      } catch (error) {
+        await getDb().collection('sites').updateOne(
+          { _id: result.insertedId },
+          {
+            $set: {
+              status: 'MONGO_PROVISIONING_FAILED',
+              mongoProvisioningError: {
+                code: error.code || 'DAILY_DATA_PROVISIONING_FAILED',
+                message: error.message,
+                failedAt: new Date(),
+              },
+              updatedAt: new Date(),
+            },
+          },
+        );
+        error.site = publicSite({ ...document, _id: result.insertedId, status: 'MONGO_PROVISIONING_FAILED' });
+        throw error;
+      }
+    }
     let job = null;
     if (mode === 'install' && releaseId) {
       job = await createDeploymentJob({ siteId: result.insertedId, releaseId, type: 'INSTALL' });
@@ -301,6 +345,7 @@ sitesRouter.post('/', async (req, res, next) => {
     return res.status(201).json({
       site: publicSite({ ...document, _id: result.insertedId }),
       job,
+      ...(mongoProvisioning ? { mongoProvisioning } : {}),
       boundary: PROVISIONING_BOUNDARY,
       ...(identity.storageBackend === 'mongo' ? {
         technicalPreview: {
@@ -314,6 +359,18 @@ sitesRouter.post('/', async (req, res, next) => {
   } catch (error) {
     if (error?.code === 11000) return res.status(409).json({ error: 'קיים כבר אתר שמצביע לאותו יעד פיזי: Host, siteCode, ספריית אתר וספריית משתמשים זהים.' });
     if (error instanceof SiteIdentityError) return res.status(400).json({ error: error.message });
+    if (error?.site) {
+      return res.status(error.statusCode || 502).json({
+        error: error.message,
+        code: error.code || 'DAILY_DATA_PROVISIONING_FAILED',
+        site: error.site,
+        retry: {
+          method: 'POST',
+          path: `/api/daily-data/v1/sites/${encodeURIComponent(error.site.builderSiteId)}/provision`,
+          body: { repair: true },
+        },
+      });
+    }
     return next(error);
   }
 });

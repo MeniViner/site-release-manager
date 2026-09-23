@@ -30,8 +30,9 @@ async function start() {
 
   await initializeQueue();
   const app = createApp();
-  server = app.listen(config.port, () => {
-    console.log(`Site Release Manager API: http://localhost:${config.port}`);
+  const listenTarget = process.env.PORT || config.port || 4300;
+  server = app.listen(listenTarget, () => {
+    console.log(`Site Release Manager API listening on ${String(listenTarget)}`);
     console.log(`SharePoint hosts: ${config.sharePointHosts.join(', ')}`);
   });
 }

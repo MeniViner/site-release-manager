@@ -242,6 +242,10 @@ test('central Mongo sites allocate isolated identities and enforce data authoriz
     assert.equal(first.body.site.backendApiUrl, undefined);
     assert.equal(first.body.site.rehearsal, undefined);
     assert.equal(first.body.technicalPreview.dailyDataApiUrl, `http://127.0.0.1:4300/api/daily-data/v1`);
+    assert.equal(first.body.mongoProvisioning.provisionStatus.siteExists, true);
+    assert.equal(first.body.mongoProvisioning.provisionStatus.provisioned, true);
+    assert.equal(first.body.mongoProvisioning.provisionStatus.missingDefaults, 0);
+    assert.ok(first.body.mongoProvisioning.createdCount > 0);
 
     const browserCreation = await call('/api/sites', {
       method: 'POST',
@@ -258,24 +262,25 @@ test('central Mongo sites allocate isolated identities and enforce data authoriz
     assert.deepEqual(browserCreation.body.site.dataAccess.viewers, ['browser-user']);
 
     const dailyPath = `/api/daily-data/v1/sites/${encodeURIComponent(first.body.site.builderSiteId)}/legacy-object`;
+    const testKey = 'integration_custom_state.txt';
     const write = await call(dailyPath, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', 'x-daily-data-dev-user': 'alice' },
-      body: JSON.stringify({ key: 'bihs_master_config_v1.txt', data: { schemaVersion: '1.0.0' }, expectedVersion: 0 }),
+      body: JSON.stringify({ key: testKey, data: { schemaVersion: '1.0.0' }, expectedVersion: 0 }),
     });
     assert.equal(write.status, 200);
     const conflict = await call(dailyPath, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', 'x-daily-data-dev-user': 'alice' },
-      body: JSON.stringify({ key: 'bihs_master_config_v1.txt', data: { schemaVersion: '1.0.1' }, expectedVersion: 0 }),
+      body: JSON.stringify({ key: testKey, data: { schemaVersion: '1.0.1' }, expectedVersion: 0 }),
     });
     assert.equal(conflict.status, 409);
     assert.equal(conflict.body.error.code, 'conflict');
-    const crossSite = await call(`${dailyPath}?key=bihs_master_config_v1.txt`, {
+    const crossSite = await call(`${dailyPath}?key=${encodeURIComponent(testKey)}`, {
       headers: { 'x-daily-data-dev-user': 'bob' },
     });
     assert.equal(crossSite.status, 403);
-    const read = await call(`${dailyPath}?key=bihs_master_config_v1.txt`, {
+    const read = await call(`${dailyPath}?key=${encodeURIComponent(testKey)}`, {
       headers: { 'x-daily-data-dev-user': 'alice' },
     });
     assert.equal(read.status, 200);
