@@ -5,12 +5,15 @@
 Four artifacts. None of them live in Git — all are generated, and all are
 `.gitignore`d. Rebuild them from the tagged source rather than trusting an old copy.
 
-| # | Artifact | Built by | Goes to |
+The topology is a **SharePoint-hosted UI plus an isolated IIS API**. The three
+frontend artifacts are **not** copied into the API application folder.
+
+| # | Artifact | Built by | Exact destination |
 |---|---|---|---|
-| 1 | Site Builder `dist-universal/` | `npm run build:universal` (site-builder) | uploaded as a Release in Release Manager |
-| 2 | Release Manager `client/dist/` | `npm run build:client` | served by the Release Manager server |
-| 3 | SharePoint deployer `sharepoint-deployer/client/dist/` | `npm run build:deployer` | the SharePoint deployer library |
-| 4 | Server-only package | `SERVER_ONLY_PACKAGE_DIR=<dir> npm run package:iis-server-only` | the IIS application folder |
+| 1 | Site Builder `dist-universal/` | `npm run build:universal` (site-builder) | **not placed by hand** — uploaded as a Release through the Release Manager UI, then deployed per target |
+| 2 | Release Manager `client/dist/` | `npm run build:client` | the SharePoint library hosting the management UI, e.g. `/sites/tools/SiteAssets/site-release-manager/`. Its origin must be listed in `CLIENT_ORIGINS` on the API |
+| 3 | SharePoint deployer `sharepoint-deployer/client/dist/` | `npm run build:deployer` | the library named by `SHAREPOINT_DEPLOYER_PATH`, default `/sites/tools/SiteAssets/site-release-deployer/` |
+| 4 | Server-only package | `SERVER_ONLY_PACKAGE_DIR=<dir> npm run package:iis-server-only` | the IIS application folder, e.g. `C:\inetpub\srm-api` |
 
 Carry the generated `artifact-manifest.json` alongside them and check the hashes
 on arrival. Artifact 1 is the only one an operator uploads through the UI; 2–4
@@ -20,10 +23,16 @@ are placed on the server.
 
 - The server-only package contains `node_modules/` resolved on the BUILD machine.
   Its manifest states `windowsRuntimeIncluded: false` and
-  `windowsDependencyCompatibilityValidated: false` — this is deliberate and honest:
-  no Windows runtime was bundled and no Windows-native dependency check was run on
-  macOS. If any dependency turns out to need a native Windows build, run
-  `npm ci --omit=dev` on the Windows host inside the package folder.
+  `windowsDependencyCompatibilityValidated: false` — deliberate and honest: no
+  Windows runtime was bundled and no Windows-native dependency check ran on macOS.
+- **There is no registry in the closed environment, so `npm ci` is not a recovery
+  plan.** `node_modules/` ships inside the artifact. If a dependency turns out to
+  need a native Windows build, use one of:
+  a) rebuild the artifact on a Windows host;
+  b) `npm ci --omit=dev` against an approved internal registry mirror;
+  c) carry an `npm pack` / cache tarball set in and run
+     `npm ci --omit=dev --offline --cache <carried-cache>`.
+  Record which route was used in the acceptance report.
 - No `.env`, no `storage/`, no Git metadata, no tests and no frontend bundles are
   inside the server-only package. Verified by `npm run verify:iis-server-only`.
 - Nothing in the package contains secrets. `.env.example` is a template.
@@ -42,8 +51,13 @@ Stop-WebAppPool -Name 'SiteReleaseManager'
 4. Merge any NEW keys from `.env.example` into the existing `.env`. This release
    adds:
    - `MANAGEMENT_SESSION_SECRET` — **required**, 32+ characters, unique per
-     installation. Generate with:
-     `[Convert]::ToBase64String((1..48 | ForEach-Object { Get-Random -Max 256 }))`
+     installation. `Get-Random` is NOT a cryptographic generator; on
+     PowerShell 5.1 use:
+     ```powershell
+     $bytes = [byte[]]::new(48)
+     [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+     [Convert]::ToBase64String($bytes)
+     ```
    - `MANAGEMENT_SESSION_TTL_SECONDS` — optional, defaults to 28800.
    Also REMOVE, if present: `TRUSTED_SITE_ACCESS_ENABLED`,
    `TRUSTED_SITE_ACCESS_HEADER`, `TRUSTED_SITE_ACCESS_SOURCE`. They are no longer
@@ -53,7 +67,15 @@ Stop-WebAppPool -Name 'SiteReleaseManager'
 Start-WebAppPool -Name 'SiteReleaseManager'
 ```
 
-Then work through `docs/WINDOWS_IIS_ACCEPTANCE.md`.
+5. Confirm the IIS prerequisites in `IIS-DEPLOY-README.txt`, especially the two
+   `allowedServerVariables` entries — URL Rewrite silently refuses to set a
+   server variable that is not allow-listed, which leaves the trusted identity
+   header empty and refuses every management session with no obvious cause.
+
+Then work through the canonical entry point,
+[`docs/WINDOWS_ACCEPTANCE_CHECKLIST.md`](./WINDOWS_ACCEPTANCE_CHECKLIST.md),
+starting with the authentication topology in
+[`docs/WINDOWS_IIS_ACCEPTANCE.md`](./WINDOWS_IIS_ACCEPTANCE.md).
 
 The server refuses to start in production without `MANAGEMENT_SESSION_SECRET`.
 That is intentional: a missing or guessable secret would make management session
@@ -85,9 +107,23 @@ Nothing in this release performs a schema migration, so rollback is a file swap.
 Mongo data written while the new build was running stays valid: site documents
 gained no new required fields, and `dataAccess` was already present.
 
-Rolling back re-opens the two defects this release closes — `/readyz` requiring
-an identity, and the trusted-identity header being spoofable on requests that
-resolve to a real file — so treat rollback as temporary.
+### Roll back the whole contract, not one piece
+
+The API, the management UI, the deployer and the Site Builder runtime form one
+contract. Rolling back only the API leaves a UI that sends
+`Authorization: Bearer` and an `Idempotency-Key` to a server that ignores both,
+and a `web.config` whose route-specific authentication no longer matches the
+application. Restore the matching versions of artifacts 2, 3 and 4 together, and
+note the Release the targets were on before deciding whether artifact 1 also
+needs reverting.
+
+Never restore an old copy OVER newly written live data: `.env`, `storage/`, the
+Mongo databases and site content are preservation targets in both directions.
+
+Rolling back re-opens what this release closes — `/readyz` requiring an identity,
+the trusted-identity header being spoofable on requests that resolve to a real
+file, consequential mutations protected only by blanket IIS authentication, and
+non-idempotent creation — so treat rollback as temporary.
 
 If only the Site Builder Universal artifact needs reverting, redeploy the previous
 Release from Release Manager; stored releases are immutable and remain available.

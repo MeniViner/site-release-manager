@@ -54,8 +54,29 @@ const openManagementSession = async (principal) => {
   return body.token;
 };
 
+/**
+ * Consequential management operations (site create/update/delete/deploy, release
+ * upload/update/delete, data-access) now require a management session. These
+ * tests are about CRUD behaviour, not the auth boundary -- which
+ * managementSession.test.js covers directly -- so the harness attaches a default
+ * operator session unless a test sets Authorization itself.
+ */
+const MANAGED_MUTATION = /^\/api\/(sites|releases)(\/|\?|$)/;
+let defaultManagementToken = '';
+
 const call = async (pathname, options = {}) => {
-  const response = await fetch(`${base}${pathname}`, options);
+  const method = String(options.method || 'GET').toUpperCase();
+  let requestOptions = options;
+  if (['POST', 'PATCH', 'DELETE', 'PUT'].includes(method)
+    && MANAGED_MUTATION.test(pathname)
+    && !options.headers?.Authorization) {
+    if (!defaultManagementToken) defaultManagementToken = await openManagementSession('harness-operator');
+    requestOptions = {
+      ...options,
+      headers: { ...(options.headers || {}), Authorization: `Bearer ${defaultManagementToken}` },
+    };
+  }
+  const response = await fetch(`${base}${pathname}`, requestOptions);
   const text = await response.text();
   let body = null;
   if (text) { try { body = JSON.parse(text); } catch { body = text; } }

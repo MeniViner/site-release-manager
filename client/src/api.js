@@ -377,6 +377,17 @@ async function managementRequest(path, options = {}) {
   }
 }
 
+
+/**
+ * A per-intent key. Deliberately random rather than derived from the form:
+ * creating a genuinely different site, or retrying later on purpose, must be
+ * able to allocate a new one.
+ */
+export function newIdempotencyKey() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `srm-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
 export const api = {
   health: () => request('/api/health'),
   config: () => request('/api/config'),
@@ -388,7 +399,13 @@ export const api = {
   createSite: (body) => (body?.storageBackend === 'mongo'
     ? managementRequest('/api/sites', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        // One create intent, one key. A retry after a lost response -- including
+        // the automatic retry after a session refresh -- reuses this exact value,
+        // so the server converges on the same site instead of allocating again.
+        'Idempotency-Key': body.idempotencyKey || newIdempotencyKey(),
+      },
       body: JSON.stringify(body),
     })
     : request('/api/sites', {
@@ -401,7 +418,7 @@ export const api = {
     credentials: 'omit',
     headers: managementToken ? { Authorization: `Bearer ${managementToken}` } : {},
   }),
-  updateSite: (id, body) => request(`/api/sites/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+  updateSite: (id, body) => managementRequest(`/api/sites/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
   updateSiteDataAccess: (id, dataAccess) => managementRequest(`/api/sites/${id}/data-access`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
@@ -409,15 +426,15 @@ export const api = {
   }),
   // Deleting a Site removes the Release Manager tracking record only; the
   // explicit confirm token makes that intent unambiguous at the API boundary.
-  deleteSite: (id) => request(`/api/sites/${id}?confirm=delete-tracking-record`, { method: 'DELETE' }),
+  deleteSite: (id) => managementRequest(`/api/sites/${id}?confirm=delete-tracking-record`, { method: 'DELETE' }),
   siteProvisioningBoundary: () => request('/api/sites/provisioning-boundary'),
-  deploy: (siteId, releaseId, { force = false } = {}) => request(`/api/sites/${siteId}/deploy`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ releaseId, force }) }),
+  deploy: (siteId, releaseId, { force = false } = {}) => managementRequest(`/api/sites/${siteId}/deploy`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ releaseId, force }) }),
   releases: (backend = '') => request(`/api/releases${backend ? `?backend=${encodeURIComponent(backend)}` : ''}`),
   releaseVersionSuggestions: () => request('/api/releases/version-suggestions'),
-  uploadRelease: (formData) => request('/api/releases/upload', { method: 'POST', body: formData }),
-  uploadReleaseFolder: (formData) => request('/api/releases/upload-folder', { method: 'POST', body: formData }),
-  updateRelease: (id, body) => request(`/api/releases/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
-  deleteRelease: (id) => request(`/api/releases/${id}`, { method: 'DELETE' }),
+  uploadRelease: (formData) => managementRequest('/api/releases/upload', { method: 'POST', body: formData }),
+  uploadReleaseFolder: (formData) => managementRequest('/api/releases/upload-folder', { method: 'POST', body: formData }),
+  updateRelease: (id, body) => managementRequest(`/api/releases/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+  deleteRelease: (id) => managementRequest(`/api/releases/${id}`, { method: 'DELETE' }),
   job: (id) => request(`/api/jobs/${id}`),
   verifyLocalDeployment: (id) => request(`/api/deployments/${id}/verify-local`, { method: 'POST' }),
   runs: (backend = '') => request(`/api/runs?limit=100${backend ? `&backend=${encodeURIComponent(backend)}` : ''}`),

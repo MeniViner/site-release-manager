@@ -68,6 +68,33 @@ function createApp() {
   // Daily Site Builder data is intentionally isolated from the management API:
   // it needs credentialed PUT/PATCH for the SharePoint/IIS identity flow, while
   // management keeps its existing non-credentialed browser boundary.
+  // Anonymous CORS preflight handler.
+  //
+  // URL Rewrite diverts OPTIONS for the Windows-authenticated Daily Data routes
+  // here (see web.config, AnonymousCorsPreflight) because a browser preflight
+  // carries no credentials and a 401 would kill the real request that follows.
+  // Rewrite runs before authentication, so this path is reachable anonymously.
+  // It answers with the SAME policy the Daily Data routes use and nothing more:
+  // no site data is touched and no authorization is granted here.
+  app.options('/api/cors-preflight/daily-data', (req, res) => {
+    const origin = req.get('origin');
+    if (!isAllowedOrigin(origin)) return res.status(403).end();
+    if (origin) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
+    }
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', DAILY_DATA_REQUEST_HEADERS.join(', '));
+    res.setHeader('Access-Control-Max-Age', '600');
+    return res.status(204).end();
+  });
+  // A non-OPTIONS request here is a misrouted call, never a data path.
+  app.all('/api/cors-preflight/daily-data', (_req, res) => res.status(405).json({
+    ok: false,
+    error: { code: 'preflight_only', message: 'נתיב זה משמש לבדיקת CORS בלבד.' },
+  }));
+
   app.use('/api/daily-data/v1', express.json({ limit: '10mb' }));
   app.use('/api/daily-data/v1', cors({
     origin(origin, callback) {

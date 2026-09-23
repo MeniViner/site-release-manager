@@ -40,6 +40,13 @@ async function migrateIndexes(db) {
 
   await Promise.all([
     sites.createIndex({ targetKey: 1 }, { unique: true, sparse: true }),
+    // One create/install intent -> one logical site. The key is scoped to the
+    // authenticated operator so two operators cannot collide, and the unique
+    // index is what makes a concurrent retry converge instead of racing.
+    sites.createIndex(
+      { creationIdempotencyOwner: 1, creationIdempotencyKey: 1 },
+      { unique: true, sparse: true, name: 'creation_idempotency' },
+    ),
     sites.createIndex({ host: 1, siteCode: 1 }),
     db.collection('releases').createIndex({ version: 1 }, { unique: true }),
     db.collection('deployment_jobs').createIndex({ siteId: 1, createdAt: -1 }),

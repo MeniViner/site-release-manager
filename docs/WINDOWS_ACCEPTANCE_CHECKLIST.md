@@ -1,5 +1,15 @@
 # Windows Acceptance Checklist — Release Manager TXT Pipeline
 
+> **This is the canonical acceptance entry point.**
+>
+> Run [`WINDOWS_IIS_ACCEPTANCE.md`](./WINDOWS_IIS_ACCEPTANCE.md) FIRST: it owns the
+> authentication topology (anonymous baseline, the single Windows-authenticated
+> session endpoint, Bearer-protected management mutations, the anonymous CORS
+> preflight diversion) and the `allowedServerVariables` prerequisite. Nothing in
+> this checklist can pass if identity is misconfigured.
+>
+> Transfer, installation and rollback: [`TRANSFER_AND_ROLLBACK.md`](./TRANSFER_AND_ROLLBACK.md).
+
 The branch has now completed a real deployment on the closed Windows +
 SharePoint environment for the existing `schedule` Web using the independent
 logical target `siteDB1` + `siteUsersDb1`. Release Manager reached 100% and

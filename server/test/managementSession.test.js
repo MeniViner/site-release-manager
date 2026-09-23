@@ -274,23 +274,118 @@ test('no Mongo site can be stored without an owner', async (t) => {
   assert.deepEqual(ownerless, [], 'an ownerless Mongo site must be impossible to create');
 });
 
-test('a replayed creation does not duplicate the site identity', async (t) => {
+test('a replayed creation converges on ONE logical site, job and provisioning', async (t) => {
   if (!available) return t.skip('Set SRM_TEST_MONGO_URI to run database-backed creation tests.');
   const token = await openSession('domain\\replay');
   const payload = createPayload();
-  const first = await createSite(token, payload);
-  assert.equal(first.status, 201);
-  const second = await createSite(token, payload);
+  const key = `idem-${Date.now()}-a`;
 
-  const stored = await db.collection('sites').find({ name: payload.name }).toArray();
-  if (second.status === 201) {
-    // If a second record is permitted it must still be a DISTINCT allocation,
-    // never a silent reuse of another logical site's data identity.
-    const ids = new Set(stored.map((row) => row.builderSiteId));
-    assert.equal(ids.size, stored.length, 'each logical site needs its own builderSiteId');
-  } else {
-    assert.equal(stored.length, 1, 'a refused replay must not leave a second record');
+  const first = await createSite(token, payload, { 'Idempotency-Key': key });
+  assert.equal(first.status, 201, JSON.stringify(first.body));
+  const firstId = first.body.site.builderSiteId;
+
+  // Response loss AFTER insertion, after provisioning and after job creation all
+  // look the same to the client: it simply sends the request again.
+  const replay = await createSite(token, payload, { 'Idempotency-Key': key });
+  assert.equal(replay.status, 200, 'a replay is not a new creation');
+  assert.equal(replay.body.idempotent, true);
+  assert.equal(replay.body.site.builderSiteId, firstId, 'the same logical site must come back');
+
+  const stored = await db.collection('sites').find({
+    creationIdempotencyOwner: 'domain\\replay',
+    creationIdempotencyKey: key,
+  }).toArray();
+  assert.equal(stored.length, 1, 'a retry must never leave a second record');
+
+  // Defaults are not duplicated by the resumed provisioning.
+  assert.equal(
+    replay.body.mongoProvisioning?.provisionStatus?.missingDefaults, 0,
+    'the resumed site must still be fully provisioned',
+  );
+  assert.equal(
+    replay.body.mongoProvisioning?.createdCount, 0,
+    'a resumed provisioning must create nothing the first pass already created',
+  );
+});
+
+test('concurrent retries of one intent converge on a single site', async (t) => {
+  if (!available) return t.skip('Set SRM_TEST_MONGO_URI to run database-backed creation tests.');
+  const token = await openSession('domain\\concurrent');
+  const payload = createPayload();
+  const key = `idem-${Date.now()}-concurrent`;
+
+  const responses = await Promise.all(
+    Array.from({ length: 4 }, () => createSite(token, payload, { 'Idempotency-Key': key })),
+  );
+
+  // The requirement is convergence, not a particular split of 201/200: which
+  // racer wins the insert and which of them additionally races on provisioning
+  // is timing, and asserting a fixed split would encode an implementation
+  // detail. What must hold is that every racer succeeds and they all end up on
+  // the same site.
+  const statuses = responses.map((r) => r.status);
+  assert.ok(
+    statuses.every((status) => status === 200 || status === 201),
+    `every racer must succeed, got ${JSON.stringify(statuses)}`,
+  );
+  assert.equal(statuses.filter((s) => s === 201).length <= 1, true, 'at most one racer may report a fresh creation');
+
+  const ids = new Set(responses.map((r) => r.body.site.builderSiteId));
+  assert.equal(ids.size, 1, 'all racers must converge on ONE builderSiteId');
+
+  const stored = await db.collection('sites').find({
+    creationIdempotencyOwner: 'domain\\concurrent',
+    creationIdempotencyKey: key,
+  }).toArray();
+  assert.equal(stored.length, 1, 'no orphaned allocation may survive the race');
+});
+
+test('a reused key with materially different input is rejected', async (t) => {
+  if (!available) return t.skip('Set SRM_TEST_MONGO_URI to run database-backed creation tests.');
+  const token = await openSession('domain\\conflict');
+  const key = `idem-${Date.now()}-conflict`;
+  const first = await createSite(token, createPayload(), { 'Idempotency-Key': key });
+  assert.equal(first.status, 201);
+
+  const different = await createSite(token, createPayload({ unit: 'a-different-unit' }), { 'Idempotency-Key': key });
+  assert.equal(different.status, 409, 'reusing a key for different input is a client bug, not a retry');
+  assert.equal(different.body.code, 'IDEMPOTENCY_KEY_CONFLICT');
+});
+
+test('a deliberately different site uses a new key and allocates separately', async (t) => {
+  if (!available) return t.skip('Set SRM_TEST_MONGO_URI to run database-backed creation tests.');
+  const token = await openSession('domain\\distinct');
+  const a = await createSite(token, createPayload(), { 'Idempotency-Key': `idem-${Date.now()}-x` });
+  const b = await createSite(token, createPayload(), { 'Idempotency-Key': `idem-${Date.now()}-y` });
+  assert.equal(a.status, 201);
+  assert.equal(b.status, 201);
+  assert.notEqual(a.body.site.builderSiteId, b.body.site.builderSiteId,
+    'distinct intents remain distinct logical sites');
+});
+
+test('an idempotency key is scoped to the operator who owns it', async (t) => {
+  if (!available) return t.skip('Set SRM_TEST_MONGO_URI to run database-backed creation tests.');
+  const key = `idem-${Date.now()}-shared`;
+  const payload = createPayload();
+  const mine = await createSite(await openSession('domain\\owner-a'), payload, { 'Idempotency-Key': key });
+  assert.equal(mine.status, 201);
+
+  // The same key from a different operator must not resolve to someone else's
+  // site, and must not be able to read it back.
+  const theirs = await createSite(await openSession('domain\\owner-b'), createPayload(), { 'Idempotency-Key': key });
+  assert.ok(theirs.status === 201 || theirs.status === 409, `unexpected ${theirs.status}`);
+  if (theirs.status === 201) {
+    assert.notEqual(theirs.body.site.builderSiteId, mine.body.site.builderSiteId,
+      'one operator must never resume another operator\'s creation');
   }
+});
+
+test('creation without a key still works and stays non-idempotent', async (t) => {
+  if (!available) return t.skip('Set SRM_TEST_MONGO_URI to run database-backed creation tests.');
+  const token = await openSession('domain\\nokey');
+  const first = await createSite(token, createPayload());
+  assert.equal(first.status, 201, 'the key is optional for compatibility');
+  assert.notEqual(first.body.idempotent, true);
 });
 
 test('data-access administration requires a management session and admin role', async (t) => {
@@ -333,4 +428,151 @@ test('data-access administration requires a management session and admin role', 
   const updated = await db.collection('sites').findOne({ _id: site._id });
   assert.ok(updated.dataAccess.viewers.includes('domain\\reader'), 'the change must take effect');
   assert.ok(!updated.dataAccess.administrators.includes('domain\\reader'), 'roles must stay distinct');
+});
+
+// ------------------------------------------------- spoofing AT THE ISSUER
+
+test('the token issuer itself cannot be spoofed by a browser-supplied header', async () => {
+  // A mutation rejecting a forged header proves nothing about issuance: the
+  // mutation never reads identity headers at all. The issuer DOES, so this is
+  // where spoof resistance has to be demonstrated.
+  //
+  // In production `trustedIdentityForRequest` accepts only
+  // config.trustedIdentityHeader, which web.config re-stamps unconditionally, and
+  // refuses the development header outright. Here (development) the production
+  // header must not be honoured.
+  const { status, headers, body } = await call('/api/auth/session', {
+    method: 'POST',
+    headers: { 'x-iisnode-auth-user': 'DOMAIN\\attacker', Origin: 'http://localhost:5173' },
+  });
+  assert.equal(status, 401, 'a production-style trusted header must not mint a session here');
+  assert.equal(body.error.code, 'management_identity_unavailable');
+  assert.equal(headers.get('www-authenticate'), null);
+});
+
+test('an issued token names the identity the issuer saw, not one the caller asked for', async () => {
+  const { body } = await call('/api/auth/session', {
+    method: 'POST',
+    headers: {
+      [DEV_IDENTITY_HEADER]: 'domain\\real-user',
+      'x-iisnode-auth-user': 'domain\\claimed-admin',
+    },
+  });
+  assert.equal(body.principal, 'domain\\real-user', 'the caller may not choose the subject');
+  assert.equal(verifyManagementSession(body.token).principal, 'domain\\real-user');
+});
+
+test('an unauthorized operator gets a session but no access to another site', async (t) => {
+  if (!available) return t.skip('Set SRM_TEST_MONGO_URI to run database-backed tests.');
+  // Holding a valid session is authentication, not authorization.
+  const ownerToken = await openSession('domain\\legit-owner');
+  const payload = createPayload();
+  assert.equal((await createSite(ownerToken, payload)).status, 201);
+  const site = await db.collection('sites').findOne({ name: payload.name });
+
+  const strangerToken = await openSession('domain\\stranger-operator');
+  const { status } = await call(`/api/sites/${String(site._id)}/data-access`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${strangerToken}` },
+    body: JSON.stringify({
+      dataAccess: {
+        viewers: ['domain\\stranger-operator'], submitters: [], editors: [],
+        administrators: ['domain\\stranger-operator'],
+        sharePointReadAccess: false, sharePointInteractionAccess: false,
+      },
+    }),
+  });
+  assert.equal(status, 403, 'a valid session must not grant another site\'s administration');
+});
+
+test('concurrent session acquisition yields independently valid tokens', async () => {
+  const results = await Promise.all(Array.from({ length: 5 }, () => call('/api/auth/session', {
+    method: 'POST',
+    headers: { [DEV_IDENTITY_HEADER]: 'domain\\concurrent-operator' },
+  })));
+  assert.ok(results.every((r) => r.status === 201), 'every concurrent acquisition must succeed');
+  for (const r of results) {
+    assert.equal(verifyManagementSession(r.body.token).principal, 'domain\\concurrent-operator');
+  }
+});
+
+// ----------------------------------------------- consequential operations
+
+test('every consequential management mutation requires a session', async (t) => {
+  if (!available) return t.skip('Set SRM_TEST_MONGO_URI to run database-backed tests.');
+  const token = await openSession('domain\\inventory');
+  const payload = createPayload();
+  assert.equal((await createSite(token, payload)).status, 201);
+  const site = await db.collection('sites').findOne({ name: payload.name });
+  const id = String(site._id);
+
+  // The boundary must not stop at Mongo creation: edit, delete, deploy and the
+  // release lifecycle are equally consequential and were previously protected
+  // only by blanket IIS Windows authentication.
+  const unauthenticated = [
+    ['PATCH', `/api/sites/${id}`, { name: 'renamed' }],
+    ['DELETE', `/api/sites/${id}?confirm=delete-tracking-record`, null],
+    ['POST', `/api/sites/${id}/deploy`, { releaseId: '000000000000000000000000' }],
+    ['PATCH', '/api/releases/000000000000000000000000', { version: '9.9.9' }],
+    ['DELETE', '/api/releases/000000000000000000000000', null],
+  ];
+
+  for (const [method, pathname, payloadBody] of unauthenticated) {
+    const { status, headers, body } = await call(pathname, {
+      method,
+      // Explicitly no Authorization: the harness only adds one when absent.
+      headers: { 'Content-Type': 'application/json', Authorization: '' },
+      ...(payloadBody ? { body: JSON.stringify(payloadBody) } : {}),
+    });
+    assert.equal(status, 401, `${method} ${pathname} must require a management session`);
+    assert.equal(body.error?.code, 'management_session_required');
+    assert.equal(headers.get('www-authenticate'), null, `${method} ${pathname} must not challenge`);
+  }
+});
+
+test('read-only management endpoints stay open to the UI without a session', async () => {
+  // Widening the mutation boundary must not make the read-only UI require a
+  // session. Asserted as "not an authorization refusal" rather than 200, because
+  // these routes legitimately fail differently when no database is configured
+  // and this suite also runs without one.
+  for (const pathname of ['/api/health', '/api/config']) {
+    const { status } = await call(pathname);
+    assert.equal(status, 200, `${pathname} must remain public`);
+  }
+  for (const pathname of ['/api/sites', '/api/releases']) {
+    const { status } = await call(pathname);
+    assert.ok(status !== 401 && status !== 403, `${pathname} must not require a management session`);
+  }
+});
+
+// ------------------------------------------------------ anonymous preflight
+
+test('the diverted CORS preflight answers anonymously with the Daily Data policy', async () => {
+  // URL Rewrite sends OPTIONS for the Windows-authenticated Daily Data routes
+  // here, because a browser preflight carries no credentials and a 401 would
+  // kill the real request behind it.
+  const { status, headers } = await call('/api/cors-preflight/daily-data', {
+    method: 'OPTIONS',
+    headers: { Origin: 'https://portal.army.idf' },
+  });
+  assert.equal(status, 204);
+  assert.equal(headers.get('access-control-allow-origin'), 'https://portal.army.idf');
+  assert.equal(headers.get('access-control-allow-credentials'), 'true');
+  const allowed = String(headers.get('access-control-allow-headers')).toLowerCase();
+  assert.ok(allowed.includes('if-match'), 'conditional writes need If-Match to survive preflight');
+  assert.ok(allowed.includes('content-type'));
+});
+
+test('an unconfigured origin is refused at the preflight', async () => {
+  const { status } = await call('/api/cors-preflight/daily-data', {
+    method: 'OPTIONS',
+    headers: { Origin: 'https://not-configured.example' },
+  });
+  assert.equal(status, 403);
+});
+
+test('the preflight path is not a data path', async () => {
+  const { status, body } = await call('/api/cors-preflight/daily-data');
+  assert.equal(status, 405);
+  assert.equal(body.error.code, 'preflight_only');
 });
