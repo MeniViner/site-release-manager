@@ -6,7 +6,7 @@ import {
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from './api.js';
 import { STAGE_ORDER as CANONICAL_STAGE_ORDER, stageLabel } from '../../shared/deploymentStages.js';
-import { safeReleaseManagerError, userFacingSharePointFailure } from '../../shared/userFacingErrors.js';
+import { safeReleaseManagerError, userFacingSharePointFailure, sanitizeReleaseDiagnostic } from '../../shared/userFacingErrors.js';
 import { useBackendMode } from './context/BackendModeContext.jsx';
 
 const STATE_LABELS = {
@@ -317,7 +317,10 @@ function RunDetailModal({ run, loading, onClose, onRefresh }) {
             </div>
             {safeFailure.nextAction && <p className="failure-next-action">{safeFailure.nextAction}</p>}
             {run.failureInfo.url && <code className="run-url" dir="ltr">{run.failureInfo.url}</code>}
-            {run.failureInfo.details?.responsePreview && <pre className="failure-preview">{run.failureInfo.details.responsePreview}</pre>}
+            {/* The raw SharePoint response was rendered verbatim here. It can carry
+                HTML, escaped server JSON, headers or token-bearing URLs, so it goes
+                through the same sanitiser as the other diagnostics. */}
+            {run.failureInfo.details?.responsePreview && <pre className="failure-preview">{sanitizeReleaseDiagnostic(run.failureInfo.details.responsePreview)}</pre>}
           </div>
         </section>}
 

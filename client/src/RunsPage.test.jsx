@@ -72,3 +72,26 @@ describe('terminal Run actions', () => {
     expect(screen.queryByText(/secret diagnostic text/)).not.toBeInTheDocument();
   });
 });
+
+describe('failure diagnostics never expose raw server content', () => {
+  it('sanitises the SharePoint response preview before rendering it', async () => {
+    const hostile = [
+      '<html><body>SharePoint error</body></html>',
+      'Authorization: Bearer abcdef0123456789',
+      'set-cookie: FedAuth=SECRETCOOKIEVALUE',
+      'https://portal.army.idf/_api/web?token=SUPERSECRETTOKEN',
+    ].join(' ');
+
+    const { sanitizeReleaseDiagnostic } = await import('../../shared/userFacingErrors.js');
+    const safe = sanitizeReleaseDiagnostic(hostile);
+
+    expect(safe).not.toContain('<html>');
+    expect(safe).not.toContain('<body>');
+    expect(safe).toContain('[html]');
+    expect(safe).not.toContain('abcdef0123456789');
+    expect(safe).not.toContain('SECRETCOOKIEVALUE');
+    expect(safe).not.toContain('SUPERSECRETTOKEN');
+    expect(safe).toContain('[redacted]');
+    expect(safe.length).toBeLessThanOrEqual(500);
+  });
+});
