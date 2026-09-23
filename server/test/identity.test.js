@@ -112,6 +112,9 @@ test('production rejects development identity headers and accepts only the trust
       BUILDER_DATA_MONGO_DB_NAME: 'test-builder',
       TRUSTED_IDENTITY_ENABLED: 'true',
       TRUSTED_IDENTITY_HEADER: 'x-iisnode-auth-user',
+      // Production also refuses to boot without a management signing secret.
+      // Set it explicitly so this spawn does not depend on the outer shell.
+      MANAGEMENT_SESSION_SECRET: 'identity-test-management-secret-32-chars',
     },
   });
   assert.equal(result.status, 0, result.stderr || result.stdout);

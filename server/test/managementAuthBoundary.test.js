@@ -176,3 +176,21 @@ test('a browser-supplied identity header cannot forge a management principal', a
   // forged production-style trusted header must not be honoured here.
   assert.ok(status !== 201, 'a forged trusted header must never create a site');
 });
+
+test('readiness reports not_ready as JSON when the database is unreachable', async () => {
+  // Without SRM_TEST_MONGO_URI the app points at an unreachable Mongo. The probe
+  // must still answer parseable JSON: a 500 (or an HTML error page) would break
+  // Site Builder's deploy gate, which only understands JSON ok===true.
+  const { status, headers, body } = await call(`${DAILY}/readyz`);
+  assert.equal(status, 200, 'readiness must not fail the request');
+  assert.match(headers.get('content-type') || '', /application\/json/);
+  assert.equal(typeof body.ok, 'boolean');
+  assert.equal(body.service, 'site-release-manager-daily-data');
+  if (body.ok === false) {
+    assert.equal(body.readiness, 'not_ready');
+    // Never leak a stack, a connection string or credentials.
+    const serialized = JSON.stringify(body);
+    assert.ok(!/mongodb:\/\//.test(serialized), 'the connection URI must not be exposed');
+    assert.ok(!/ {4}at /.test(serialized), 'a stack trace must not be exposed');
+  }
+});
