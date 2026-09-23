@@ -254,6 +254,66 @@ sitesRouter.get('/:id', async (req, res, next) => {
  * Display name and SharePoint Web code are deliberately NOT the identity:
  * several logical sites may legitimately live inside one Web.
  */
+
+/** Library/folder names SharePoint will not accept, or that collide with ours. */
+const RESERVED_HOSTING_FOLDERS = new Set([
+  'forms', 'siteassets', 'sitepages', '_catalogs', '_private', '_vti_bin', 'dist', 'images',
+]);
+
+/**
+ * Frontend SharePoint hosting for a Mongo site.
+ *
+ * Hosting is deliberately INDEPENDENT of the Mongo data identity: builderSiteId
+ * is always allocated by the server and can never be chosen by the caller, while
+ * the physical library pair may be either auto-allocated or explicitly chosen.
+ *
+ * Several logical sites may legitimately share one SharePoint Web, so the Web
+ * code is never the identity. What must not happen is two logical sites silently
+ * sharing the SAME physical target; the unique targetKey index enforces that and
+ * surfaces a 409 rather than overwriting someone else's files.
+ */
+function resolveMongoHosting(body, allocationSuffix) {
+  const explicit = (value) => String(value || '').trim();
+  const siteDbFolder = explicit(body.siteDbFolder);
+  const usersDbFolder = explicit(body.usersDbFolder);
+
+  if (!siteDbFolder && !usersDbFolder) {
+    return {
+      siteDbFolder: `siteDB-${allocationSuffix}`,
+      usersDbFolder: `siteUsersDb-${allocationSuffix}`,
+      hostingAllocation: 'automatic',
+    };
+  }
+  if (!siteDbFolder || !usersDbFolder) {
+    throw Object.assign(
+      new Error('בבחירת ספריות אירוח יש לציין גם את ספריית האתר וגם את ספריית המשתמשים.'),
+      { statusCode: 400, code: 'INCOMPLETE_HOSTING_CHOICE' },
+    );
+  }
+
+  for (const [label, value] of [['ספריית האתר', siteDbFolder], ['ספריית המשתמשים', usersDbFolder]]) {
+    if (!/^[A-Za-z][A-Za-z0-9-]{1,63}$/.test(value)) {
+      throw Object.assign(
+        new Error(`${label} חייבת להתחיל באות ולהכיל אותיות, ספרות ומקפים בלבד (עד 64 תווים).`),
+        { statusCode: 400, code: 'INVALID_HOSTING_LIBRARY' },
+      );
+    }
+    if (RESERVED_HOSTING_FOLDERS.has(value.toLowerCase())) {
+      throw Object.assign(
+        new Error(`${label} משתמשת בשם שמור ב-SharePoint: ${value}.`),
+        { statusCode: 400, code: 'RESERVED_HOSTING_LIBRARY' },
+      );
+    }
+  }
+  if (siteDbFolder.toLowerCase() === usersDbFolder.toLowerCase()) {
+    throw Object.assign(
+      new Error('ספריית האתר וספריית המשתמשים חייבות להיות שונות זו מזו.'),
+      { statusCode: 400, code: 'HOSTING_LIBRARIES_IDENTICAL' },
+    );
+  }
+  return { siteDbFolder, usersDbFolder, hostingAllocation: 'explicit' };
+}
+
 function creationIntentFingerprint(body) {
   return JSON.stringify({
     mode: body.mode === 'install' ? 'install' : 'existing',
@@ -390,12 +450,14 @@ sitesRouter.post('/', authorizeMongoCreate, async (req, res, next) => {
     const allocationSuffix = mongoSiteObjectId?.toHexString().slice(-10);
     // Mongo targets are centrally allocated. Browser input cannot select a
     // data identity or reuse another logical site's SharePoint hosting path.
+    // The data identity stays server-allocated; only the hosting pair may be chosen.
+    const hosting = requestedBackend === 'mongo' ? resolveMongoHosting(body, allocationSuffix) : null;
     const candidate = requestedBackend === 'mongo' ? {
       ...body,
       storageBackend: 'mongo',
       builderSiteId: `srm-${mongoSiteObjectId.toHexString()}`,
-      siteDbFolder: `siteDB-${allocationSuffix}`,
-      usersDbFolder: `siteUsersDb-${allocationSuffix}`,
+      siteDbFolder: hosting.siteDbFolder,
+      usersDbFolder: hosting.usersDbFolder,
       siteAssetsFolder: 'siteAssets',
       imagesFolder: 'images',
       widgetsDbTarget: 'users',
@@ -433,6 +495,7 @@ sitesRouter.post('/', authorizeMongoCreate, async (req, res, next) => {
       bootstrapLibrary: identity.bootstrapLibrary,
       bootstrapFolder: identity.bootstrapFolder,
       targetKey: canonicalTargetKey(identity),
+      ...(hosting ? { hostingAllocation: hosting.hostingAllocation } : {}),
       status: mode === 'install' ? 'DRAFT' : 'TRACKED',
       currentVersion: currentVersion ? String(currentVersion).trim() : null,
       currentReleaseId: null,
