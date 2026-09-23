@@ -262,26 +262,53 @@ function SitesPage() {
   </div>;
 }
 
-function AddSiteModal({ backendMode, hosts, releases, onSave, onClose }) {
+export function AddSiteModal({ backendMode, hosts, releases, onSave, onClose }) {
+  // Mongo hosting is auto-allocated unless the operator deliberately chooses it.
+  // Sending the default folder names as an explicit choice would make the SECOND
+  // Mongo site in the same Web collide on the physical target.
+  const [chooseMongoHosting, setChooseMongoHosting] = useState(false);
   const [form, setForm] = useState({ mode: backendMode === 'mongo' ? 'install' : 'existing', storageBackend: backendMode, unit: '', name: '', host: hosts[0] || '', siteCode: '', managerName: '', currentVersion: '', firstPublishedAt: '', lastPublishedAt: '', releaseId: '', siteDbFolder: 'siteDB', usersDbFolder: 'siteUsersDb', siteAssetsFolder: 'siteAssets', imagesFolder: 'images', widgetsDbTarget: 'users' });
   const set = (key, value) => setForm((prev) => ({ ...prev, [key]: value }));
+  // Omit the hosting pair entirely for an auto-allocated Mongo site: an empty or
+  // defaulted value must never be mistaken for a deliberate choice.
+  const buildPayload = () => {
+    if (backendMode !== 'mongo' || chooseMongoHosting) return form;
+    const { siteDbFolder, usersDbFolder, ...rest } = form;
+    return rest;
+  };
+
   return <Modal title="הוסף אתר" onClose={onClose} wide>{backendMode === 'txt' && <div className="mode-switch"><button className={form.mode === 'existing' ? 'active' : ''} onClick={() => set('mode', 'existing')}>הוסף אתר קיים למעקב</button><button className={form.mode === 'install' ? 'active' : ''} onClick={() => set('mode', 'install')}>התקן Site Builder</button></div>}
     <div className="form-grid"><Field label="יחידה"><input value={form.unit} onChange={(e) => set('unit', e.target.value)} /></Field><Field label="שם האתר"><input value={form.name} onChange={(e) => set('name', e.target.value)} /></Field><Field label="Host"><select value={form.host} onChange={(e) => set('host', e.target.value)}>{hosts.map((host) => <option key={host}>{host}</option>)}</select></Field><Field label="קוד אתר"><input dir="ltr" value={form.siteCode} onChange={(e) => set('siteCode', e.target.value.toLowerCase())} placeholder="schedule" /></Field><Field label="מנהל אתר"><input value={form.managerName} onChange={(e) => set('managerName', e.target.value)} /></Field>
       {form.mode === 'existing' ? <><Field label="גרסה נוכחית — אופציונלי"><input dir="ltr" value={form.currentVersion} onChange={(e) => set('currentVersion', e.target.value)} /></Field><Field label="תאריך העלאה — אופציונלי"><input type="datetime-local" value={form.firstPublishedAt} onChange={(e) => set('firstPublishedAt', e.target.value)} /></Field><Field label="עדכון אחרון — אופציונלי"><input type="datetime-local" value={form.lastPublishedAt} onChange={(e) => set('lastPublishedAt', e.target.value)} /></Field></> : <Field label="ריליס להתקנה"><select value={form.releaseId} onChange={(e) => set('releaseId', e.target.value)}><option value="">בחר ריליס</option>{releases.map((release) => <option value={release.id} key={release.id}>{release.version}</option>)}</select></Field>}
     </div>
     {backendMode === 'mongo' && <p className="help-text">Mongo תומך כאן בהתקנה חדשה בלבד. רישום התקנה קיימת חסום עד לחוזה גילוי מאומת. מזהה Mongo, כתובת שירות הנתונים וספריית האירוח מוקצים על-ידי Site Release Manager. נתוני האתר עוברים לשירות המרכזי; תמונות וקבצים נשארים ב-SharePoint.</p>}
-    {backendMode === 'txt' && <details className="advanced-site-settings">
+    <details className="advanced-site-settings">
       <summary>הגדרות SharePoint מתקדמות</summary>
       <div className="form-grid">
-        <Field label="ספריית האתר"><input dir="ltr" value={form.siteDbFolder} onChange={(e) => set('siteDbFolder', e.target.value)} /></Field>
-        {backendMode === 'txt' && <Field label="ספריית משתמשים"><input dir="ltr" value={form.usersDbFolder} onChange={(e) => set('usersDbFolder', e.target.value)} /></Field>}
+        {(backendMode === 'txt' || chooseMongoHosting) && <Field label="ספריית האתר"><input dir="ltr" value={form.siteDbFolder} onChange={(e) => set('siteDbFolder', e.target.value)} /></Field>}
+        {(backendMode === 'txt' || chooseMongoHosting) && <Field label="ספריית משתמשים"><input dir="ltr" value={form.usersDbFolder} onChange={(e) => set('usersDbFolder', e.target.value)} /></Field>}
         {backendMode === 'txt' && <Field label="תיקיית siteAssets"><input dir="ltr" value={form.siteAssetsFolder} onChange={(e) => set('siteAssetsFolder', e.target.value)} /></Field>}
-        <Field label="תיקיית images"><input dir="ltr" value={form.imagesFolder} onChange={(e) => set('imagesFolder', e.target.value)} /></Field>
+        {backendMode === 'txt' && <Field label="תיקיית images"><input dir="ltr" value={form.imagesFolder} onChange={(e) => set('imagesFolder', e.target.value)} /></Field>}
         {backendMode === 'txt' && <Field label="יעד widgets_data.txt"><select value={form.widgetsDbTarget} onChange={(e) => set('widgetsDbTarget', e.target.value)}><option value="users">ספריית משתמשים</option><option value="site">ספריית האתר</option></select></Field>}
       </div>
-      <p className="help-text">לאתר רגיל אין צורך לשנות. באתר קיים עם ספרייה שונה, למשל kashrarDB1, שנה רק את "ספריית האתר".</p>
-    </details>}
-    <div className="target-preview" dir="ltr">{backendMode === 'mongo' ? 'Central data API and a unique SharePoint hosting location will be allocated on creation.' : `https://${form.host || '<host>'}/sites/${form.siteCode || '<siteCode>'}/${form.siteDbFolder || 'siteDB'}/dist/index.html`}</div><div className="modal-actions"><button className="secondary-button" onClick={onClose}>ביטול</button><button className="primary-button" onClick={() => onSave(form)}>{form.mode === 'install' ? 'צור והתקן' : 'הוסף למעקב'}</button></div>
+      {backendMode === 'mongo' && <label className="field hosting-choice">
+        <span>
+          <input
+            type="checkbox"
+            checked={chooseMongoHosting}
+            onChange={(e) => setChooseMongoHosting(e.target.checked)}
+          />
+          {' '}בחירת ספריות אירוח ב-SharePoint ידנית
+        </span>
+        <small>
+          כברירת מחדל Site Release Manager מקצה זוג ספריות ייחודי. בחירה ידנית מיועדת
+          לאירוח בספריות קיימות; שתי הספריות חייבות להיות שונות זו מזו, ושני אתרים
+          לוגיים אינם יכולים לחלוק את אותו יעד פיזי.
+        </small>
+      </label>}
+      {backendMode === 'txt' && <p className="help-text">לאתר רגיל אין צורך לשנות. באתר קיים עם ספרייה שונה, למשל kashrarDB1, שנה רק את "ספריית האתר".</p>}
+    </details>
+    <div className="target-preview" dir="ltr">{backendMode === 'mongo' ? 'Central data API and a unique SharePoint hosting location will be allocated on creation.' : `https://${form.host || '<host>'}/sites/${form.siteCode || '<siteCode>'}/${form.siteDbFolder || 'siteDB'}/dist/index.html`}</div><div className="modal-actions"><button className="secondary-button" onClick={onClose}>ביטול</button><button className="primary-button" onClick={() => onSave(buildPayload())}>{form.mode === 'install' ? 'צור והתקן' : 'הוסף למעקב'}</button></div>
   </Modal>;
 }
 function Field({ label, children }) { return <label className="field"><span>{label}</span>{children}</label>; }
