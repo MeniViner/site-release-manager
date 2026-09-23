@@ -1,6 +1,6 @@
 # CONTINUATION — Unified Convergence (site-builder + site-release-manager)
 
-Version: 1 (2026-09-23)
+Version: 2 (2026-09-23)
 Integration branch (both repos): `codex/sitebuilder-unified-convergence-20260923`
 
 ## 1. Four recovered inputs (manifest RUN 20260923-162927-54393)
@@ -95,3 +95,144 @@ Gates 1–8, 10, 12, and the inactivity-reload modal UX. The inherited checkpoin
 
 ## 6. Constraints honored
 No force push, no direct main push, no main merge, no account/global-config change, no production deployment, no live restore, no destructive folder repair, no real-data migration. Mongo used was a disposable instance on port 27977 under the session scratchpad.
+
+
+---
+
+# Session 2 — blocker fixes
+
+Continued from PR heads SB `389e487a74c215b520a45748322523f64568eca8`
+and RM `372ddc3ca3e5f2477953b26402a79c9514d1c813` (both verified clean before editing).
+No reset, no main merge, no force push.
+
+## Blocker 2 — /readyz required identity  (FIXED)
+
+Root cause: in `server/src/daily-data/v1/router.js` the global `router.use()`
+calling `trustedIdentityForRequest(req)` was registered BEFORE `/healthz` and
+`/readyz`. `trustedIdentityForRequest` throws 401 whenever no header is present
+— in production without the trusted header, in development without the dev
+header — so both probes answered 401. Site Builder's canonical deploy readiness
+(`scripts/deploy-legacy.mjs:32`) calls `{dailyDataApiUrl}/readyz` UNAUTHENTICATED
+and requires JSON `ok === true`. The two sides directly contradicted each other.
+
+Fix: health and readiness are now registered ahead of the identity middleware.
+Express matches in registration order, so they answer without reaching it. Every
+route below is `/sites/:siteId/...` with an explicit `requireRole`, so nothing
+was unprotected.
+
+Hardening: `requireRole` now fails closed when `req.dailyDataPrincipal` is
+absent. Previously a missing principal fell through `hasRole()` to
+`sharePointAccessResolver`, which reads a REQUEST header — so an absent identity
+could have become browser-supplied authorization.
+
+## Blocker 1 — native Windows credential popup  (root cause corrected)
+
+The Node application is NOT the source of the dialog. Verified: `WWW-Authenticate`
+appears nowhere in `server/src/` or `client/src/`, and an anonymous
+`POST /api/sites` already fails closed with application JSON and no challenge
+header (test: 'Mongo site creation refuses anonymously with JSON and no auth
+challenge'). The popup originates in IIS, which challenges before Node sees the
+request, escalated by the client's `credentials: 'include'`.
+
+What WAS locally fixable, and is now fixed, is the trusted-header contract:
+
+- `web.config` stamped `HTTP_X_IISNODE_AUTH_USER` only inside the SPA-fallback
+  rule, which is guarded by `{REQUEST_FILENAME}` IsFile negate. A request that
+  resolves to a real file — `index.cjs` is itself the iisnode handler — skipped
+  the rule, so a browser-supplied `X-IISNode-Auth-User` reached Node untouched.
+  Stamping moved to an unconditional first rule with `stopProcessing="false"`.
+
+- `x-iisnode-sharepoint-sites`, the per-site access list for ORDINARY users, was
+  read by `createSharePointAccessResolver` but written by nothing in IIS. It was
+  entirely caller-supplied: any user could self-assign baseline access to any
+  site whose `dataAccess` allowed SharePoint access. It is now blanked on every
+  request, and production refuses `TRUSTED_SITE_ACCESS_ENABLED=true` unless
+  `TRUSTED_SITE_ACCESS_SOURCE` names a real server-side adapter
+  (`mongo-membership`; no value may mean "read it off the request").
+
+- `.env.iis.example` shipped `TRUSTED_SITE_ACCESS_ENABLED=true`, which would now
+  refuse to start. Set to `false` with the exact enable steps, plus a test
+  keeping template and guard from drifting.
+
+REMAINING and genuinely external: proving that Windows Integrated Auth completes
+SILENTLY (no dialog) requires a real IIS host, domain membership and an SPN.
+That cannot be reproduced here, and no simulated acceptance is claimed.
+
+## Ordinary-user Mongo authorization
+
+Current model after this session: access comes from each site's explicit
+`dataAccess` lists only (`accessForCreator` seeds the creator as
+viewer/submitter/editor/administrator, so no site is ownerless). The
+header-derived baseline path is disabled and fails closed. Building the real
+`mongo-membership` adapter is NOT done and is listed as open.
+
+## Inactivity reload modal  (DONE)
+
+`AdminEditSessionGuard.jsx` read as a critical failure: `bg-black/65` +
+`backdrop-blur-md` hid the app, amber `AlertTriangle` framed an idle timeout as
+an error. Now: Hebrew copy per spec; `bg-slate-900/25` + `backdrop-blur-[2px]`;
+neutral primary icon; `role="dialog"`; red reserved for an actual reload failure.
+Still blocking — backdrop mousedown swallowed, Escape suppressed, Tab contained,
+Refresh focused on appearance. The `"60 דקות"` wording is DERIVED from
+`ADMIN_STALE_THRESHOLD_MS` via `staleInactivityTitle()`, so it is only used when
+the threshold that actually fired is 60 minutes. The safe-reload contract
+(`prepareAdminSafeReload`, local-only approval, dirty capture, write draining,
+unload protection) is untouched.
+
+Visual evidence: a markup-faithful preview rendered in a real browser confirms
+the application behind stays recognisable. This is a preview of the component
+markup, NOT the running application.
+
+## Inherited Site Builder convergence follow-up — VERIFIED, not rewritten
+
+1. `dailyDataApiUrl` canonical transport — `requireMongoApiTransport()`
+2. canonical URL must end `/api/daily-data/v1` — `storageBackend.js:229`
+3. central root `/sites` → `{dailyDataApiUrl}/sites/{siteId}/...`
+4. legacy root `/api/sites` → `{backendApiUrl}/api/sites/{siteId}/...`
+5. no duplicated `/api` — canonical uses `/sites` because the base already ends
+   in `/api/daily-data/v1` (`storageBackend.js:273-284`)
+6. readiness — `deploy-legacy.mjs:32` unauthenticated, rejects non-JSON, requires
+   `ok === true`; legacy retains `{backendApiUrl}/api/sites/{siteId}`
+7. dev `X-API-Key` — `backendApiClient.js:14` requires BOTH
+   `transport.kind === 'legacy-backend'` AND `import.meta.env.DEV === true`
+8. Universal carries no baked identity — re-verified on the fresh build
+
+## Verified results — FINAL source
+
+Platform darwin 26.6.2, node v26.7.0.
+
+Site Builder `npx vitest run --maxWorkers=2`:
+**146 files, 1321 tests, 1321 pass, 0 fail, 0 skip** (37.13s).
+This settles the earlier 3 "failures": they were worker-contention timeouts at
+`--maxWorkers=4`, not defects. `--poolOptions.*` is rejected by vitest 4.1.1.
+
+Site Builder lint: changed-file lint CLEAN. Full `eslint .` reports 166 problems
+across 50 files; machine-checked intersection with the 3 files changed this
+session is EMPTY, so all are baseline.
+
+Release Manager `npm test` with disposable Mongo (port 27977) and explicit
+`SITE_BUILDER_PATH`: **224 tests, 224 pass, 0 fail, 0 skipped** (was 205/176 with
+29 silent skips at integration).
+
+Fresh Universal build from final source: buildId
+`54a64fdb-fbc1-4f14-96f7-4dec3eb93a11`, 73 files.
+`verify:universal-dist` PASS — 31 JS/CSS assets byte-identical across two target
+identities, no Legacy target identity (4 markers).
+Universal JS/CSS hash `a303f2b07ff4fab65e5bd38272bd30883835122f378de5773ecdb63b5af05a5c`.
+package-lock sha256 `93ed62f265822796f6a7b54c357d603d4b0f9546a4367feff8119e350e95e897`.
+The previous build id/hash (`b571bdac…` / `43c30135…`) is superseded and NOT reused.
+Grep scan of the fresh artifact: no baked dailyDataApiUrl/backendApiUrl/X-API-Key/siteId.
+
+`.env.production` reconciliation: CLOSED. All 39 key NAMES in the real dotenv are
+represented across `.env.example` + `.env.local.example` (63 keys). No values read.
+
+## Still open (honest)
+
+- Browser acceptance for BOOM reopen/cancel, dirty Alerts + keyboard recovery,
+  conflict resolution with reviewed ETag, SmartTextEditor Enter/IME/caret and
+  save-reopen, backup hydration races, selective restore. NOT run.
+- Gate 12 server-only package: not built or verified from final source.
+- Gate 7 historical SharePoint folder diagnostics: not exercised.
+- The `mongo-membership` per-site access adapter: not implemented.
+- Convergence review's blocking findings: text still not recovered.
+- Silent Windows SSO: requires real IIS/domain/SPN. External.
