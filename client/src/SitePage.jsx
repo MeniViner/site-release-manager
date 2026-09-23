@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   Archive, ArrowRight, CheckCircle2, CircleAlert, Database, ExternalLink,
-  FileText, History, LoaderCircle, PencilLine, Rocket, Save, Trash2, X,
+  FileText, History, LoaderCircle, PencilLine, Rocket, Save, ShieldCheck, Trash2, X,
 } from 'lucide-react';
 import { api } from './api.js';
 import { buildSiteIdentity } from '../../shared/siteRuntime.js';
@@ -83,6 +83,87 @@ function MongoHostingDetails({ site, dailyDataApiUrl }) {
   ];
   return <div className="identity-grid">
     {rows.map(([label, value]) => <div key={label}><span>{label}</span><strong dir="ltr">{value || '—'}</strong></div>)}
+  </div>;
+}
+
+
+const DATA_ACCESS_ROLES = Object.freeze([
+  { key: 'administrators', label: 'מנהלי נתונים', hint: 'ניהול הרשאות, גיבויים ושחזור. מנהל מקבל גם את שאר ההרשאות.' },
+  { key: 'editors', label: 'עורכים', hint: 'עריכת תוכן האתר.' },
+  { key: 'submitters', label: 'מגישים', hint: 'שליחת אינטראקציות בלבד.' },
+  { key: 'viewers', label: 'צופים', hint: 'קריאה בלבד.' },
+]);
+
+const parseIdentities = (text) => Array.from(new Set(
+  String(text || '').split(/[\n,;]+/).map((value) => value.trim().toLowerCase()).filter(Boolean),
+));
+
+/**
+ * Per-site access administration.
+ *
+ * These explicit lists are the ONLY grant path for ordinary Site Builder users.
+ * A header-derived baseline was removed because nothing server-side could
+ * populate it, which made it caller-controlled. Without this panel the model
+ * would be correct but unusable: the creator could never delegate access.
+ */
+function DataAccessPanel({ site, onSaved }) {
+  const [draft, setDraft] = useState(() => Object.fromEntries(
+    DATA_ACCESS_ROLES.map(({ key }) => [key, (site.dataAccess?.[key] || []).join('\n')]),
+  ));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [saved, setSaved] = useState(false);
+
+  const administrators = parseIdentities(draft.administrators);
+  const canSave = administrators.length > 0;
+
+  const save = async () => {
+    if (!canSave || saving) return;
+    setSaving(true); setError(''); setSaved(false);
+    try {
+      const dataAccess = Object.fromEntries(DATA_ACCESS_ROLES.map(({ key }) => [key, parseIdentities(draft[key])]));
+      const updated = await api.updateSiteDataAccess(site.id, {
+        ...dataAccess,
+        // Persisted for document compatibility; they no longer grant anything.
+        sharePointReadAccess: Boolean(site.dataAccess?.sharePointReadAccess),
+        sharePointInteractionAccess: Boolean(site.dataAccess?.sharePointInteractionAccess),
+      });
+      setSaved(true);
+      onSaved?.(updated);
+    } catch (cause) {
+      setError(cause?.payload?.error?.message || cause?.message || 'לא ניתן היה לעדכן את ההרשאות.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return <div className="data-access-panel">
+    <p className="data-access-intro">
+      גישת משתמשים לאתר Mongo נקבעת אך ורק ברשימות שלהלן. זהות שאינה מופיעה כאן לא תקבל גישה.
+      יש להזין מזהה Windows מלא בכל שורה.
+    </p>
+    <div className="data-access-grid">
+      {DATA_ACCESS_ROLES.map(({ key, label, hint }) => <label key={key} className="data-access-field">
+        <span className="data-access-label">{label}</span>
+        <span className="data-access-hint">{hint}</span>
+        <textarea
+          dir="ltr"
+          rows={4}
+          value={draft[key]}
+          aria-label={label}
+          onChange={(event) => { setSaved(false); setDraft((prev) => ({ ...prev, [key]: event.target.value })); }}
+        />
+      </label>)}
+    </div>
+    {!canSave && <p className="data-access-warning" role="alert">
+      חובה להשאיר לפחות מנהל נתונים אחד, אחרת האתר יישאר ללא בעלים.
+    </p>}
+    {error && <p className="data-access-error" role="alert">{error}</p>}
+    {saved && <p className="data-access-saved">ההרשאות עודכנו.</p>}
+    <button type="button" className="primary-button" onClick={save} disabled={!canSave || saving}>
+      {saving ? <LoaderCircle size={17} className="spin" /> : <Save size={17} />}
+      שמירת הרשאות
+    </button>
   </div>;
 }
 
@@ -260,6 +341,14 @@ export default function SitePage() {
     </WorkspaceSection>}
 
     <div className="site-workspace-grid">
+      {site.storageBackend === 'mongo' && <WorkspaceSection
+        icon={ShieldCheck}
+        title="הרשאות גישה לנתונים"
+        subtitle="רשימות מפורשות אלה הן דרך ההרשאה היחידה למשתמשי Site Builder באתר זה."
+      >
+        <DataAccessPanel site={site} onSaved={(updated) => setSite((prev) => ({ ...prev, ...updated }))} />
+      </WorkspaceSection>}
+
       <WorkspaceSection icon={Database} title={site.storageBackend === 'mongo' ? 'פרטי אירוח ותשתית' : 'זהות היעד'} subtitle={site.storageBackend === 'mongo' ? 'פרטים אלה הם לקריאה בלבד עבור אתר Mongo ומנוהלים על ידי שרת Site Release Manager.' : 'siteCode מזהה את ה-SharePoint Web; זוג הספריות מזהה את התקנת Site Builder הלוגית בתוכו.'}>
         {hasValidIdentity ? <>
           {site.storageBackend === 'mongo' ? <MongoHostingDetails site={site} dailyDataApiUrl={config?.dailyDataApiUrl} /> : <>

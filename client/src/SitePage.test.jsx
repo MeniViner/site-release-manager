@@ -216,3 +216,92 @@ describe('Site workspace route', () => {
     expect(await screen.findByLabelText('ריליס לפריסה')).toHaveValue('release-1');
   });
 });
+
+describe('Per-site data access administration', () => {
+  const mongoDetail = () => siteFixture({
+    storageBackend: 'mongo',
+    builderSiteId: 'srm-abc123',
+    dataAccess: {
+      viewers: ['domain\\owner'],
+      submitters: ['domain\\owner'],
+      editors: ['domain\\owner'],
+      administrators: ['domain\\owner'],
+      sharePointReadAccess: false,
+      sharePointInteractionAccess: false,
+    },
+  });
+
+  const renderMongoSite = (detail = mongoDetail()) => {
+    mockSiteRequests(detail);
+    return render(
+      <BackendModeContext.Provider value={{ backendMode: 'mongo', setBackendMode: () => {} }}>
+        <MemoryRouter initialEntries={['/sites/site-a']}>
+          <Routes><Route path="/sites/:siteId" element={<SitePage />} /></Routes>
+        </MemoryRouter>
+      </BackendModeContext.Provider>,
+    );
+  };
+
+  it('exposes every role list so the explicit model is actually usable', async () => {
+    renderMongoSite();
+    expect(await screen.findByText('הרשאות גישה לנתונים')).toBeInTheDocument();
+    for (const label of ['מנהלי נתונים', 'עורכים', 'מגישים', 'צופים']) {
+      expect(screen.getByLabelText(label)).toBeInTheDocument();
+    }
+    expect(screen.getByLabelText('מנהלי נתונים')).toHaveValue('domain\\owner');
+  });
+
+  it('delegates access through the management endpoint and keeps roles distinct', async () => {
+    const update = vi.spyOn(api, 'updateSiteDataAccess').mockResolvedValue({
+      ...mongoDetail(),
+      dataAccess: { ...mongoDetail().dataAccess, viewers: ['domain\\owner', 'domain\\reader'] },
+    });
+    renderMongoSite();
+    const viewers = await screen.findByLabelText('צופים');
+    fireEvent.change(viewers, { target: { value: 'domain\\owner\ndomain\\reader' } });
+    fireEvent.click(screen.getByRole('button', { name: /שמירת הרשאות/ }));
+
+    await waitFor(() => expect(update).toHaveBeenCalled());
+    const [, payload] = update.mock.calls[0];
+    expect(payload.viewers).toEqual(['domain\\owner', 'domain\\reader']);
+    // Delegating read access must not silently escalate anyone.
+    expect(payload.administrators).toEqual(['domain\\owner']);
+    expect(payload.editors).toEqual(['domain\\owner']);
+    expect(await screen.findByText('ההרשאות עודכנו.')).toBeInTheDocument();
+  });
+
+  it('refuses to leave the site ownerless', async () => {
+    const update = vi.spyOn(api, 'updateSiteDataAccess').mockResolvedValue(mongoDetail());
+    renderMongoSite();
+    const admins = await screen.findByLabelText('מנהלי נתונים');
+    fireEvent.change(admins, { target: { value: '   ' } });
+
+    expect(screen.getByRole('button', { name: /שמירת הרשאות/ })).toBeDisabled();
+    expect(screen.getByRole('alert')).toHaveTextContent('ללא בעלים');
+    fireEvent.click(screen.getByRole('button', { name: /שמירת הרשאות/ }));
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a management refusal in Hebrew instead of a raw server message', async () => {
+    vi.spyOn(api, 'updateSiteDataAccess').mockRejectedValue(Object.assign(new Error('HTTP 401'), {
+      status: 401,
+      payload: { error: { code: 'management_session_required', message: 'נדרשת התחברות ניהולית לפני ביצוע הפעולה.' } },
+    }));
+    renderMongoSite();
+    const viewers = await screen.findByLabelText('צופים');
+    fireEvent.change(viewers, { target: { value: 'domain\\reader' } });
+    fireEvent.click(screen.getByRole('button', { name: /שמירת הרשאות/ }));
+    expect(await screen.findByText('נדרשת התחברות ניהולית לפני ביצוע הפעולה.')).toBeInTheDocument();
+  });
+
+  it('is not offered for TXT sites, which have no Mongo data access model', async () => {
+    mockSiteRequests(siteFixture());
+    render(
+      <MemoryRouter initialEntries={['/sites/site-a']}>
+        <Routes><Route path="/sites/:siteId" element={<SitePage />} /></Routes>
+      </MemoryRouter>,
+    );
+    await screen.findByText('Schedule A');
+    expect(screen.queryByText('הרשאות גישה לנתונים')).toBeNull();
+  });
+});
