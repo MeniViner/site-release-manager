@@ -14,6 +14,7 @@ const { ObjectId } = require("mongodb");
 const { getDb } = require("../db.js");
 const { isSafeRelativePath, normalizeRelativePath } = require("../utils/files.js");
 const { buildDeploymentDescriptor, resolveDeploymentFile } = require("../services/deploymentService.js");
+const { verifyDeploymentReadiness } = require("../services/stagingService.js");
 const { runLocalDeploymentVerification } = require("../services/localVerificationService.js");
 const { appendRunEvent } = require("../services/runTelemetry.js");
 const { settleJob } = require("../services/jobQueue.js");
@@ -81,6 +82,12 @@ deploymentsRouter.get('/:jobId', async (req, res, next) => {
       return res.status(409).json({ error: 'הריליס עדיין אינו מוכן לפריסה.', code: 'NOT_PREPARED' });
     }
     const artifact = JSON.parse(fs.readFileSync(job.manifestPath, 'utf8'));
+    verifyDeploymentReadiness({
+      distDir: job.stagingDistDir,
+      manifest: artifact.manifest,
+      deploymentFiles: artifact.files,
+      uploadOrder: artifact.uploadOrder,
+    });
     const descriptor = buildDeploymentDescriptor({
       job, site, release,
       // The deployable list, which includes sharepoint-deploy-manifest.json.

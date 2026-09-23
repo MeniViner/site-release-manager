@@ -291,6 +291,41 @@ function verifyStaging({ distDir, manifest }) {
 }
 
 /**
+ * Confirm that the bytes which will actually be served to the browser still
+ * exactly match the generated deployment plan. This is deliberately repeated
+ * when a descriptor is requested: staging can be changed after preparation.
+ */
+function verifyDeploymentReadiness({ distDir, manifest, deploymentFiles, uploadOrder }) {
+  verifyStaging({ distDir, manifest });
+  const declared = new Map((deploymentFiles || []).map((file) => [file.path, file]));
+  const actual = collectFiles(distDir);
+  const unexpected = actual.map((file) => file.path).filter((filePath) => !declared.has(filePath));
+  const missing = [...declared.keys()].filter((filePath) => !actual.some((file) => file.path === filePath));
+  const mismatches = [];
+  for (const [filePath, expected] of declared) {
+    const full = path.join(distDir, ...filePath.split('/'));
+    if (!fs.existsSync(full)) continue;
+    if (fs.statSync(full).size !== expected.size || hashFile(full) !== expected.sha256) mismatches.push(filePath);
+  }
+  const order = Array.isArray(uploadOrder) ? uploadOrder : [];
+  if (new Set(order).size !== declared.size || order.length !== declared.size || order.some((filePath) => !declared.has(filePath))) {
+    mismatches.push('upload-order');
+  }
+  if (order.at(-1) !== COMMIT_FILE) mismatches.push(`commit-file:${COMMIT_FILE}`);
+  if (unexpected.length || missing.length || mismatches.length) {
+    throw new StagingError(
+      `Deployment readiness verification failed: ${[
+        ...unexpected.map((filePath) => `unexpected ${filePath}`),
+        ...missing.map((filePath) => `missing ${filePath}`),
+        ...mismatches.map((filePath) => `mismatch ${filePath}`),
+      ].slice(0, 8).join(' | ')}`,
+      { unexpected, missing, mismatches },
+    );
+  }
+  return { verifiedFiles: declared.size };
+}
+
+/**
  * The complete set of files to deploy.
  *
  * A manifest can never list itself (its own hash would be unstable), but Site
@@ -329,6 +364,7 @@ module.exports = {
   injectRuntimeBootstrap: injectRuntimeBootstrap,
   regenerateManifest: regenerateManifest,
   verifyStaging: verifyStaging,
+  verifyDeploymentReadiness: verifyDeploymentReadiness,
   buildDeploymentFiles: buildDeploymentFiles,
   buildUploadOrder: buildUploadOrder,
   resolveStagedFile: resolveStagedFile,

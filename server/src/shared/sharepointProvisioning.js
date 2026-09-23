@@ -278,6 +278,12 @@ async function ensureFolderTree(client, folderPaths, options = {}) {
       libraryId: owner.id,
       parentPath,
     });
+    const parentProbe = () => client.probeFolder(parentPath, {
+      expectLibraryRoot: rootSet.has(parentPath),
+      libraryTitle: owner.title,
+      libraryId: owner.id,
+      parentPath: parentPath.slice(0, parentPath.lastIndexOf('/')),
+    });
 
     // The discovery probe must never abort the run on a transient answer: a
     // busy farm reporting SPException here simply means "unknown yet", and the
@@ -323,16 +329,18 @@ async function ensureFolderTree(client, folderPaths, options = {}) {
 
     let createOutcome = null;
     let createError = null;
+    let repairedParent = false;
     try {
       const creator = createFolderExact || ((input) => client.createFolder(input.folderPath));
-      createOutcome = await creator({
+      const createInput = {
         folderPath: normalizedFolder,
         parentPath,
         leafName: normalizedFolder.slice(normalizedFolder.lastIndexOf('/') + 1),
         libraryId: owner.id,
         libraryTitle: owner.title,
         libraryRoot: owner.rootFolder,
-      });
+      };
+      createOutcome = await creator(createInput);
       if (!createOutcome?.created && !createOutcome?.alreadyExisted && createOutcome?.normalized) {
         throw sharePointError(createOutcome.normalized);
       }
@@ -343,6 +351,29 @@ async function ensureFolderTree(client, folderPaths, options = {}) {
       // must surface as itself instead of as "not stable yet".
       if (isFatalProvisioningError(error)) throw error;
       createError = error;
+      // A 409 from JSOM can mean that a parent created moments earlier is not
+      // list-backed yet. Re-read that exact parent and retry this child once;
+      // never repair historical/inconsistent folders by replacing them.
+      if ((error?.sharePoint?.errorClass || error?.errorClass) === SP_ERROR.MISSING && parentPath) {
+        await log({ stage: 'FOLDER_STABILIZE', status: 'info', message: `SharePoint דיווח שהאב של ${folderPath} אינו מוכן; מאמת את ${parentPath} לפני ניסיון חוזר יחיד.`, details: { parentPath, error: error?.message || String(error) } });
+        await stabilizeFolder(parentProbe, parentPath, { log, retry, signal });
+        repairedParent = true;
+        try {
+          const creator = createFolderExact || ((input) => client.createFolder(input.folderPath));
+          createOutcome = await creator({
+            folderPath: normalizedFolder,
+            parentPath,
+            leafName: normalizedFolder.slice(normalizedFolder.lastIndexOf('/') + 1),
+            libraryId: owner.id,
+            libraryTitle: owner.title,
+            libraryRoot: owner.rootFolder,
+          });
+          createError = null;
+        } catch (retryError) {
+          if (isFatalProvisioningError(retryError)) throw retryError;
+          createError = retryError;
+        }
+      }
       await log({ stage: 'CREATE_FOLDERS', status: 'warning', message: `יצירת ${folderPath} החזירה שגיאה; בודק אם התיקייה קיימת בכל זאת.`, details: { error: error?.message || String(error) } });
     }
 
@@ -353,6 +384,7 @@ async function ensureFolderTree(client, folderPaths, options = {}) {
         path: folderPath,
         created: Boolean(createOutcome?.created),
         recoveredAfterCreateError: Boolean(createError),
+        repairedParent,
         reason: stabilized.value.reason,
         attempts: stabilized.attempts,
       });

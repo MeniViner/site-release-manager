@@ -17,7 +17,7 @@ const { buildSiteIdentity, canonicalTargetKey } = require("../shared/siteRuntime
 const { buildBackendDeploymentPlan } = require("./deploymentProfiles.js");
 const { RUNTIME_CONFIG_FILE, DEPLOYMENT_METADATA_FILE, RUNTIME_BOOTSTRAP_FILE } = require("../shared/universalManifest.js");
 const { verifyStoredReleaseIntegrity } = require("./releaseValidation.js");
-const { createStaging, writeTargetOverlay, injectRuntimeBootstrap, regenerateManifest, verifyStaging, buildDeploymentFiles, buildUploadOrder, resolveStagedFile, destroyStaging } = require("./stagingService.js");
+const { createStaging, writeTargetOverlay, injectRuntimeBootstrap, regenerateManifest, verifyStaging, verifyDeploymentReadiness, buildDeploymentFiles, buildUploadOrder, resolveStagedFile, destroyStaging } = require("./stagingService.js");
 const { appendRunEvent } = require("./runTelemetry.js");
 const { JOB_STATE } = require("./jobState.js");
 const { provisionSite } = require("../daily-data/v1/service.js");
@@ -198,6 +198,7 @@ async function prepareDeploymentJob(jobId) {
   // its own file list.
   const deploymentFiles = buildDeploymentFiles(staging.distDir, manifest);
   const uploadOrder = buildUploadOrder(deploymentFiles);
+  verifyDeploymentReadiness({ distDir: staging.distDir, manifest, deploymentFiles, uploadOrder });
   const manifestPath = path.join(stagingRoot, 'artifact-manifest.json');
   fs.writeFileSync(manifestPath, `${JSON.stringify({
     kind: 'site-release-manager-artifact',

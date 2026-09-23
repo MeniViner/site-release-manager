@@ -10,7 +10,8 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { createSharePointClient, SEED_CONTENT_TYPE, ASSET_CONTENT_TYPE, escapeODataPath, assertServerRelativePath, classifyFolderReadiness } = require("../src/shared/sharepointClient.js");
 const { ensureExactLibrary, ensureFolderTree, ensureTxtSeeds, uploadReleaseAssets, orderParentFirst, LIBRARY_OUTCOME, PROVISIONING_ERROR, ProvisioningError, finalAppSmoke, verifyFinalRuntimeConfig } = require("../src/shared/sharepointProvisioning.js");
-const { SP_ERROR } = require("../src/shared/sharepointErrors.js");
+const { SP_ERROR, classifySharePointError } = require("../src/shared/sharepointErrors.js");
+const { userFacingSharePointFailure } = require("../src/shared/userFacingErrors.js");
 const { buildSiteIdentity, buildTxtSeedPlan, requiredLibraries, requiredFolders } = require("../src/shared/siteRuntime.js");
 const { RUNTIME_BOOTSTRAP_FILE, RUNTIME_CONFIG_FILE, DEPLOYMENT_METADATA_FILE } = require("../src/shared/universalManifest.js");
 const { buildRuntimeBootstrapSource } = require("../src/shared/runtimeBootstrap.js");
@@ -510,6 +511,52 @@ test('an ambiguous folder create is never repeated and recovers only from exact 
   assert.equal(result.recoveredAfterCreateError, true);
   assert.equal(result.created, false);
   assert.equal(result.reason, 'LIST_BACKED_FOLDER_READY');
+});
+
+test('a parent-missing 409 repairs the verified parent before one child retry', async () => {
+  const farm = createFakeSharePoint();
+  seedWebRoot(farm, FRESH);
+  const library = farm.addLibrary('siteDBFresh', FRESH.siteDbRoot);
+  const parent = `${FRESH.siteDbRoot}/parent`;
+  const child = `${parent}/child`;
+  farm.addFolder(parent);
+  let calls = 0;
+
+  const [result] = await ensureFolderTree(clientFor(farm), [child], {
+    retry,
+    libraries: [library],
+    createFolderExact: async (input) => {
+      calls += 1;
+      if (calls === 1) {
+        const error = new Error('The parent folder does not exist yet.');
+        error.errorClass = SP_ERROR.MISSING;
+        throw error;
+      }
+      return farm.createFolderExact(input);
+    },
+  });
+
+  assert.equal(calls, 2);
+  assert.equal(result.repairedParent, true);
+  assert.equal(result.reason, 'LIST_BACKED_FOLDER_READY');
+});
+
+test('a contextual SharePoint 409 identifies a missing parent rather than an existing child', () => {
+  const error = classifySharePointError({
+    httpStatus: 409,
+    operation: 'create-folder:/sites/schedule/siteDB/parent/child',
+    body: { error: { message: { value: 'The parent folder does not exist.' } } },
+  });
+  assert.equal(error.errorClass, SP_ERROR.MISSING);
+});
+
+test('historical-folder reconciliation errors provide a Hebrew corrective action', () => {
+  const safe = userFacingSharePointFailure({
+    code: PROVISIONING_ERROR.FOLDER_RECONCILIATION_REQUIRED,
+    errorClass: SP_ERROR.PERMANENT_FAILURE,
+  });
+  assert.match(safe.message, /תיקייה היסטורית/);
+  assert.match(safe.nextAction, /ידנית/);
 });
 
 test('a permission failure during folder work surfaces immediately instead of burning the retry budget', async () => {

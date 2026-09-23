@@ -80,6 +80,9 @@ function applyJsomFailure(error, args) {
     error.errorClass = 'PERMISSION_DENIED';
   } else if (/security validation|formdigest|sign.?in|authentication/i.test(`${errorType} ${message}`)) {
     error.errorClass = 'AUTH_FAILURE';
+  } else if ([-2147024894, -2147024893].includes(errorCode)
+    || (/parent folder/i.test(message) && /(does not exist|not found|cannot be found)/i.test(message))) {
+    error.errorClass = 'MISSING';
   } else if ([-2130575257, -2130245363].includes(errorCode) || /already exists/i.test(message)) {
     error.errorClass = 'ALREADY_EXISTS';
   }

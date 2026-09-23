@@ -10,7 +10,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
-const { createStaging, writeTargetOverlay, injectRuntimeBootstrap, regenerateManifest, verifyStaging, buildUploadOrder, destroyStaging, REGENERATED_FILES, StagingError } = require("../src/services/stagingService.js");
+const { createStaging, writeTargetOverlay, injectRuntimeBootstrap, regenerateManifest, verifyStaging, verifyDeploymentReadiness, buildDeploymentFiles, buildUploadOrder, destroyStaging, REGENERATED_FILES, StagingError } = require("../src/services/stagingService.js");
 const { buildSiteIdentity } = require("../src/shared/siteRuntime.js");
 const { RUNTIME_CONFIG_FILE, DEPLOYMENT_METADATA_FILE, RUNTIME_BOOTSTRAP_FILE, MANIFEST_FILE, validateUniversalManifest, parseIndexReferencesFromHtml } = require("../src/shared/universalManifest.js");
 const { RUNTIME_BOOTSTRAP_MARKER, RUNTIME_BOOTSTRAP_LEGACY_GLOBAL, parseRuntimeBootstrapConfig, findFirstModuleScriptIndex, findRuntimeBootstrapIndex, injectRuntimeBootstrapIntoIndexHtml, hasRuntimeBootstrapReference, countRuntimeBootstrapReferences } = require("../src/shared/runtimeBootstrap.js");
@@ -422,6 +422,28 @@ test('the regenerated manifest records the bootstrap and the modified index exac
 
       // index.html is still the last file uploaded.
       assert.equal(buildUploadOrder(a.manifest).at(-1), 'index.html');
+    } finally { destroyStaging(a.stagingRoot); }
+  } finally { fs.rmSync(source, { recursive: true, force: true }); }
+});
+
+test('deployment readiness rejects staged bytes not covered by the served artifact plan', () => {
+  const source = makeArtifact();
+  try {
+    const a = stage(source, { host: 'portal.army.idf', siteCode: 'schedule' }, 'job-readiness');
+    try {
+      const files = buildDeploymentFiles(a.distDir, a.manifest);
+      const uploadOrder = buildUploadOrder(files);
+      assert.doesNotThrow(() => verifyDeploymentReadiness({
+        distDir: a.distDir, manifest: a.manifest, deploymentFiles: files, uploadOrder,
+      }));
+
+      fs.writeFileSync(path.join(a.distDir, 'unexpected.js'), 'unexpected');
+      assert.throws(
+        () => verifyDeploymentReadiness({
+          distDir: a.distDir, manifest: a.manifest, deploymentFiles: files, uploadOrder,
+        }),
+        (error) => error instanceof StagingError && error.unexpected.includes('unexpected.js'),
+      );
     } finally { destroyStaging(a.stagingRoot); }
   } finally { fs.rmSync(source, { recursive: true, force: true }); }
 });

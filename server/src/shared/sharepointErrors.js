@@ -135,6 +135,13 @@ function looksLikeAlreadyExists({ numericCode, message }, rawText) {
   return has(blob, 'already exists');
 }
 
+function looksLikeParentMissing({ numericCode, exceptionType, message }, rawText) {
+  if (numericCode === SP_CODES.FILE_NOT_FOUND || numericCode === SP_CODES.DIRECTORY_NOT_FOUND) return true;
+  const blob = `${exceptionType} ${message} ${rawText}`;
+  return has(blob, 'parent folder')
+    && (has(blob, 'does not exist') || has(blob, 'not found') || has(blob, 'cannot be found'));
+}
+
 function looksLikeInvalidPath({ numericCode, exceptionType, message }, rawText) {
   if (numericCode === SP_CODES.INVALID_URL) return true;
   const blob = `${message} ${rawText}`;
@@ -205,6 +212,9 @@ function classifySharePointError(input = {}) {
   if (looksLikeAlreadyExists(parsed, rawText)) { record.errorClass = SP_ERROR.ALREADY_EXISTS; return finalize(record); }
 
   // The critical case: this farm answers "not there yet" with 400 as often as 404.
+  // Folder creation can also report a 409 while its just-created parent is not
+  // usable yet; it is a missing parent, not an existing child.
+  if (looksLikeParentMissing(parsed, rawText)) { record.errorClass = SP_ERROR.MISSING; return finalize(record); }
   if (looksLikeNotFound(parsed, rawText)) { record.errorClass = SP_ERROR.MISSING; return finalize(record); }
   if (httpStatus === 404) { record.errorClass = SP_ERROR.MISSING; return finalize(record); }
 

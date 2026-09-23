@@ -88,7 +88,7 @@ describe('library-bound JSOM folder creation', () => {
     expect(calls.filter(([name]) => name === 'addItem')).toHaveLength(0);
   });
 
-  it('surfaces JSOM permissions and duplicate classifications without retrying the mutation', async () => {
+  it('surfaces JSOM permission, duplicate, and unavailable-parent classifications', async () => {
     const create = createLibraryBoundFolderViaJsom('https://portal.army.idf/sites/schedule');
     jsomFailure = {
       get_message: () => 'Access denied.',
@@ -115,6 +115,20 @@ describe('library-bound JSOM folder creation', () => {
       leafName: 'child',
       folderPath: '/sites/schedule/siteDB/child',
     })).rejects.toMatchObject({ errorClass: 'ALREADY_EXISTS' });
+    expect(calls.filter(([name]) => name === 'addItem')).toHaveLength(1);
+
+    calls.length = 0;
+    jsomFailure = {
+      get_message: () => 'The parent folder does not exist.',
+      get_errorCode: () => -2147024893,
+      get_errorTypeName: () => 'System.IO.DirectoryNotFoundException',
+    };
+    await expect(create({
+      libraryId: 'LIST-GUID',
+      parentPath: '/sites/schedule/siteDB',
+      leafName: 'child',
+      folderPath: '/sites/schedule/siteDB/child',
+    })).rejects.toMatchObject({ errorClass: 'MISSING', sharePointCode: '-2147024893' });
     expect(calls.filter(([name]) => name === 'addItem')).toHaveLength(1);
   });
 });

@@ -46,6 +46,17 @@ const OWNERSHIP_MESSAGES = Object.freeze({
   JOB_SETTLED: 'הריצה כבר הסתיימה.',
 });
 
+const PROVISIONING_MESSAGES = Object.freeze({
+  FOLDER_RECONCILIATION_REQUIRED: {
+    message: 'נמצאה תיקייה היסטורית ב-SharePoint, אך זהותה אינה שלמה ולכן אי אפשר להשתמש בה בבטחה.',
+    nextAction: 'בדוק את נתיב התיקייה באבחון הריצה. השלם או תקן אותה ידנית ב-SharePoint, ואז הפעל את הריצה מחדש.',
+  },
+  FOLDER_IDENTITY_CONFLICT: {
+    message: 'תיקייה קיימת אינה תואמת לספריית המסמכים או לנתיב שהוגדרו לפריסה.',
+    nextAction: 'תקן את התנגשות התיקייה ב-SharePoint או את הגדרת האתר, ואז נסה שוב.',
+  },
+});
+
 function userFacingSharePointFailure(value = {}) {
   const source = value?.failureInfo || value || {};
   const apiCode = value?.apiCode || source.apiCode || '';
@@ -55,6 +66,8 @@ function userFacingSharePointFailure(value = {}) {
   if (value?.cancelled || value?.name === 'CancelledError') {
     return { message: 'הפריסה בוטלה.', nextAction: '' };
   }
+  const provisioningCode = source.code || value?.code || '';
+  if (PROVISIONING_MESSAGES[provisioningCode]) return PROVISIONING_MESSAGES[provisioningCode];
   const errorClass = source.errorClass || value?.sharePoint?.errorClass || value?.errorClass || SP_ERROR.UNKNOWN;
   const mapped = USER_MESSAGES[errorClass] || USER_MESSAGES[SP_ERROR.UNKNOWN];
   return {
