@@ -11,7 +11,7 @@ const assert = require("node:assert/strict");
 const { createSharePointClient, SEED_CONTENT_TYPE, ASSET_CONTENT_TYPE, escapeODataPath, assertServerRelativePath, classifyFolderReadiness } = require("../src/shared/sharepointClient.js");
 const { ensureExactLibrary, ensureFolderTree, ensureTxtSeeds, uploadReleaseAssets, orderParentFirst, LIBRARY_OUTCOME, PROVISIONING_ERROR, ProvisioningError, finalAppSmoke, verifyFinalRuntimeConfig } = require("../src/shared/sharepointProvisioning.js");
 const { SP_ERROR, classifySharePointError } = require("../src/shared/sharepointErrors.js");
-const { userFacingSharePointFailure } = require("../src/shared/userFacingErrors.js");
+const { safeReleaseManagerError, sanitizeReleaseDiagnostic, userFacingSharePointFailure } = require("../src/shared/userFacingErrors.js");
 const { buildSiteIdentity, buildTxtSeedPlan, requiredLibraries, requiredFolders } = require("../src/shared/siteRuntime.js");
 const { RUNTIME_BOOTSTRAP_FILE, RUNTIME_CONFIG_FILE, DEPLOYMENT_METADATA_FILE } = require("../src/shared/universalManifest.js");
 const { buildRuntimeBootstrapSource } = require("../src/shared/runtimeBootstrap.js");
@@ -432,6 +432,10 @@ test('historical incomplete folders poll then require reconciliation without mut
       assert.equal(error.reason, 'FOLDER_LIST_ITEM_ID_UNCONFIRMED');
       assert.equal(error.destructiveRepairAllowed, false);
       assert.equal(error.mutationAttempted, false);
+      assert.equal(error.operatorWorkflow.repairPreview.destructive, false);
+      assert.equal(error.operatorWorkflow.repairPreview.preservesExistingContent, true);
+      assert.match(error.operatorWorkflow.operatorSteps.join(' '), /Do not delete/);
+      assert.equal(error.operatorWorkflow.evidence.expectedPath, path);
       return true;
     },
   );
@@ -554,6 +558,15 @@ test('historical-folder reconciliation errors provide a Hebrew corrective action
   const safe = userFacingSharePointFailure({
     code: PROVISIONING_ERROR.FOLDER_RECONCILIATION_REQUIRED,
     errorClass: SP_ERROR.PERMANENT_FAILURE,
+  });
+
+  test('release errors use safe Hebrew copy and sanitized diagnostics', () => {
+    assert.match(safeReleaseManagerError({ status: 403, message: '<html>secret</html>' }), /אין הרשאה/);
+    assert.equal(
+      sanitizeReleaseDiagnostic('<html>cookie: abc token=secret123 \\u05e9</html>'),
+      '[html]cookie: [redacted] token=[redacted] [unicode][html]',
+    );
+    assert.doesNotMatch(safeReleaseManagerError(new TypeError('invalid local state'), 'שגיאה בטוחה'), /חיבור/);
   });
   assert.match(safe.message, /תיקייה היסטורית/);
   assert.match(safe.nextAction, /ידנית/);

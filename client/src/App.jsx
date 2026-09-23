@@ -13,6 +13,7 @@ import SharePointDeploymentCoordinator from './SharePointDeploymentCoordinator.j
 import { collectDirectoryHandle, collectDroppedFolder, collectSelectedFolder, folderPickerDiagnostics, formatBytes, summarizeSource, validateDistSource } from './releaseFolder.js';
 import clientPackage from '../package.json';
 import { useBackendMode } from './context/BackendModeContext.jsx';
+import { safeReleaseManagerError } from '../../shared/userFacingErrors.js';
 
 const APP_VERSION = clientPackage.version;
 
@@ -306,7 +307,7 @@ function JobModal({ job, onClose, onLocalVerify }) {
       const report = await onLocalVerify(job);
       setLocalReport(report);
     } catch (error) {
-      setVerifyError(error.message);
+      setVerifyError(safeReleaseManagerError(error, 'אימות הריליס נכשל. בדקו את הקובץ ונסו שוב.'));
     } finally {
       setVerifying(false);
     }
@@ -529,7 +530,7 @@ function UploadReleaseModal({ versionInfo, onClose, onSave }) {
     try {
       setFolderSource(collectSelectedFolder(files));
     } catch (error) {
-      setUploadError(error.message);
+      setUploadError(safeReleaseManagerError(error, 'העלאת הריליס נכשלה. בדקו את הקובץ ונסו שוב.'));
     } finally {
       setReading(false);
       event.target.value = '';
@@ -544,7 +545,7 @@ function UploadReleaseModal({ versionInfo, onClose, onSave }) {
       const handle = await window.showDirectoryPicker({ mode: 'read' });
       setFolderSource(await collectDirectoryHandle(handle));
     } catch (error) {
-      if (error?.name !== 'AbortError') setUploadError(`לא ניתן לקרוא את התיקייה: ${error.message}`);
+      if (error?.name !== 'AbortError') setUploadError(safeReleaseManagerError(error, 'לא ניתן לקרוא את התיקייה שנבחרה.'));
     } finally {
       setReading(false);
     }
@@ -556,7 +557,7 @@ function UploadReleaseModal({ versionInfo, onClose, onSave }) {
     setReading(true);
     setUploadError('');
     try { setFolderSource(await collectDroppedFolder(event.dataTransfer)); }
-    catch (error) { setUploadError(`לא ניתן לקרוא את התיקייה: ${error.message}`); }
+    catch (error) { setUploadError(safeReleaseManagerError(error, 'לא ניתן לקרוא את התיקייה שנבחרה.')); }
     finally { setReading(false); }
   };
 
@@ -572,7 +573,7 @@ function UploadReleaseModal({ versionInfo, onClose, onSave }) {
     try {
       await onSave({ version, notes, source: source || { kind: 'zip', file: zipFile } });
     } catch (error) {
-      setUploadError(error.message);
+      setUploadError(safeReleaseManagerError(error, 'העלאת הריליס נכשלה. בדקו את המקור ונסו שוב.'));
       setSaving(false);
     }
   };
