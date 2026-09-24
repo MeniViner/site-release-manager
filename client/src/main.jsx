@@ -5,6 +5,7 @@ import App from './App.jsx';
 import { getApiBootstrapDiagnostics, getApiHealthDiagnostics, initializeApiRuntime, verifyApiHealth } from './api.js';
 import './styles.css';
 import { BackendModeProvider } from './context/BackendModeContext.jsx';
+import { safeReleaseManagerError, sanitizeReleaseDiagnostic } from '../../shared/userFacingErrors.js';
 
 function renderBootstrapFailure(root, error) {
   const diagnostics = getApiBootstrapDiagnostics();
@@ -15,8 +16,8 @@ function renderBootstrapFailure(root, error) {
       `URL: ${attempt.url}`,
       `HTTP: ${attempt.status || 'network-error'} ${attempt.statusText || ''}`.trim(),
       `Content-Type: ${attempt.contentType || 'unknown'}`,
-      `Error: ${attempt.error || 'unknown'}`,
-      `Preview: ${attempt.preview || '(empty)'}`,
+      `Error: ${sanitizeReleaseDiagnostic(attempt.error || 'unknown')}`,
+      `Preview: ${sanitizeReleaseDiagnostic(attempt.preview || '(empty)')}`,
     ].join('\n')).join('\n\n')
     : 'לא נרשמו ניסיונות Runtime Config.';
 
@@ -25,7 +26,7 @@ function renderBootstrapFailure(root, error) {
       <div style={{ width: 'min(920px, 100%)', background: '#fff', border: '1px solid #fecaca', borderRadius: 16, padding: 24, color: '#991b1b', boxShadow: '0 20px 50px rgba(15,23,42,.10)' }}>
         <h1 style={{ marginTop: 0 }}>אתחול Release Manager נכשל</h1>
         <p>{health ? 'Runtime Config נטען, אבל לא ניתן להגיע ל־Node API.' : 'לא ניתן לטעון את הגדרת ה־API של סביבת ההרצה.'}</p>
-        <code dir="ltr" style={{ display: 'block', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', background: '#fff7f7', padding: 12, borderRadius: 10 }}>{String(error?.message || error)}</code>
+        <p style={{ background: '#fff7f7', padding: 12, borderRadius: 10 }}>{safeReleaseManagerError(error, 'אתחול המערכת נכשל. בדקו את הגדרת סביבת ההרצה ונסו שוב.')}</p>
         {health && <>
           <h2 style={{ fontSize: 18, marginTop: 22 }}>אבחון API</h2>
           <pre dir="ltr" style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', background: '#0f172a', color: '#e2e8f0', padding: 14, borderRadius: 10, maxHeight: 220, overflow: 'auto' }}>{[
@@ -36,8 +37,8 @@ function renderBootstrapFailure(root, error) {
             `Runtime version: ${health.runtimeVersion || 'unknown'}`,
             `API version: ${health.apiVersion || 'unknown'}`,
             `Version match: ${health.versionMatches === false ? 'NO' : 'yes/unknown'}`,
-            `Error: ${health.error || 'unreachable'}`,
-            `Preview: ${health.preview || '(empty)'}`,
+            `Error: ${sanitizeReleaseDiagnostic(health.error || 'unreachable')}`,
+            `Preview: ${sanitizeReleaseDiagnostic(health.preview || '(empty)')}`,
           ].join('\n')}</pre>
         </>}
         <h2 style={{ fontSize: 18, marginTop: 22 }}>אבחון Runtime Config</h2>

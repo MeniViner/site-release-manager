@@ -76,4 +76,33 @@ function userFacingSharePointFailure(value = {}) {
   };
 }
 
-module.exports = { userFacingSharePointFailure };
+function sanitizeReleaseDiagnostic(value) {
+  return String(value ?? '')
+    .replace(/<[^>]*>/g, '[html]')
+    .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, '$1 [redacted]')
+    .replace(/((?:cookie|authorization|token|secret|password|api[-_ ]?key)\s*[:=]\s*)[^\s,;]+/gi, '$1[redacted]')
+    .replace(/([?&](?:token|code|key|secret|sig)=)[^&\s]+/gi, '$1[redacted]')
+    .replace(/\\u[0-9a-f]{4}/gi, '[unicode]')
+    .slice(0, 500);
+}
+
+function safeReleaseManagerError(error, fallback = 'הפעולה נכשלה. נסו שוב או פתחו את האבחון לקבלת פרטים.') {
+  if (error?.failureInfo || error?.errorClass || error?.sharePoint?.errorClass) {
+    return userFacingSharePointFailure(error).message;
+  }
+  const status = Number(error?.status || error?.response?.status || 0);
+  if (status === 401 || status === 403) return 'אין הרשאה לבצע את הפעולה. בקשו הרשאה מתאימה ונסו שוב.';
+  if (status === 413 || error?.code === 'LIMIT_FILE_SIZE') return 'הקובץ גדול מהמגבלה המותרת.';
+  if (status === 409) return 'הפעולה מתנגשת עם מצב קיים. רעננו את הנתונים ובדקו את האבחון לפני ניסיון נוסף.';
+  const code = String(error?.code || error?.apiCode || '');
+  if (/VALIDATION|INVALID|BAD_REQUEST/i.test(code) || status === 400 || status === 422) {
+    return 'הנתונים שהוזנו אינם תקינים. בדקו את השדות ונסו שוב.';
+  }
+  const message = String(error?.message || '').toLowerCase();
+  if (message.includes('failed to fetch') || message.includes('networkerror') || message.includes('econnrefused')) {
+    return 'לא ניתן להתחבר לשירות כרגע. בדקו שהשירות פעיל ונסו שוב.';
+  }
+  return fallback;
+}
+
+module.exports = { userFacingSharePointFailure, sanitizeReleaseDiagnostic, safeReleaseManagerError };

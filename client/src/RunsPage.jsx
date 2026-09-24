@@ -6,7 +6,7 @@ import {
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from './api.js';
 import { STAGE_ORDER as CANONICAL_STAGE_ORDER, stageLabel } from '../../shared/deploymentStages.js';
-import { userFacingSharePointFailure } from '../../shared/userFacingErrors.js';
+import { safeReleaseManagerError, userFacingSharePointFailure } from '../../shared/userFacingErrors.js';
 import { useBackendMode } from './context/BackendModeContext.jsx';
 
 const STATE_LABELS = {
@@ -249,7 +249,7 @@ function RunDetailModal({ run, loading, onClose, onRefresh }) {
       else await api.cancelRun(run.id);
       await onRefresh();
     } catch (error) {
-      setActionError(error.message);
+      setActionError(safeReleaseManagerError(error, 'לא ניתן לבצע את פעולת הריצה. רעננו ונסו שוב.'));
     } finally {
       setBusy(false);
     }
