@@ -1,6 +1,6 @@
 # CONTINUATION — Unified Convergence (site-builder + site-release-manager)
 
-Version: 6 (2026-09-24)
+Version: 7 (2026-09-24)
 Integration branch (both repos): `codex/sitebuilder-unified-convergence-20260923`
 
 ## 1. Four recovered inputs (manifest RUN 20260923-162927-54393)
@@ -816,3 +816,108 @@ built from.
 Silent Windows SSO; IIS honouring rewrite-before-authentication for the Daily
 Data preflight on a real host; Windows-native dependency compatibility; live
 SharePoint farm behaviour.
+
+
+---
+
+# Session 7 — selective restore closed
+
+Scope: the three selective-restore scenarios. Netlify untouched.
+
+## Root cause (established, not inferred)
+
+Instrumented ONE controlled restore with a correlation id and step log rather
+than reading a missing toast. The earlier `frozen:false` observation was
+correctly identified as proving nothing: `endAdminPersistenceSuspension()` runs
+on both the success and failure paths.
+
+The instrumented run produced an EMPTY step log and one pageerror:
+`לגיבוי הזה חסר מזהה לשחזור.` — thrown at
+`AdminBackupManagement.jsx:1314-1317`, i.e. BEFORE the `try` that begins at 1320
+and before `setIsRestoring(true)`.
+
+Two defects:
+
+1. **`getRestoreTargetId` was required for every backend but is Mongo-only.**
+   Its only consumers are inside `if (mongoBackupStore)` — the `restoreBackup`
+   API call and its description. A SharePoint/TXT backup has no id at all;
+   `listSharePointBackups` identifies a backup by `serverRelativeUrl`. The
+   precondition was therefore unsatisfiable on the TXT backend, so **selective
+   restore was impossible for every SharePoint backup**, not only in tests.
+
+2. **The guard threw outside the handler's own error handling.** In an async
+   click handler this became an unhandled rejection: no toast, no modal error,
+   no result, and not even the restoring spinner. The operation started and
+   ended with no observable state — precisely the "silent return" the acceptance
+   criteria forbid.
+
+## Fixes — product, not harness
+
+- The guard is scoped to `mongoBackupStore` and now ends the operation
+  explicitly with a durable modal error, matching the convention the empty
+  selection guard above it already used.
+- A failed safety backup reported only the generic "שחזור הגיבוי נכשל.", because
+  the raw transport text (`SharePoint save failed (500)`) was thrown and
+  collapsed by `toSafeHebrewError`. It now names the step and states that nothing
+  was changed, keeping the raw cause as a non-rendered diagnostic.
+- `toSafeHebrewError` honours a message the application explicitly marks
+  `userFacing: true`. Opt-in per error, so raw server text can never take that path.
+
+Harness changes were limited to what the scenarios genuinely needed: a per-write
+failure hook (`failWrite(path, liveWriteIndex)`) so a mid-restore failure can be
+injected through the real store instead of a stub that bypasses read-back, and
+assertions corrected to the fixture's record shape.
+
+Verified after the fix, from the instrumented trace: suspend → quiesce →
+non-mongo branch → loadConfigEnvelope → safety backup success (10 copied) →
+master write → write loop (`nav_data.txt` to the live site) → reload →
+loadBackups → result rendered. ~130 ms, no page errors.
+
+## Scenario results — all three pass, no fixme, no weakened assertions
+
+1. **Selected units restored, unselected preserved.** Strengthened: live writes
+   must equal exactly `[nav_data.txt]`. The safety backup's copies of unselected
+   files into `/Backups/` are correctly excluded — that is the safety net
+   working, not an overwrite.
+2. **Safety-backup failure blocks every destructive write.** Zero successful live
+   writes; the modal shows "יצירת גיבוי הבטיחות נכשלה … לא בוצע שינוי בנתונים",
+   still visible 6 s later (durable, not a transient toast); asserted that no raw
+   transport text reaches the operator; no results panel.
+3. **Mid-restore failure.** Exactly one unit written, at least one refused, an
+   explicit terminal state, the safety backup and its manifest preserved as
+   evidence, unselected BOOM unchanged, and no success message.
+
+## Results
+
+| Run | Result |
+|---|---|
+| `npx playwright test` (fresh server) | **49 passed, 0 failed, 0 skipped** |
+| `npx vitest run --maxWorkers=2` | **1325/1325** |
+| affected units (AdminBackupManagement, userFacingError, backupPackage, sharePointBrowserFilesystem) | **68/68** |
+| RM `npm test` vs the REBUILT artifact | **279/279, 0 skipped** |
+| lint vs base (`origin/main` 154/11/49) | **delta 0/0/0** |
+
+## Artifacts — REBUILT (production code changed)
+
+| Artifact | Location | Evidence |
+|---|---|---|
+| SB Universal | `site-builder…/dist-universal` | buildId `69b25d1d-7f86-45f5-8515-2ad1157811a5`, 73 files, JS/CSS hash `4a07328bd2a6e527bb3c3b0b59a14651bebc42e121ee2a9795326493a3dd48f4`, 31 assets byte-identical across two target identities |
+| RM client | `…/client/dist` | tree hash `d9549a8968a03953…` |
+| SharePoint deployer | `…/sharepoint-deployer/client/dist` | tree hash `6cdbb40b492e0302…` |
+| Server-only package | `…worktrees/srm-server-only-aefe281` | verified |
+| Paired manifest | `…site-release-manager.worktrees/artifact-manifest.json` | both SHAs, all four artifacts |
+
+The previous Universal (`58c8a4af…` / `f8ef7635…`) is superseded by `69b25d1d…`.
+SB `package-lock.json` sha256 unchanged: `a692c588b25ea1b89732aac44c7dee78d8de2b67bbd95ee2d0dddddad82abd9d`.
+
+## Local restore acceptance
+
+**Complete.** All three scenarios execute their meaningful assertions and pass,
+with no fixme, no skip, no weakened check and no retry. Verified safety backups,
+writer suspension/revalidation and scoped drafts were preserved, not bypassed.
+
+## Genuinely external — unchanged
+
+Silent Windows SSO; IIS honouring rewrite-before-authentication for the Daily
+Data preflight on a real host; Windows-native dependency compatibility for the
+server-only package; live SharePoint farm behaviour.
