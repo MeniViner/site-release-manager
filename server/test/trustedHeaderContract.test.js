@@ -141,19 +141,41 @@ test('health and readiness are NOT inside an authenticated location', () => {
   }
 });
 
-test('CORS preflight is diverted to an anonymous handler before authentication', () => {
+test('the preflight rewrite targets the URL the iisnode handler is mapped to', () => {
+  // The chain only works if the rewritten URL is actually served by iisnode.
+  // stopProcessing means no later rule runs, so this rule cannot rely on the
+  // SPA fallback to map it onto the handler afterwards.
+  const handler = /<add name="iisnode" path="([^"]+)"/.exec(xml);
+  assert.ok(handler, 'the iisnode handler mapping must exist');
+  const handlerPath = handler[1];
+
   const start = xml.indexOf('<rule name="AnonymousCorsPreflight"');
   assert.notEqual(start, -1, 'a browser preflight carries no credentials and must not be challenged');
   const rule = xml.slice(start, xml.indexOf('</rule>', start));
   assert.match(rule, /<add input="\{REQUEST_METHOD\}" pattern="\^OPTIONS\$" \/>/);
   assert.match(rule, /api\/daily-data\/v1\/sites/);
-  assert.match(rule, /<action type="Rewrite" url="api\/cors-preflight\/daily-data" \/>/);
 
-  // It must be evaluated before the SPA fallback can stop processing.
+  const rewrite = /<action type="Rewrite" url="([^"]+)" \/>/.exec(rule);
+  assert.ok(rewrite, 'the rule must rewrite somewhere');
+  assert.equal(
+    rewrite[1], handlerPath,
+    `the preflight must rewrite to ${handlerPath}; an intermediate application URL is not mapped to any handler`,
+  );
+
+  assert.match(rule, /stopProcessing="true"/);
   assert.ok(start < xml.indexOf('<rule name="SiteReleaseManager"'));
 });
 
-test('the identity stamp still runs before the preflight diversion', () => {
+test('the SPA fallback rewrites to that same handler entrypoint', () => {
+  // Confirms the assumption the rule above relies on: index.cjs IS how this app
+  // reaches Node, so rewriting a preflight there routes it identically.
+  const fallback = xml.slice(xml.indexOf('<rule name="SiteReleaseManager"'));
+  const rewrite = /<action type="Rewrite" url="([^"]+)" \/>/.exec(fallback);
+  const handler = /<add name="iisnode" path="([^"]+)"/.exec(xml);
+  assert.equal(rewrite[1], handler[1]);
+});
+
+test('the identity stamp still runs before the preflight rewrite', () => {
   // Order matters: a diverted OPTIONS must not be able to carry a forged header.
   assert.ok(
     xml.indexOf('<rule name="StampTrustedIdentityHeaders"') < xml.indexOf('<rule name="AnonymousCorsPreflight"'),

@@ -62,12 +62,55 @@ WHITENING PROCEDURE
 
 IIS REQUIREMENTS
 - IISNode and URL Rewrite installed; app pool is No Managed Code.
-- Enable Windows Authentication and disable Anonymous Authentication for the API application.
 - Set NODE_ENV=production in the preserved .env.
-- IIS must overwrite any browser-provided x-iisnode-auth-user value with the authenticated Windows principal. HTTP_X_IISNODE_AUTH_USER maps to x-iisnode-auth-user.
-- If TRUSTED_SITE_ACCESS_ENABLED=true, the same trusted IIS/reverse-proxy boundary must inject TRUSTED_SITE_ACCESS_HEADER as the exact comma-separated builderSiteId values the authenticated principal is authorized to use. Do not forward that header from the browser.
-- Integrated Windows Authentication must be accepted silently for the internal URL (domain policy/browser intranet-zone prerequisite). If it is not, stop: a native credential prompt is not application acceptance.
-- The generated web.config intentionally has no <iisnode> section. IISNode installation/runtime selection remains an environment prerequisite.
+
+AUTHENTICATION IS ROUTE-SPECIFIC — DO NOT ENABLE WINDOWS AUTH SITE-WIDE.
+The shipped web.config already declares this; it is executable configuration,
+not advice. Blanket Windows Authentication would challenge Bearer-authorized
+management calls and turn an ordinary click into a native credential dialog.
+
+  application baseline ............ Anonymous ON,  Windows OFF
+  /api/auth/session ............... Anonymous OFF, Windows ON   (the only challenge point)
+  /api/daily-data/v1/sites/* ...... Anonymous OFF, Windows ON   (end-user data)
+  /api/health, /api/config ........ anonymous
+  /api/daily-data/v1/healthz,readyz anonymous (Site Builder's deploy gate needs this)
+
+  This is NOT anonymous management. Every consequential mutation — site
+  create/update/delete/deploy, release upload/update/delete, data-access —
+  requires a signed management session inside the application.
+
+- allowedServerVariables MUST contain HTTP_X_IISNODE_AUTH_USER and
+  HTTP_X_IISNODE_SHAREPOINT_SITES. URL Rewrite silently refuses to set a server
+  variable that is not allow-listed; the trusted header then stays EMPTY and
+  every management session is refused with no obvious cause.
+- IIS must overwrite any browser-provided x-iisnode-auth-user with the
+  authenticated Windows principal. HTTP_X_IISNODE_AUTH_USER maps to
+  x-iisnode-auth-user (URL Rewrite turns underscores into hyphens).
+- MANAGEMENT_SESSION_SECRET is REQUIRED in production (32+ chars). Generate it
+  with a cryptographic generator, NOT Get-Random:
+      $bytes = [byte[]]::new(48)
+      [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+      [Convert]::ToBase64String($bytes)
+- Integrated Windows Authentication must be accepted silently for the internal
+  URL (domain policy / browser intranet-zone / SPN prerequisite). If it is not,
+  stop: a native credential prompt is not application acceptance.
+- The generated web.config intentionally has no <iisnode> section. IISNode
+  installation and runtime selection remain environment prerequisites.
+
+OFFLINE DEPENDENCIES
+node_modules ships inside this artifact, resolved on the build machine. There is
+no registry in the closed environment, so npm ci is not a recovery plan. The
+deployment manifest records windowsDependencyCompatibilityValidated=false when
+the build host is not Windows. If a dependency needs a native Windows build,
+either rebuild the artifact on Windows, or use an approved internal registry
+mirror, or carry an npm cache and run
+  npm ci --omit=dev --offline --cache <carried-cache>
+Record which route was used in the acceptance report.
+
+ACCEPTANCE
+Follow docs/WINDOWS_ACCEPTANCE_CHECKLIST.md in the repository — it is the
+canonical entry point — starting with the authentication topology in
+docs/WINDOWS_IIS_ACCEPTANCE.md.
 
 The generated package is flat. src/index.js contains the single startup implementation. index.cjs is only the IIS handler wrapper so src can remain blocked from direct HTTP access.
 `);

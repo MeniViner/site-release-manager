@@ -73,4 +73,57 @@ try {
 } finally {
   fs.rmSync(probeRoot, { recursive: true, force: true });
 }
+// --- effective authentication / preflight chain in the GENERATED package ---
+// Checked here rather than on the repository template, because the artifact is
+// what an operator installs and the two can drift.
+{
+  const webConfig = fs.readFileSync(path.join(packageRoot, 'web.config'), 'utf8');
+  const handler = /<add name="iisnode" path="([^"]+)"/.exec(webConfig);
+  if (!handler) throw new Error('Packaged web.config declares no iisnode handler.');
+
+  const ruleStart = webConfig.indexOf('<rule name="AnonymousCorsPreflight"');
+  if (ruleStart < 0) throw new Error('Packaged web.config has no anonymous CORS preflight rule.');
+  const rule = webConfig.slice(ruleStart, webConfig.indexOf('</rule>', ruleStart));
+  const rewrite = /<action type="Rewrite" url="([^"]+)" \/>/.exec(rule);
+  if (!rewrite) throw new Error('The preflight rule does not rewrite anywhere.');
+  // stopProcessing means no later rule maps the URL onto a handler, so this rule
+  // must target the handler entrypoint itself or the preflight 404s.
+  if (rewrite[1] !== handler[1]) {
+    throw new Error(
+      `The preflight rewrites to "${rewrite[1]}" but the iisnode handler is mapped to "${handler[1]}". `
+      + 'With stopProcessing="true" nothing maps that URL onto a handler, so OPTIONS would never reach Node.',
+    );
+  }
+  if (!/REQUEST_METHOD/.test(rule) || !/OPTIONS/.test(rule)) {
+    throw new Error('The preflight rule must be restricted to OPTIONS.');
+  }
+  if (webConfig.indexOf('StampTrustedIdentityHeaders') > ruleStart) {
+    throw new Error('Trusted headers must be re-stamped before any rule can stop processing.');
+  }
+  const locations = [...webConfig.matchAll(/<location path="([^"]+)"/g)].map((m) => m[1]).sort();
+  const expected = ['api/auth/session', 'api/daily-data/v1/sites'];
+  if (JSON.stringify(locations) !== JSON.stringify(expected)) {
+    throw new Error(`Unexpected Windows-authenticated locations: ${JSON.stringify(locations)}`);
+  }
+  if (/<iisnode\b/.test(webConfig)) throw new Error('Packaged web.config must carry no local <iisnode> section.');
+  if (!webConfig.includes('629145600')) throw new Error('The IIS upload ceiling is missing.');
+
+  const readme = fs.readFileSync(path.join(packageRoot, 'IIS-DEPLOY-README.txt'), 'utf8');
+  if (/disable Anonymous Authentication for the API application/i.test(readme)) {
+    throw new Error('The generated README still instructs blanket Windows Authentication, contradicting web.config.');
+  }
+  if (/TRUSTED_SITE_ACCESS/.test(readme)) {
+    throw new Error('The generated README still references the removed per-site access header mechanism.');
+  }
+  for (const [needle, what] of [
+    ['allowedServerVariables', 'the URL Rewrite allow-list prerequisite'],
+    ['RandomNumberGenerator', 'cryptographic secret generation'],
+    ['WINDOWS_ACCEPTANCE_CHECKLIST', 'the canonical acceptance entry point'],
+    ['--offline', 'the offline dependency workflow'],
+    ['Preserve the existing .env and storage', 'destination .env/storage preservation'],
+  ]) {
+    if (!readme.includes(needle)) throw new Error(`The generated README no longer documents ${what}.`);
+  }
+}
+
 console.log(`SERVER-ONLY PACKAGE VERIFIED: ${packageRoot}`);

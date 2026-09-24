@@ -20,13 +20,42 @@ const { createDailyDataRouter } = require("./daily-data/v1/router.js");
  * lease; without it in the allow-list every cross-origin deployment request
  * from SharePoint would be blocked by the preflight.
  */
-const ALLOWED_REQUEST_HEADERS = Object.freeze(['Content-Type', 'Accept', 'X-SRM-Lease']);
+// Authorization is allow-listed here too so a management route that is ever
+// added without being registered below fails with a clear 401 rather than an
+// opaque browser CORS error. Allow-listing a REQUEST header grants no
+// authorization: the server still demands a valid signed session.
+const ALLOWED_REQUEST_HEADERS = Object.freeze(['Content-Type', 'Accept', 'X-SRM-Lease', 'Authorization']);
 const DAILY_DATA_REQUEST_HEADERS = Object.freeze(['Content-Type', 'Accept', 'If-Match']);
 const MANAGEMENT_IDENTITY_REQUEST_HEADERS = Object.freeze(['Content-Type', 'Accept']);
 // Management mutations authorize from a bearer token, so Authorization has to
 // survive preflight -- but they are NOT credentialed, which is what keeps IIS
 // from challenging routine application traffic.
-const MANAGEMENT_SESSION_REQUEST_HEADERS = Object.freeze(['Content-Type', 'Accept', 'Authorization']);
+const MANAGEMENT_SESSION_REQUEST_HEADERS = Object.freeze([
+  'Content-Type', 'Accept', 'Authorization', 'Idempotency-Key',
+]);
+const MANAGEMENT_SESSION_METHODS = Object.freeze(['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS']);
+
+/**
+ * Every operation the browser performs with a management session, mirroring the
+ * requireManagementPrincipal guards in routes/sites.js and routes/releases.js.
+ *
+ * This has to be the COMPLETE set. A guarded route missing from it gets the
+ * general CORS policy, whose preflight does not advertise the headers the client
+ * actually sends, so the browser refuses the request before the server ever sees
+ * it -- and the failure looks like a server bug rather than a policy gap.
+ */
+const MANAGEMENT_SESSION_ROUTES = Object.freeze([
+  { method: 'POST', pattern: /^\/api\/sites$/ },
+  { method: 'PATCH', pattern: /^\/api\/sites\/[^/]+$/ },
+  { method: 'DELETE', pattern: /^\/api\/sites\/[^/]+$/ },
+  { method: 'PATCH', pattern: /^\/api\/sites\/[^/]+\/data-access$/ },
+  { method: 'POST', pattern: /^\/api\/sites\/[^/]+\/deploy$/ },
+  { method: 'POST', pattern: /^\/api\/releases\/upload$/ },
+  { method: 'POST', pattern: /^\/api\/releases\/upload-folder$/ },
+  { method: 'PATCH', pattern: /^\/api\/releases\/[^/]+$/ },
+  { method: 'DELETE', pattern: /^\/api\/releases\/[^/]+$/ },
+  { method: 'GET', pattern: /^\/api\/auth\/whoami$/ },
+]);
 
 function createApp() {
   const app = express();
@@ -68,33 +97,6 @@ function createApp() {
   // Daily Site Builder data is intentionally isolated from the management API:
   // it needs credentialed PUT/PATCH for the SharePoint/IIS identity flow, while
   // management keeps its existing non-credentialed browser boundary.
-  // Anonymous CORS preflight handler.
-  //
-  // URL Rewrite diverts OPTIONS for the Windows-authenticated Daily Data routes
-  // here (see web.config, AnonymousCorsPreflight) because a browser preflight
-  // carries no credentials and a 401 would kill the real request that follows.
-  // Rewrite runs before authentication, so this path is reachable anonymously.
-  // It answers with the SAME policy the Daily Data routes use and nothing more:
-  // no site data is touched and no authorization is granted here.
-  app.options('/api/cors-preflight/daily-data', (req, res) => {
-    const origin = req.get('origin');
-    if (!isAllowedOrigin(origin)) return res.status(403).end();
-    if (origin) {
-      res.setHeader('Access-Control-Allow-Origin', origin);
-      res.setHeader('Vary', 'Origin');
-    }
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', DAILY_DATA_REQUEST_HEADERS.join(', '));
-    res.setHeader('Access-Control-Max-Age', '600');
-    return res.status(204).end();
-  });
-  // A non-OPTIONS request here is a misrouted call, never a data path.
-  app.all('/api/cors-preflight/daily-data', (_req, res) => res.status(405).json({
-    ok: false,
-    error: { code: 'preflight_only', message: 'נתיב זה משמש לבדיקת CORS בלבד.' },
-  }));
-
   app.use('/api/daily-data/v1', express.json({ limit: '10mb' }));
   app.use('/api/daily-data/v1', cors({
     origin(origin, callback) {
@@ -128,7 +130,7 @@ function createApp() {
       return callback(null, isAllowedOrigin(origin));
     },
     credentials: false,
-    methods: ['GET', 'POST', 'PATCH', 'OPTIONS'],
+    methods: MANAGEMENT_SESSION_METHODS,
     allowedHeaders: MANAGEMENT_SESSION_REQUEST_HEADERS,
     maxAge: 600,
     optionsSuccessStatus: 204,
@@ -136,10 +138,10 @@ function createApp() {
   const usesManagementSession = (req) => {
     const method = req.method === 'OPTIONS'
       ? String(req.get('access-control-request-method') || '').toUpperCase()
-      : req.method;
-    return (req.path === '/api/sites' && method === 'POST')
-      || (/^\/api\/sites\/[^/]+\/data-access$/.test(req.path) && method === 'PATCH')
-      || (req.path === '/api/auth/whoami' && method === 'GET');
+      : String(req.method || '').toUpperCase();
+    return MANAGEMENT_SESSION_ROUTES.some(
+      (route) => route.method === method && route.pattern.test(req.path),
+    );
   };
   app.use((req, res, next) => (usesManagementSession(req)
     ? managementSessionCors(req, res, next)
@@ -245,4 +247,6 @@ module.exports = {
   ALLOWED_REQUEST_HEADERS: ALLOWED_REQUEST_HEADERS,
   MANAGEMENT_IDENTITY_REQUEST_HEADERS: MANAGEMENT_IDENTITY_REQUEST_HEADERS,
   MANAGEMENT_SESSION_REQUEST_HEADERS: MANAGEMENT_SESSION_REQUEST_HEADERS,
+  MANAGEMENT_SESSION_METHODS: MANAGEMENT_SESSION_METHODS,
+  MANAGEMENT_SESSION_ROUTES: MANAGEMENT_SESSION_ROUTES,
 };
