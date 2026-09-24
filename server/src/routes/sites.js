@@ -20,8 +20,11 @@ const { canonicalState, isResumable, stateLabel } = require("../services/jobStat
 const { publicBackup } = require("../services/backupService.js");
 const { parseReleaseVersion } = require("../utils/versioning.js");
 const { backendQuery, normalizeBackend } = require("../utils/backendMode.js");
-const { buildBackendDeploymentPlan } = require("../services/deploymentProfiles.js");
-const { accessForCreator, hasRole, trustedIdentityForRequest } = require("../daily-data/v1/identity.js");
+const { assertReleaseCompatibility, buildBackendDeploymentPlan } = require("../services/deploymentProfiles.js");
+const { verifyStoredReleaseIntegrity } = require("../services/releaseValidation.js");
+const { accessForCreator, hasRole } = require("../daily-data/v1/identity.js");
+const { requireManagementPrincipal } = require("./auth.js");
+const { provisionSite } = require("../daily-data/v1/service.js");
 const sitesRouter = Router();
 
 const toDateOrNull = (value) => (value ? new Date(value) : null);
@@ -230,11 +233,197 @@ sitesRouter.get('/:id', async (req, res, next) => {
   }
 });
 
-sitesRouter.post('/', async (req, res, next) => {
+/**
+ * Mongo creation is authorized by a management SESSION, never by an identity
+ * header on this request. The session is established once at
+ * POST /api/auth/session -- the only credentialed call -- so an ordinary create
+ * click can never be escalated by IIS into a native credential dialog, and a
+ * forged trusted header on this route authorizes nothing.
+ *
+ * The gate runs before validation and before any database read so that an
+ * unauthorized caller cannot use this endpoint to probe releases or sites.
+ */
+
+/**
+ * Fingerprint of the inputs that define a create/install intent.
+ *
+ * A retry of the SAME intent must converge on the SAME logical site. A reused
+ * key carrying materially different input is a client bug, not a retry, and is
+ * rejected rather than silently resolved to the first site.
+ *
+ * Display name and SharePoint Web code are deliberately NOT the identity:
+ * several logical sites may legitimately live inside one Web.
+ */
+
+/** Library/folder names SharePoint will not accept, or that collide with ours. */
+const RESERVED_HOSTING_FOLDERS = new Set([
+  'forms', 'siteassets', 'sitepages', '_catalogs', '_private', '_vti_bin', 'dist', 'images',
+]);
+
+/**
+ * Frontend SharePoint hosting for a Mongo site.
+ *
+ * Hosting is deliberately INDEPENDENT of the Mongo data identity: builderSiteId
+ * is always allocated by the server and can never be chosen by the caller, while
+ * the physical library pair may be either auto-allocated or explicitly chosen.
+ *
+ * Several logical sites may legitimately share one SharePoint Web, so the Web
+ * code is never the identity. What must not happen is two logical sites silently
+ * sharing the SAME physical target; the unique targetKey index enforces that and
+ * surfaces a 409 rather than overwriting someone else's files.
+ */
+function resolveMongoHosting(body, allocationSuffix) {
+  const explicit = (value) => String(value || '').trim();
+  const siteDbFolder = explicit(body.siteDbFolder);
+  const usersDbFolder = explicit(body.usersDbFolder);
+
+  if (!siteDbFolder && !usersDbFolder) {
+    return {
+      siteDbFolder: `siteDB-${allocationSuffix}`,
+      usersDbFolder: `siteUsersDb-${allocationSuffix}`,
+      hostingAllocation: 'automatic',
+    };
+  }
+  if (!siteDbFolder || !usersDbFolder) {
+    throw Object.assign(
+      new Error('בבחירת ספריות אירוח יש לציין גם את ספריית האתר וגם את ספריית המשתמשים.'),
+      { statusCode: 400, code: 'INCOMPLETE_HOSTING_CHOICE' },
+    );
+  }
+
+  for (const [label, value] of [['ספריית האתר', siteDbFolder], ['ספריית המשתמשים', usersDbFolder]]) {
+    if (!/^[A-Za-z][A-Za-z0-9-]{1,63}$/.test(value)) {
+      throw Object.assign(
+        new Error(`${label} חייבת להתחיל באות ולהכיל אותיות, ספרות ומקפים בלבד (עד 64 תווים).`),
+        { statusCode: 400, code: 'INVALID_HOSTING_LIBRARY' },
+      );
+    }
+    if (RESERVED_HOSTING_FOLDERS.has(value.toLowerCase())) {
+      throw Object.assign(
+        new Error(`${label} משתמשת בשם שמור ב-SharePoint: ${value}.`),
+        { statusCode: 400, code: 'RESERVED_HOSTING_LIBRARY' },
+      );
+    }
+  }
+  if (siteDbFolder.toLowerCase() === usersDbFolder.toLowerCase()) {
+    throw Object.assign(
+      new Error('ספריית האתר וספריית המשתמשים חייבות להיות שונות זו מזו.'),
+      { statusCode: 400, code: 'HOSTING_LIBRARIES_IDENTICAL' },
+    );
+  }
+  return { siteDbFolder, usersDbFolder, hostingAllocation: 'explicit' };
+}
+
+function creationIntentFingerprint(body) {
+  return JSON.stringify({
+    mode: body.mode === 'install' ? 'install' : 'existing',
+    unit: String(body.unit || '').trim(),
+    name: String(body.name || '').trim(),
+    managerName: String(body.managerName || '').trim(),
+    host: String(body.host || '').trim().toLowerCase(),
+    siteCode: String(body.siteCode || '').trim().toLowerCase(),
+    storageBackend: normalizeBackend(body.storageBackend),
+    siteDbFolder: String(body.siteDbFolder || '').trim().toLowerCase(),
+    usersDbFolder: String(body.usersDbFolder || '').trim().toLowerCase(),
+    releaseId: String(body.releaseId || '').trim(),
+  });
+}
+
+function creationIdempotencyKey(req) {
+  const header = String(req.get('idempotency-key') || '').trim();
+  const body = String(req.body?.idempotencyKey || '').trim();
+  return (header || body).slice(0, 200);
+}
+
+
+/**
+ * Rebuilds the create response for an intent that already produced a site.
+ *
+ * Resumption is the point: a response lost after insertion, after provisioning
+ * or after job creation must converge on the SAME site, provisioning and job -
+ * never a second allocation. Provisioning is re-driven because provisionSite is
+ * itself idempotent (it creates only missing defaults), and the deployment job
+ * is reused when one already exists for this site and release.
+ */
+async function resumeCreation(existing, { releaseId, mode }) {
+  const db = getDb();
+  let mongoProvisioning = null;
+
+  if (existing.storageBackend === 'mongo') {
+    const owner = (existing.dataAccess?.administrators || [])[0] || null;
+    try {
+      mongoProvisioning = await provisionSite(existing, owner);
+      await db.collection('sites').updateOne(
+        { _id: existing._id },
+        {
+          $set: {
+            mongoProvisioning: { ...mongoProvisioning, verifiedAt: new Date() },
+            ...(existing.status === 'MONGO_PROVISIONING_FAILED' ? { status: 'DRAFT' } : {}),
+            updatedAt: new Date(),
+          },
+          $unset: { mongoProvisioningError: '' },
+        },
+      );
+    } catch (error) {
+      // A retry that still cannot provision must report the failure, not present
+      // an incomplete site as a finished one.
+      error.site = publicSite(existing);
+      throw error;
+    }
+  }
+
+  let job = null;
+  if (mode === 'install' && releaseId && ObjectId.isValid(releaseId)) {
+    job = await db.collection('deployment_jobs').findOne(
+      { siteId: existing._id, releaseId: new ObjectId(releaseId) },
+      { sort: { createdAt: -1 } },
+    );
+    if (!job) job = await createDeploymentJob({ siteId: existing._id, releaseId, type: 'INSTALL' });
+  }
+
+  const fresh = await db.collection('sites').findOne({ _id: existing._id });
+  return { site: publicSite(fresh), job, mongoProvisioning };
+}
+
+const authorizeMongoCreate = (req, res, next) => (normalizeBackend(req.body?.storageBackend) === 'mongo'
+  ? requireManagementPrincipal(req, res, next)
+  : next());
+
+sitesRouter.post('/', authorizeMongoCreate, async (req, res, next) => {
   try {
     const body = req.body || {};
     const { mode = 'existing', unit, name, managerName, currentVersion, firstPublishedAt, lastPublishedAt, releaseId } = body;
     if (!unit || !name || !managerName) return res.status(400).json({ error: 'יחידה, שם האתר ומנהל האתר הם שדות חובה.' });
+
+    // Idempotency runs before ANY allocation: a retry must not mint a second
+    // ObjectId, builderSiteId or folder pair on its way to discovering the
+    // original. The key is bound to the authenticated operator and to the exact
+    // request intent.
+    const idempotencyKey = creationIdempotencyKey(req);
+    const intentFingerprint = creationIntentFingerprint(body);
+    const idempotencyOwner = req.managementPrincipal || null;
+    if (idempotencyKey && idempotencyOwner) {
+      const existing = await getDb().collection('sites').findOne({
+        creationIdempotencyOwner: idempotencyOwner,
+        creationIdempotencyKey: idempotencyKey,
+      });
+      if (existing) {
+        if (existing.creationIntentFingerprint !== intentFingerprint) {
+          return res.status(409).json({
+            error: 'מפתח הבקשה כבר שימש ליצירת אתר עם נתונים אחרים. השתמש במפתח חדש.',
+            code: 'IDEMPOTENCY_KEY_CONFLICT',
+          });
+        }
+        const resumed = await resumeCreation(existing, { releaseId, mode });
+        return res.status(200).json({
+          site: resumed.site,
+          job: resumed.job,
+          ...(resumed.mongoProvisioning ? { mongoProvisioning: resumed.mongoProvisioning } : {}),
+          boundary: PROVISIONING_BOUNDARY,
+          idempotent: true,
+        });
+      }
+    }
 
     const requestedBackend = normalizeBackend(body.storageBackend);
     if (requestedBackend === 'mongo' && mode !== 'install') {
@@ -243,16 +432,32 @@ sitesRouter.post('/', async (req, res, next) => {
         code: 'MONGO_EXISTING_DISCOVERY_UNSUPPORTED',
       });
     }
+    if (mode === 'install' && releaseId) {
+      if (!ObjectId.isValid(releaseId)) {
+        return res.status(400).json({ error: 'מזהה הריליס אינו תקין.', code: 'INVALID_RELEASE_ID' });
+      }
+      const release = await getDb().collection('releases').findOne({ _id: new ObjectId(releaseId), status: 'READY' });
+      if (!release) {
+        return res.status(404).json({ error: 'הריליס המוכן לא נמצא.', code: 'RELEASE_NOT_FOUND' });
+      }
+      if (release.artifactType !== 'universal-dist') {
+        return res.status(400).json({ error: 'הריליס אינו Universal dist.', code: 'RELEASE_NOT_UNIVERSAL' });
+      }
+      assertReleaseCompatibility(release, requestedBackend);
+      verifyStoredReleaseIntegrity(release);
+    }
     const mongoSiteObjectId = requestedBackend === 'mongo' ? new ObjectId() : null;
     const allocationSuffix = mongoSiteObjectId?.toHexString().slice(-10);
     // Mongo targets are centrally allocated. Browser input cannot select a
     // data identity or reuse another logical site's SharePoint hosting path.
+    // The data identity stays server-allocated; only the hosting pair may be chosen.
+    const hosting = requestedBackend === 'mongo' ? resolveMongoHosting(body, allocationSuffix) : null;
     const candidate = requestedBackend === 'mongo' ? {
       ...body,
       storageBackend: 'mongo',
       builderSiteId: `srm-${mongoSiteObjectId.toHexString()}`,
-      siteDbFolder: `siteDB-${allocationSuffix}`,
-      usersDbFolder: `siteUsersDb-${allocationSuffix}`,
+      siteDbFolder: hosting.siteDbFolder,
+      usersDbFolder: hosting.usersDbFolder,
       siteAssetsFolder: 'siteAssets',
       imagesFolder: 'images',
       widgetsDbTarget: 'users',
@@ -260,7 +465,15 @@ sitesRouter.post('/', async (req, res, next) => {
       bootstrapFolder: 'sitebuilder-bootstrap',
     } : body;
     const identity = resolveIdentity(candidate);
-    const creator = identity.storageBackend === 'mongo' ? trustedIdentityForRequest(req) : null;
+    // The verified session principal becomes the site's initial administrator,
+    // so a Mongo site can never be created without an owner.
+    const creator = identity.storageBackend === 'mongo' ? req.managementPrincipal : null;
+    if (identity.storageBackend === 'mongo' && !creator) {
+      return res.status(401).json({
+        error: 'לא ניתן ליצור אתר Mongo ללא בעלים מאומת.',
+        code: 'management_session_required',
+      });
+    }
     const now = new Date();
     const document = {
       ...(mongoSiteObjectId ? { _id: mongoSiteObjectId } : {}),
@@ -282,6 +495,7 @@ sitesRouter.post('/', async (req, res, next) => {
       bootstrapLibrary: identity.bootstrapLibrary,
       bootstrapFolder: identity.bootstrapFolder,
       targetKey: canonicalTargetKey(identity),
+      ...(hosting ? { hostingAllocation: hosting.hostingAllocation } : {}),
       status: mode === 'install' ? 'DRAFT' : 'TRACKED',
       currentVersion: currentVersion ? String(currentVersion).trim() : null,
       currentReleaseId: null,
@@ -291,9 +505,64 @@ sitesRouter.post('/', async (req, res, next) => {
       activeJobId: null,
       createdAt: now,
       updatedAt: now,
+      ...(idempotencyKey && idempotencyOwner ? {
+        creationIdempotencyOwner: idempotencyOwner,
+        creationIdempotencyKey: idempotencyKey,
+        creationIntentFingerprint: intentFingerprint,
+      } : {}),
     };
 
-    const result = await getDb().collection('sites').insertOne(document);
+    let result;
+    try {
+      result = await getDb().collection('sites').insertOne(document);
+    } catch (error) {
+      // Two concurrent retries of one intent race to insert. The unique index
+      // lets exactly one win; the loser resumes the winner's site rather than
+      // surfacing a duplicate-key error or allocating again.
+      const raced = error?.code === 11000 && idempotencyKey && idempotencyOwner;
+      if (!raced) throw error;
+      const winner = await getDb().collection('sites').findOne({
+        creationIdempotencyOwner: idempotencyOwner,
+        creationIdempotencyKey: idempotencyKey,
+      });
+      if (!winner) throw error;
+      const resumed = await resumeCreation(winner, { releaseId, mode });
+      return res.status(200).json({
+        site: resumed.site,
+        job: resumed.job,
+        ...(resumed.mongoProvisioning ? { mongoProvisioning: resumed.mongoProvisioning } : {}),
+        boundary: PROVISIONING_BOUNDARY,
+        idempotent: true,
+      });
+    }
+    let mongoProvisioning = null;
+    if (identity.storageBackend === 'mongo') {
+      try {
+        mongoProvisioning = await provisionSite(document, creator);
+        document.mongoProvisioning = { ...mongoProvisioning, verifiedAt: new Date() };
+        await getDb().collection('sites').updateOne(
+          { _id: result.insertedId },
+          { $set: { mongoProvisioning: document.mongoProvisioning, updatedAt: new Date() } },
+        );
+      } catch (error) {
+        await getDb().collection('sites').updateOne(
+          { _id: result.insertedId },
+          {
+            $set: {
+              status: 'MONGO_PROVISIONING_FAILED',
+              mongoProvisioningError: {
+                code: error.code || 'DAILY_DATA_PROVISIONING_FAILED',
+                message: error.message,
+                failedAt: new Date(),
+              },
+              updatedAt: new Date(),
+            },
+          },
+        );
+        error.site = publicSite({ ...document, _id: result.insertedId, status: 'MONGO_PROVISIONING_FAILED' });
+        throw error;
+      }
+    }
     let job = null;
     if (mode === 'install' && releaseId) {
       job = await createDeploymentJob({ siteId: result.insertedId, releaseId, type: 'INSTALL' });
@@ -301,6 +570,7 @@ sitesRouter.post('/', async (req, res, next) => {
     return res.status(201).json({
       site: publicSite({ ...document, _id: result.insertedId }),
       job,
+      ...(mongoProvisioning ? { mongoProvisioning } : {}),
       boundary: PROVISIONING_BOUNDARY,
       ...(identity.storageBackend === 'mongo' ? {
         technicalPreview: {
@@ -312,13 +582,55 @@ sitesRouter.post('/', async (req, res, next) => {
       } : {}),
     });
   } catch (error) {
+    // A racing retry of the SAME intent can lose at any stage -- the insert, the
+    // provisioning, or the deployment job. Whatever it tripped over, if a site
+    // already exists for this operator and key then this request is a retry, not
+    // a conflict, and it must converge on that site instead of reporting a
+    // duplicate target.
+    const retryKey = creationIdempotencyKey(req);
+    const retryOwner = req.managementPrincipal || null;
+    if (retryKey && retryOwner) {
+      const winner = await getDb().collection('sites').findOne({
+        creationIdempotencyOwner: retryOwner,
+        creationIdempotencyKey: retryKey,
+      }).catch(() => null);
+      if (winner) {
+        try {
+          const resumed = await resumeCreation(winner, {
+            releaseId: req.body?.releaseId,
+            mode: req.body?.mode === 'install' ? 'install' : 'existing',
+          });
+          return res.status(200).json({
+            site: resumed.site,
+            job: resumed.job,
+            ...(resumed.mongoProvisioning ? { mongoProvisioning: resumed.mongoProvisioning } : {}),
+            boundary: PROVISIONING_BOUNDARY,
+            idempotent: true,
+          });
+        } catch {
+          // Fall through to the normal error reporting below.
+        }
+      }
+    }
     if (error?.code === 11000) return res.status(409).json({ error: 'קיים כבר אתר שמצביע לאותו יעד פיזי: Host, siteCode, ספריית אתר וספריית משתמשים זהים.' });
     if (error instanceof SiteIdentityError) return res.status(400).json({ error: error.message });
+    if (error?.site) {
+      return res.status(error.statusCode || 502).json({
+        error: error.message,
+        code: error.code || 'DAILY_DATA_PROVISIONING_FAILED',
+        site: error.site,
+        retry: {
+          method: 'POST',
+          path: `/api/daily-data/v1/sites/${encodeURIComponent(error.site.builderSiteId)}/provision`,
+          body: { repair: true },
+        },
+      });
+    }
     return next(error);
   }
 });
 
-sitesRouter.patch('/:id', async (req, res, next) => {
+sitesRouter.patch('/:id', requireManagementPrincipal, async (req, res, next) => {
   try {
     const db = getDb();
     if (!ObjectId.isValid(req.params.id)) return res.status(404).json({ error: 'האתר לא נמצא.' });
@@ -446,14 +758,14 @@ sitesRouter.patch('/:id', async (req, res, next) => {
   }
 });
 
-sitesRouter.patch('/:id/data-access', async (req, res, next) => {
+sitesRouter.patch('/:id/data-access', requireManagementPrincipal, async (req, res, next) => {
   try {
     if (!ObjectId.isValid(req.params.id)) return res.status(404).json({ error: 'האתר לא נמצא.' });
     const db = getDb();
     const objectId = new ObjectId(req.params.id);
     const existing = await db.collection('sites').findOne({ _id: objectId, storageBackend: 'mongo' });
     if (!existing) return res.status(404).json({ error: 'אתר Mongo לא נמצא.' });
-    const principal = trustedIdentityForRequest(req);
+    const principal = req.managementPrincipal;
     if (!hasRole(existing, principal, 'administrators', req)) {
       return res.status(403).json({ error: 'Only a site data administrator can change data access.', code: 'SITE_ACCESS_FORBIDDEN' });
     }
@@ -473,7 +785,7 @@ sitesRouter.patch('/:id/data-access', async (req, res, next) => {
  * Delete the Release Manager tracking record ONLY.
  * SharePoint libraries, folders and TXT data are deliberately untouched.
  */
-sitesRouter.delete('/:id', async (req, res, next) => {
+sitesRouter.delete('/:id', requireManagementPrincipal, async (req, res, next) => {
   try {
     const db = getDb();
     if (!ObjectId.isValid(req.params.id)) return res.status(404).json({ error: 'האתר לא נמצא.' });
@@ -510,7 +822,7 @@ sitesRouter.delete('/:id', async (req, res, next) => {
   }
 });
 
-sitesRouter.post('/:id/deploy', async (req, res, next) => {
+sitesRouter.post('/:id/deploy', requireManagementPrincipal, async (req, res, next) => {
   try {
     if (!ObjectId.isValid(req.params.id)) return res.status(404).json({ error: 'האתר לא נמצא.' });
     const site = await getDb().collection('sites').findOne({ _id: new ObjectId(req.params.id) });

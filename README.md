@@ -325,23 +325,30 @@ When the Node API later moves to the permanent internal server, change only `PUB
 
 ## IIS packaging (closed Windows server)
 
-The project now includes an IISNode packaging path matching the layout that previously worked reliably on the closed server:
+Run `npm run package:iis-server-only` and then `npm run verify:iis-server-only`.
+`npm run package:iis` and `npm run verify:iis` are aliases for the same canonical
+flow. The output is a flat API artifact containing `src/`, production
+`node_modules/`, `package.json`, its lockfile, `web.config`, `.env.example`, and
+a checksum manifest. It intentionally excludes the Release Manager UI,
+SharePoint deployer, `.env`, storage, releases, Mongo files, tests, and Git
+metadata.
 
-- root `web.config`
-- root `index.cjs` native CommonJS IISNode entry
-- bundled `runtime/node.exe` copied from the working Windows workstation at packaging time
-- `server/src` + Windows `server/node_modules`
-- `client/dist`
-- `sharepoint-deployer/client/dist`
-- `.env`
-- `storage`
+`src/index.js` is the single startup implementation. A one-line `index.cjs`
+wrapper exists only so IIS can invoke it while `src/` remains blocked from
+direct HTTP access. The generated `web.config` deliberately contains no
+`<iisnode>` section because the closed installation rejected that configuration
+section. IISNode and URL Rewrite remain environment prerequisites.
 
-On the working Windows workstation, after local verification, double-click `CREATE_IIS_PACKAGE.cmd` or run `npm run package:iis`.
-The generated timestamped `.7z` next to the project is the package to extract into the IIS physical folder.
+A macOS/Linux build is a source and dependency artifact for that platform; it
+does not contain or claim a Windows `node.exe`. Produce/verify production
+dependencies on Windows before acceptance, or supply a separately verified
+Windows runtime/dependency payload. Transfer the Release Manager UI
+`client/dist/` and SharePoint deployer `sharepoint-deployer/client/dist/`
+separately.
 
-IIS prerequisites remain IISNode + URL Rewrite. Use an Application Pool with **No Managed Code**. The generated `web.config` rewrites non-file requests to `index.cjs` and uses the bundled `runtime\\node.exe`, avoiding reliance on the server PATH. The IIS entry requires `server/src` directly; it does not dynamically import the root ESM entrypoint.
-
-If the Release Manager UI remains hosted inside SharePoint, set `PUBLIC_API_URL` / `client/dist/release-manager-runtime-config.json` to the final HTTPS IIS URL before packaging/uploading the UI.
+Preserve the destination `.env` and storage directory. Production `.env` must
+set `NODE_ENV=production`, the public API URLs, Mongo databases, and the trusted
+identity adapter documented in `docs/DAILY_DATA_SERVICE.md`.
 
 ## v0.3.2 — SharePoint runtime diagnostics and automatic manager UI deploy
 

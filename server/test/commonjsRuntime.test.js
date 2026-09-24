@@ -83,13 +83,18 @@ test('production server modules load through native require without ESM errors',
   }
 });
 
-test('IIS entrypoint is native CommonJS and web.config targets it', () => {
+test('the root launcher and IIS use the canonical CommonJS server entrypoint', () => {
   const entry = fs.readFileSync(path.join(root, 'index.cjs'), 'utf8');
+  const serverEntry = fs.readFileSync(path.join(sourceRoot, 'index.js'), 'utf8');
   const webConfig = fs.readFileSync(path.join(root, 'web.config'), 'utf8');
-  assert.match(entry, /\brequire\(/);
+  assert.equal(entry.trim(), "require('./server/src/index.js');");
+  assert.match(serverEntry, /\brequire\(/);
   assert.doesNotMatch(withoutCommentsAndLiterals(entry), /\bimport\s*\(|\bimport\s+(?:[\w${*])/);
   assert.match(webConfig, /path="index\.cjs"/);
   assert.match(webConfig, /url="index\.cjs"/);
+  assert.doesNotMatch(webConfig, /<iisnode\b/);
+  assert.match(webConfig, /HTTP_X_IISNODE_AUTH_USER/);
+  assert.match(webConfig, /\{AUTH_USER\}/);
 });
 
 test('IISNode named-pipe PORT values remain valid listen targets', () => {
@@ -109,7 +114,7 @@ test('IISNode named-pipe PORT values remain valid listen targets', () => {
     else process.env.PORT = originalPort;
     delete require.cache[configPath];
   }
-  const entry = fs.readFileSync(path.join(root, 'index.cjs'), 'utf8');
+  const entry = fs.readFileSync(path.join(sourceRoot, 'index.js'), 'utf8');
   assert.match(entry, /const listenTarget = process\.env\.PORT \|\| config\.port \|\| 4300/);
   assert.match(entry, /app\.listen\(listenTarget/);
 });
@@ -135,10 +140,12 @@ test('the production dependency graph is self-contained in server/src and server
     [...new Set(productionSharedNames())],
     ['deploymentStages.js', 'runtimeBootstrap.js', 'siteRuntime.js', 'universalManifest.js'],
   );
-  const packageSource = fs.readFileSync(path.join(root, 'scripts', 'create-iis-package.mjs'), 'utf8');
-  assert.match(packageSource, /copyDir\('server\/src'/);
-  assert.match(packageSource, /copyDir\('server\/node_modules'/);
+  const packageSource = fs.readFileSync(path.join(root, 'scripts', 'create-iis-server-only-package.mjs'), 'utf8');
+  assert.match(packageSource, /fs\.cpSync\(path\.join\(serverRoot, 'src'\)/);
+  assert.match(packageSource, /\['ci', '--omit=dev', '--ignore-scripts'\]/);
   assert.doesNotMatch(packageSource, /copyDir\('shared'/);
+  const retiredSource = fs.readFileSync(path.join(root, 'scripts', 'create-iis-package.mjs'), 'utf8');
+  assert.match(retiredSource, /legacy combined IIS packager was retired/);
 });
 
 test('CommonJS shared contract mirrors retain representative ESM behavior', async () => {

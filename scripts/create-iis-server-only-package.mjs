@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -13,7 +14,7 @@ if (fs.existsSync(output)) {
   throw new Error(`Refusing to overwrite ${output}. Choose an empty SERVER_ONLY_PACKAGE_DIR.`);
 }
 
-for (const required of ['index.cjs', 'web.config', '.env.iis.example', 'server/package.json', 'server/package-lock.json', 'server/src/app.js']) {
+for (const required of ['web.config', '.env.iis.example', 'server/package.json', 'server/package-lock.json', 'server/src/index.js', 'server/src/app.js']) {
   if (!fs.existsSync(path.join(root, required))) throw new Error(`Missing required packaging input: ${required}`);
 }
 
@@ -22,41 +23,14 @@ fs.cpSync(path.join(serverRoot, 'src'), path.join(output, 'src'), { recursive: t
 fs.copyFileSync(path.join(serverRoot, 'package.json'), path.join(output, 'package.json'));
 fs.copyFileSync(path.join(serverRoot, 'package-lock.json'), path.join(output, 'package-lock.json'));
 fs.copyFileSync(path.join(root, '.env.iis.example'), path.join(output, '.env.example'));
+fs.writeFileSync(
+  path.join(output, 'index.cjs'),
+  "// IIS handler wrapper; all startup logic lives in src/index.js.\nrequire('./src/index.js');\n",
+);
 
-const entry = `const { config, paths } = require('./src/config.js');
-const { connectDb, closeDb } = require('./src/db.js');
-const { createApp } = require('./src/app.js');
-const { initializeQueue } = require('./src/services/jobQueue.js');
-
-async function main() {
-  await connectDb();
-  await initializeQueue();
-  const app = createApp();
-  const server = app.listen(process.env.PORT || config.port || 4300, () => {
-    console.log(\`Site Release Manager listening on \${typeof server.address() === 'string' ? server.address() : server.address().port}\`);
-  });
-  const shutdown = async () => {
-    server.close(async () => {
-      await closeDb();
-      process.exit(0);
-    });
-  };
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
-}
-
-for (const dir of Object.values(paths)) require('node:fs').mkdirSync(dir, { recursive: true });
-main().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
-`;
-fs.writeFileSync(path.join(output, 'server.cjs'), entry);
-
-let webConfig = fs.readFileSync(path.join(root, 'web.config'), 'utf8')
-  .replaceAll('index.cjs', 'server.cjs')
-  .replaceAll('server\\src', 'src');
-webConfig = webConfig.replace('<add segment="server" />', '<add segment="server" />\n        <add segment="src" />');
+const webConfig = fs.readFileSync(path.join(root, 'web.config'), 'utf8')
+  .replaceAll('server\\src', 'src')
+  .replace('<add segment="server" />', '<add segment="server" />\n          <add segment="src" />');
 fs.writeFileSync(path.join(output, 'web.config'), webConfig);
 
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
@@ -64,25 +38,17 @@ const install = spawnSync(npm, ['ci', '--omit=dev', '--ignore-scripts'], {
   cwd: output,
   stdio: 'inherit',
   shell: false,
+  env: { ...process.env, npm_config_engine_strict: 'true' },
 });
 if (install.error || install.status !== 0) {
   throw new Error(`Could not install production dependencies (exit ${install.status ?? 'unknown'}).`);
 }
 
-if (process.platform === 'win32') {
+if (process.platform === 'win32' && path.extname(process.execPath).toLowerCase() === '.exe') {
   fs.mkdirSync(path.join(output, 'runtime'), { recursive: true });
   fs.copyFileSync(process.execPath, path.join(output, 'runtime', 'node.exe'));
 }
 
-const manifest = {
-  artifact: 'site-release-manager-server-only',
-  generatedAt: new Date().toISOString(),
-  topology: 'flat-server-only-v1',
-  included: ['server.cjs', 'web.config', 'package.json', 'package-lock.json', '.env.example', 'src/', 'node_modules/', ...(process.platform === 'win32' ? ['runtime/node.exe'] : [])],
-  excluded: ['.env', 'storage/', 'releases/', 'deployments/', 'client/', 'sharepoint-deployer/', '.git/', 'test/', 'tests/', 'docs/'],
-  runtimeStateToPreserve: ['.env', 'storage/'],
-};
-fs.writeFileSync(path.join(output, 'deployment-manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
 fs.writeFileSync(path.join(output, 'IIS-DEPLOY-README.txt'), `SITE RELEASE MANAGER — SERVER-ONLY IIS ARTIFACT
 
 This artifact intentionally contains no frontend, SharePoint deployer, Mongo data, release state, storage, test files, Git metadata, or live .env.
@@ -90,17 +56,108 @@ This artifact intentionally contains no frontend, SharePoint deployer, Mongo dat
 WHITENING PROCEDURE
 1. Stop the IIS application pool.
 2. Preserve the existing .env and storage directory outside the replacement folder.
-3. Replace only server.cjs, web.config, package.json, package-lock.json, src, node_modules, and (when supplied) runtime.
+3. Replace only index.cjs, web.config, package.json, package-lock.json, src, node_modules, deployment-manifest.json, and (when supplied) runtime.
 4. Restore the preserved .env and storage directory without copying .env.example over .env.
 5. Start the app pool and check /api/health and /api/daily-data/v1/healthz with an authenticated request.
 
 IIS REQUIREMENTS
 - IISNode and URL Rewrite installed; app pool is No Managed Code.
-- Enable Windows Authentication and disable Anonymous Authentication for the API application.
-- IIS must remove any browser-provided ${'x-iisnode-auth_user'} and inject TRUSTED_IDENTITY_HEADER from the authenticated Windows principal.
-- If TRUSTED_SITE_ACCESS_ENABLED=true, the same trusted IIS/reverse-proxy boundary must inject TRUSTED_SITE_ACCESS_HEADER as the exact comma-separated builderSiteId values the authenticated principal is authorized to use. Do not forward that header from the browser.
+- Set NODE_ENV=production in the preserved .env.
 
-The generated package is flat: src and node_modules live directly beside server.cjs. This is deliberate so it can be whitened into the proven isolated IIS folder without the repository's server/ nesting.
+AUTHENTICATION IS ROUTE-SPECIFIC — DO NOT ENABLE WINDOWS AUTH SITE-WIDE.
+The shipped web.config already declares this; it is executable configuration,
+not advice. Blanket Windows Authentication would challenge Bearer-authorized
+management calls and turn an ordinary click into a native credential dialog.
+
+  application baseline ............ Anonymous ON,  Windows OFF
+  /api/auth/session ............... Anonymous OFF, Windows ON   (the only challenge point)
+  /api/daily-data/v1/sites/* ...... Anonymous OFF, Windows ON   (end-user data)
+  /api/health, /api/config ........ anonymous
+  /api/daily-data/v1/healthz,readyz anonymous (Site Builder's deploy gate needs this)
+
+  This is NOT anonymous management. Every consequential mutation — site
+  create/update/delete/deploy, release upload/update/delete, data-access —
+  requires a signed management session inside the application.
+
+- allowedServerVariables MUST contain HTTP_X_IISNODE_AUTH_USER and
+  HTTP_X_IISNODE_SHAREPOINT_SITES. URL Rewrite silently refuses to set a server
+  variable that is not allow-listed; the trusted header then stays EMPTY and
+  every management session is refused with no obvious cause.
+- IIS must overwrite any browser-provided x-iisnode-auth-user with the
+  authenticated Windows principal. HTTP_X_IISNODE_AUTH_USER maps to
+  x-iisnode-auth-user (URL Rewrite turns underscores into hyphens).
+- MANAGEMENT_SESSION_SECRET is REQUIRED in production (32+ chars). Generate it
+  with a cryptographic generator, NOT Get-Random:
+      $bytes = [byte[]]::new(48)
+      [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+      [Convert]::ToBase64String($bytes)
+- Integrated Windows Authentication must be accepted silently for the internal
+  URL (domain policy / browser intranet-zone / SPN prerequisite). If it is not,
+  stop: a native credential prompt is not application acceptance.
+- The generated web.config intentionally has no <iisnode> section. IISNode
+  installation and runtime selection remain environment prerequisites.
+
+OFFLINE DEPENDENCIES
+node_modules ships inside this artifact, resolved on the build machine. There is
+no registry in the closed environment, so npm ci is not a recovery plan. The
+deployment manifest records windowsDependencyCompatibilityValidated=false when
+the build host is not Windows. If a dependency needs a native Windows build,
+either rebuild the artifact on Windows, or use an approved internal registry
+mirror, or carry an npm cache and run
+  npm ci --omit=dev --offline --cache <carried-cache>
+Record which route was used in the acceptance report.
+
+ACCEPTANCE
+Follow docs/WINDOWS_ACCEPTANCE_CHECKLIST.md in the repository — it is the
+canonical entry point — starting with the authentication topology in
+docs/WINDOWS_IIS_ACCEPTANCE.md.
+
+The generated package is flat. src/index.js contains the single startup implementation. index.cjs is only the IIS handler wrapper so src can remain blocked from direct HTTP access.
 `);
+
+const dependencyProbe = spawnSync(npm, ['ls', '--omit=dev', '--all', '--json'], {
+  cwd: output,
+  encoding: 'utf8',
+  shell: false,
+});
+if (dependencyProbe.error || dependencyProbe.status !== 0) {
+  throw new Error(`Production dependency graph is incomplete:\n${dependencyProbe.stderr || dependencyProbe.stdout}`);
+}
+
+const sha256 = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+const files = [];
+function collect(directory) {
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    const absolute = path.join(directory, entry.name);
+    if (entry.isDirectory()) collect(absolute);
+    else if (entry.name !== 'deployment-manifest.json') {
+      files.push({
+        path: path.relative(output, absolute).split(path.sep).join('/'),
+        size: fs.statSync(absolute).size,
+        sha256: sha256(absolute),
+      });
+    }
+  }
+}
+collect(output);
+files.sort((a, b) => a.path.localeCompare(b.path));
+const git = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8', shell: false });
+const manifest = {
+  artifact: 'site-release-manager-server-only',
+  generatedAt: new Date().toISOString(),
+  topology: 'flat-server-only-v2',
+  sourceCommit: git.status === 0 ? git.stdout.trim() : 'unknown',
+  buildPlatform: { platform: process.platform, arch: process.arch, node: process.version },
+  windowsRuntimeIncluded: files.some((file) => file.path === 'runtime/node.exe'),
+  windowsDependencyCompatibilityValidated: process.platform === 'win32',
+  packageLockSha256: sha256(path.join(output, 'package-lock.json')),
+  startupEntry: 'src/index.js',
+  iisHandlerWrapper: 'index.cjs',
+  included: ['index.cjs', 'web.config', 'package.json', 'package-lock.json', '.env.example', 'src/', 'node_modules/', ...(process.platform === 'win32' ? ['runtime/node.exe'] : [])],
+  excluded: ['.env', 'storage/', 'releases/', 'deployments/', 'client/', 'sharepoint-deployer/', '.git/', 'test/', 'tests/', 'docs/'],
+  runtimeStateToPreserve: ['.env', 'storage/'],
+  files,
+};
+fs.writeFileSync(path.join(output, 'deployment-manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
 
 console.log(`SERVER-ONLY IIS ARTIFACT READY: ${output}`);

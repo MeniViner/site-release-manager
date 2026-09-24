@@ -83,5 +83,85 @@
       "exists": true,
       "reason": "LIST_BACKED_FOLDER_READY"
     }
+  },
+  {
+    "name": "propagation-delay-folder-object-visible",
+    "probeKind": "folder-object",
+    "status": 200,
+    "payload": {
+      "d": {
+        "Exists": true,
+        "ServerRelativeUrl": "/sites/example/סבא/אבא"
+      }
+    },
+    "expectedPath": "/sites/example/סבא/אבא",
+    "expected": {
+      "ready": false,
+      "exists": true,
+      "reason": "FOLDER_OBJECT_VISIBLE_WAITING_FOR_LIST_ITEM"
+    }
+  },
+  {
+    "name": "propagation-delay-list-item-id-unconfirmed",
+    "probeKind": "list-item",
+    "status": 200,
+    "payload": {
+      "value": {
+        "FileSystemObjectType": 1,
+        "FileRef": "/sites/example/סבא/אבא",
+        "FileDirRef": "/sites/example/סבא"
+      }
+    },
+    "expectedPath": "/sites/example/סבא/אבא",
+    "expected": {
+      "ready": false,
+      "exists": true,
+      "reason": "FOLDER_LIST_ITEM_ID_UNCONFIRMED"
+    }
+  },
+  {
+    "name": "historical-name-collision-not-a-folder",
+    "probeKind": "list-item",
+    "status": 200,
+    "payload": {
+      "value": {
+        "Id": 42,
+        "FileSystemObjectType": 0,
+        "FileRef": "/sites/example/סבא/אבא",
+        "FileDirRef": "/sites/example/סבא"
+      }
+    },
+    "expectedPath": "/sites/example/סבא/אבא",
+    "expected": {
+      "ready": false,
+      "exists": true,
+      "reason": "FOLDER_NAME_COLLISION"
+    }
+  },
+  {
+    "name": "healthy-manually-created-sibling",
+    "probeKind": "list-item",
+    "status": 200,
+    "payload": {
+      "value": {
+        "Id": 18,
+        "FileSystemObjectType": 1,
+        "FileRef": "/sites/example/סבא/אבא",
+        "FileDirRef": "/sites/example/סבא",
+        "ParentList": {
+          "Id": "7b1f0d2e-0000-4000-8000-000000000001",
+          "Title": "Documents",
+          "RootFolder": {
+            "ServerRelativeUrl": "/sites/example/סבא"
+          }
+        }
+      }
+    },
+    "expectedPath": "/sites/example/סבא/אבא",
+    "expected": {
+      "ready": true,
+      "exists": true,
+      "reason": "LIST_BACKED_FOLDER_READY"
+    }
   }
 ]

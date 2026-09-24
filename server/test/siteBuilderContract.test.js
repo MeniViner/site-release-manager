@@ -12,12 +12,16 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
+const Module = require("node:module");
 const { pathToFileURL } = require("node:url");
+const esbuild = require("esbuild");
 const { validateUniversalManifest, MANIFEST_FILE, RUNTIME_BOOTSTRAP_FILE, parseIndexReferencesFromHtml } = require("../src/shared/universalManifest.js");
 const { classifyFolderProbe } = require("../src/shared/sharepointClient.js");
 const { buildSiteIdentity, buildTxtSeedPlan, TXT_DATA_FILES } = require("../src/shared/siteRuntime.js");
 const { RUNTIME_BOOTSTRAP_GLOBAL, RUNTIME_BOOTSTRAP_LEGACY_GLOBAL, RUNTIME_BOOTSTRAP_SCRIPT_TAG, buildRuntimeBootstrapSource, parseRuntimeBootstrapConfig, hasRuntimeBootstrapReference, injectRuntimeBootstrapIntoIndexHtml, findRuntimeBootstrapIndex, findFirstModuleScriptIndex } = require("../src/shared/runtimeBootstrap.js");
+const { writeTargetOverlay } = require("../src/services/stagingService.js");
 const RELEASE_MANAGER_ROOT = path.resolve(__dirname, '..', '..');
 const coordinatedSiteBuilder = path.resolve(
   RELEASE_MANAGER_ROOT,
@@ -39,6 +43,27 @@ const hasDescriptor = fs.existsSync(descriptorPath);
 const folderContractPath = path.join(SITE_BUILDER_ROOT, 'test-fixtures', 'sharepoint-folder-contract.json');
 const hasFolderContract = fs.existsSync(folderContractPath);
 const localFolderContractPath = path.join(RELEASE_MANAGER_ROOT, 'test-fixtures', 'sharepoint-folder-contract.json');
+
+function loadSiteBuilderStorageContract() {
+  const source = `
+    import { clearRuntimeConfigForTests, setRuntimeConfigForTests } from './src/services/storage/runtimeConfig.js';
+    import { clearStorageDescriptorForTests, initializeStorageDescriptor, requireMongoApiTransport } from './src/services/storage/storageBackend.js';
+    export { clearRuntimeConfigForTests, setRuntimeConfigForTests, clearStorageDescriptorForTests, initializeStorageDescriptor, requireMongoApiTransport };
+  `;
+  const output = esbuild.buildSync({
+    stdin: { contents: source, resolveDir: SITE_BUILDER_ROOT, sourcefile: 'release-manager-contract-entry.js' },
+    bundle: true,
+    platform: 'node',
+    format: 'cjs',
+    write: false,
+    define: { 'import.meta.env': '{}' },
+  }).outputFiles[0].text;
+  const contractModule = new Module(path.join(SITE_BUILDER_ROOT, 'release-manager-contract-entry.js'));
+  contractModule.filename = path.join(SITE_BUILDER_ROOT, 'release-manager-contract-entry.js');
+  contractModule.paths = module.paths;
+  contractModule._compile(output, contractModule.filename);
+  return contractModule.exports;
+}
 
 test('Site Builder sibling repository is discoverable for contract checks', (t) => {
   if (!hasSiteBuilder) {
@@ -136,6 +161,70 @@ test('Release Manager runtime config is accepted by the real Site Builder descri
     assert.equal(descriptor.widgetsDbTarget, identity.widgetsDbTarget);
     assert.equal(descriptor.bootstrapLibrary, identity.bootstrapLibrary);
     assert.equal(descriptor.bootstrapFolder, identity.bootstrapFolder);
+  }
+});
+
+test('Release Manager Mongo overlay selects the real Site Builder central transport without legacy path rewriting', (t) => {
+  if (!hasSiteBuilder) {
+    t.skip(`Site Builder not found at ${SITE_BUILDER_ROOT}; set SITE_BUILDER_PATH to enable contract tests.`);
+    return;
+  }
+  const contract = loadSiteBuilderStorageContract();
+  const distDir = fs.mkdtempSync(path.join(os.tmpdir(), 'srm-mongo-overlay-'));
+  try {
+    const identity = buildSiteIdentity({
+      host: 'portal.army.idf',
+      siteCode: 'shared-web',
+      siteDbFolder: 'siteDB-1234567890',
+      storageBackend: 'mongo',
+      builderSiteId: 'srm-0123456789abcdef01234567',
+    });
+    const { runtimeConfig } = writeTargetOverlay({
+      distDir,
+      identity,
+      release: { _id: 'release-1', version: '1.2.3' },
+      jobId: 'job-1',
+      deployedAt: '2026-09-23T00:00:00.000Z',
+      dailyDataApiUrl: 'https://sitebuilderhub.idf/api/daily-data/v1',
+    });
+
+    contract.setRuntimeConfigForTests(runtimeConfig);
+    const descriptor = contract.initializeStorageDescriptor();
+    assert.equal(descriptor.siteId, identity.siteId);
+    assert.equal(descriptor.dailyDataApiUrl, 'https://sitebuilderhub.idf/api/daily-data/v1');
+    assert.equal(descriptor.backendApiUrl, '');
+    assert.deepEqual(contract.requireMongoApiTransport(), {
+      baseUrl: 'https://sitebuilderhub.idf/api/daily-data/v1',
+      sitesPath: '/sites',
+      kind: 'daily-data',
+    });
+
+    contract.clearStorageDescriptorForTests();
+    contract.clearRuntimeConfigForTests();
+    contract.setRuntimeConfigForTests({
+      storageBackend: 'mongo',
+      siteId: 'legacy-site',
+      backendApiUrl: 'https://legacy.example.test',
+    });
+    assert.deepEqual(contract.requireMongoApiTransport(), {
+      baseUrl: 'https://legacy.example.test',
+      sitesPath: '/api/sites',
+      kind: 'legacy-backend',
+    });
+
+    contract.clearStorageDescriptorForTests();
+    contract.clearRuntimeConfigForTests();
+    assert.throws(
+      () => contract.setRuntimeConfigForTests({
+        storageBackend: 'mongo',
+        siteId: 'conflict-site',
+        dailyDataApiUrl: 'https://sitebuilderhub.idf/api/daily-data/v1',
+        backendApiUrl: 'https://legacy.example.test',
+      }),
+      (error) => error?.code === 'conflicting_mongo_api_urls',
+    );
+  } finally {
+    fs.rmSync(distDir, { recursive: true, force: true });
   }
 });
 

@@ -1,6 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { Router } = require("express");
+const { requireManagementPrincipal } = require("./auth.js");
 const multer = require("multer");
 const { ObjectId } = require("mongodb");
 const { paths, config } = require("../config.js");
@@ -142,7 +143,7 @@ releasesRouter.get('/version-suggestions', async (_req, res, next) => {
   }
 });
 
-releasesRouter.post('/upload-folder', folderUpload.array('files', config.maxReleaseFiles), async (req, res, next) => {
+releasesRouter.post('/upload-folder', requireManagementPrincipal, folderUpload.array('files', config.maxReleaseFiles), async (req, res, next) => {
   let releaseRoot;
   try {
     const files = Array.isArray(req.files) ? req.files : [];
@@ -196,7 +197,7 @@ releasesRouter.post('/upload-folder', folderUpload.array('files', config.maxRele
   }
 });
 
-releasesRouter.post('/upload', zipUpload.single('file'), async (req, res, next) => {
+releasesRouter.post('/upload', requireManagementPrincipal, zipUpload.single('file'), async (req, res, next) => {
   let releaseRoot;
   try {
     if (!req.file) return res.status(400).json({ error: 'יש לבחור ZIP של dist.' });
@@ -237,7 +238,7 @@ releasesRouter.post('/upload', zipUpload.single('file'), async (req, res, next) 
   }
 });
 
-releasesRouter.patch('/:id', async (req, res, next) => {
+releasesRouter.patch('/:id', requireManagementPrincipal, async (req, res, next) => {
   try {
     const releaseId = new ObjectId(req.params.id);
     const db = getDb();
@@ -300,7 +301,7 @@ releasesRouter.patch('/:id', async (req, res, next) => {
   }
 });
 
-releasesRouter.delete('/:id', async (req, res, next) => {
+releasesRouter.delete('/:id', requireManagementPrincipal, async (req, res, next) => {
   try {
     const release = await getDb().collection('releases').findOne({ _id: new ObjectId(req.params.id) });
     if (!release) return res.status(404).json({ error: 'הריליס לא נמצא.' });

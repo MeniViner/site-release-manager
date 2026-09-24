@@ -13,15 +13,49 @@ const { runsRouter } = require("./routes/runs.js");
 const { backupsRouter } = require("./routes/backups.js");
 const { deploymentBatchesRouter } = require("./routes/deploymentBatches.js");
 const { migrationsRouter } = require("./routes/migrations.js");
+const { authRouter } = require("./routes/auth.js");
 const { createDailyDataRouter } = require("./daily-data/v1/router.js");
 /**
  * Headers the browser worker sends. X-SRM-Lease carries the exclusive write
  * lease; without it in the allow-list every cross-origin deployment request
  * from SharePoint would be blocked by the preflight.
  */
-const ALLOWED_REQUEST_HEADERS = Object.freeze(['Content-Type', 'Accept', 'X-SRM-Lease']);
+// Authorization is allow-listed here too so a management route that is ever
+// added without being registered below fails with a clear 401 rather than an
+// opaque browser CORS error. Allow-listing a REQUEST header grants no
+// authorization: the server still demands a valid signed session.
+const ALLOWED_REQUEST_HEADERS = Object.freeze(['Content-Type', 'Accept', 'X-SRM-Lease', 'Authorization']);
 const DAILY_DATA_REQUEST_HEADERS = Object.freeze(['Content-Type', 'Accept', 'If-Match']);
 const MANAGEMENT_IDENTITY_REQUEST_HEADERS = Object.freeze(['Content-Type', 'Accept']);
+// Management mutations authorize from a bearer token, so Authorization has to
+// survive preflight -- but they are NOT credentialed, which is what keeps IIS
+// from challenging routine application traffic.
+const MANAGEMENT_SESSION_REQUEST_HEADERS = Object.freeze([
+  'Content-Type', 'Accept', 'Authorization', 'Idempotency-Key',
+]);
+const MANAGEMENT_SESSION_METHODS = Object.freeze(['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS']);
+
+/**
+ * Every operation the browser performs with a management session, mirroring the
+ * requireManagementPrincipal guards in routes/sites.js and routes/releases.js.
+ *
+ * This has to be the COMPLETE set. A guarded route missing from it gets the
+ * general CORS policy, whose preflight does not advertise the headers the client
+ * actually sends, so the browser refuses the request before the server ever sees
+ * it -- and the failure looks like a server bug rather than a policy gap.
+ */
+const MANAGEMENT_SESSION_ROUTES = Object.freeze([
+  { method: 'POST', pattern: /^\/api\/sites$/ },
+  { method: 'PATCH', pattern: /^\/api\/sites\/[^/]+$/ },
+  { method: 'DELETE', pattern: /^\/api\/sites\/[^/]+$/ },
+  { method: 'PATCH', pattern: /^\/api\/sites\/[^/]+\/data-access$/ },
+  { method: 'POST', pattern: /^\/api\/sites\/[^/]+\/deploy$/ },
+  { method: 'POST', pattern: /^\/api\/releases\/upload$/ },
+  { method: 'POST', pattern: /^\/api\/releases\/upload-folder$/ },
+  { method: 'PATCH', pattern: /^\/api\/releases\/[^/]+$/ },
+  { method: 'DELETE', pattern: /^\/api\/releases\/[^/]+$/ },
+  { method: 'GET', pattern: /^\/api\/auth\/whoami$/ },
+]);
 
 function createApp() {
   const app = express();
@@ -50,12 +84,15 @@ function createApp() {
     maxAge: 600,
     optionsSuccessStatus: 204,
   });
+  // ONLY the session exchange is credentialed. It is the single place a Windows
+  // identity is consumed, so it is the single place the browser may take part in
+  // an IIS authentication handshake. Widening this set would re-open the native
+  // credential dialog on ordinary management traffic.
   const hasManagementIdentityBoundary = (req) => {
     const method = req.method === 'OPTIONS'
       ? String(req.get('access-control-request-method') || '').toUpperCase()
       : req.method;
-    return (req.path === '/api/sites' && method === 'POST')
-      || (/^\/api\/sites\/[^/]+\/data-access$/.test(req.path) && method === 'PATCH');
+    return req.path === '/api/auth/session' && method === 'POST';
   };
   // Daily Site Builder data is intentionally isolated from the management API:
   // it needs credentialed PUT/PATCH for the SharePoint/IIS identity flow, while
@@ -86,6 +123,28 @@ function createApp() {
   // browser credentials. The remaining management API stays non-credentialed.
   app.use((req, res, next) => (hasManagementIdentityBoundary(req)
     ? managementIdentityCors(req, res, next)
+    : next()));
+
+  const managementSessionCors = cors({
+    origin(origin, callback) {
+      return callback(null, isAllowedOrigin(origin));
+    },
+    credentials: false,
+    methods: MANAGEMENT_SESSION_METHODS,
+    allowedHeaders: MANAGEMENT_SESSION_REQUEST_HEADERS,
+    maxAge: 600,
+    optionsSuccessStatus: 204,
+  });
+  const usesManagementSession = (req) => {
+    const method = req.method === 'OPTIONS'
+      ? String(req.get('access-control-request-method') || '').toUpperCase()
+      : String(req.method || '').toUpperCase();
+    return MANAGEMENT_SESSION_ROUTES.some(
+      (route) => route.method === method && route.pattern.test(req.path),
+    );
+  };
+  app.use((req, res, next) => (usesManagementSession(req)
+    ? managementSessionCors(req, res, next)
     : next()));
 
   app.use(cors({
@@ -142,6 +201,7 @@ function createApp() {
     dailyDataApiUrl: config.dailyDataApiUrl,
   }));
 
+  app.use('/api/auth', authRouter);
   app.use('/api/dashboard', dashboardRouter);
   app.use('/api/sites', sitesRouter);
   app.use('/api/releases', releasesRouter);
@@ -186,4 +246,7 @@ module.exports = {
   createApp: createApp,
   ALLOWED_REQUEST_HEADERS: ALLOWED_REQUEST_HEADERS,
   MANAGEMENT_IDENTITY_REQUEST_HEADERS: MANAGEMENT_IDENTITY_REQUEST_HEADERS,
+  MANAGEMENT_SESSION_REQUEST_HEADERS: MANAGEMENT_SESSION_REQUEST_HEADERS,
+  MANAGEMENT_SESSION_METHODS: MANAGEMENT_SESSION_METHODS,
+  MANAGEMENT_SESSION_ROUTES: MANAGEMENT_SESSION_ROUTES,
 };

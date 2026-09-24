@@ -3,6 +3,9 @@
   "version": "0.3.7",
   "private": true,
   "type": "commonjs",
+  "engines": {
+    "node": ">=20.19.0"
+  },
   "scripts": {
     "dev": "node --watch src/index.js",
     "start": "node src/index.js",

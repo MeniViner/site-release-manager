@@ -285,36 +285,156 @@ async function request(path, options = {}) {
   return payload;
 }
 
+
+/**
+ * Management session.
+ *
+ * Only ONE call in this client is credentialed: POST /api/auth/session. That is
+ * deliberately the single point where the browser may take part in an IIS
+ * Windows authentication handshake. Every consequential management call carries
+ * the resulting bearer token instead and is NON-credentialed, so an ordinary
+ * "create site" click can never be escalated into a native credential dialog.
+ *
+ * When the session cannot be established the caller gets a typed application
+ * error to render in Hebrew -- never a repeating browser challenge.
+ */
+let managementToken = '';
+let managementPrincipal = '';
+let inFlightSession = null;
+
+export function getManagementPrincipal() {
+  return managementPrincipal;
+}
+
+export function clearManagementSession() {
+  managementToken = '';
+  managementPrincipal = '';
+  inFlightSession = null;
+}
+
+async function establishManagementSession() {
+  // Collapse concurrent callers onto one handshake so a burst of management
+  // actions cannot trigger several authentication attempts.
+  if (inFlightSession) return inFlightSession;
+  inFlightSession = (async () => {
+    const url = resolveRequestUrl('/api/auth/session');
+    let response;
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { Accept: 'application/json' },
+      });
+    } catch (cause) {
+      const error = new Error('לא ניתן היה ליצור קשר עם שירות הזיהוי הניהולי.');
+      error.code = 'MANAGEMENT_SESSION_UNREACHABLE';
+      error.cause = cause;
+      throw error;
+    }
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.token) {
+      const error = new Error(
+        payload?.error?.message || 'לא זוהתה זהות Windows מאומתת עבור פעולות ניהול.',
+      );
+      error.code = payload?.error?.code || 'management_identity_unavailable';
+      error.detail = payload?.error?.detail || '';
+      error.status = response.status;
+      throw error;
+    }
+    managementToken = payload.token;
+    managementPrincipal = payload.principal || '';
+    return managementToken;
+  })();
+  try {
+    return await inFlightSession;
+  } finally {
+    inFlightSession = null;
+  }
+}
+
+/**
+ * Runs a management call with a bearer token, establishing the session first if
+ * needed and retrying exactly once when the server reports the session expired.
+ */
+async function managementRequest(path, options = {}) {
+  const withToken = async (token) => request(path, {
+    ...options,
+    // Explicitly non-credentialed: this is the whole point.
+    credentials: 'omit',
+    headers: { ...(options.headers || {}), Authorization: `Bearer ${token}` },
+  });
+
+  const token = managementToken || await establishManagementSession();
+  try {
+    return await withToken(token);
+  } catch (error) {
+    const code = error?.payload?.error?.code;
+    if (error?.status === 401 && code === 'management_session_required') {
+      managementToken = '';
+      return withToken(await establishManagementSession());
+    }
+    throw error;
+  }
+}
+
+
+/**
+ * A per-intent key. Deliberately random rather than derived from the form:
+ * creating a genuinely different site, or retrying later on purpose, must be
+ * able to allocate a new one.
+ */
+export function newIdempotencyKey() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `srm-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
 export const api = {
   health: () => request('/api/health'),
   config: () => request('/api/config'),
   dashboard: (backend = '') => request(`/api/dashboard${backend ? `?backend=${encodeURIComponent(backend)}` : ''}`),
   sites: (backend = '') => request(`/api/sites${backend ? `?backend=${encodeURIComponent(backend)}` : ''}`),
   site: (id) => request(`/api/sites/${id}`),
-  createSite: (body) => request('/api/sites', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    ...(body?.storageBackend === 'mongo' ? { credentials: 'include' } : {}),
+  // Mongo creation needs a management session; TXT registration does not and
+  // must not drag an authentication handshake into the ordinary path.
+  createSite: (body) => (body?.storageBackend === 'mongo'
+    ? managementRequest('/api/sites', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        // One create intent, one key. A retry after a lost response -- including
+        // the automatic retry after a session refresh -- reuses this exact value,
+        // so the server converges on the same site instead of allocating again.
+        'Idempotency-Key': body.idempotencyKey || newIdempotencyKey(),
+      },
+      body: JSON.stringify(body),
+    })
+    : request('/api/sites', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })),
+  managementSession: () => establishManagementSession(),
+  whoami: () => request('/api/auth/whoami', {
+    credentials: 'omit',
+    headers: managementToken ? { Authorization: `Bearer ${managementToken}` } : {},
   }),
-  updateSite: (id, body) => request(`/api/sites/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
-  updateSiteDataAccess: (id, dataAccess) => request(`/api/sites/${id}/data-access`, {
+  updateSite: (id, body) => managementRequest(`/api/sites/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+  updateSiteDataAccess: (id, dataAccess) => managementRequest(`/api/sites/${id}/data-access`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ dataAccess }),
-    credentials: 'include',
   }),
   // Deleting a Site removes the Release Manager tracking record only; the
   // explicit confirm token makes that intent unambiguous at the API boundary.
-  deleteSite: (id) => request(`/api/sites/${id}?confirm=delete-tracking-record`, { method: 'DELETE' }),
+  deleteSite: (id) => managementRequest(`/api/sites/${id}?confirm=delete-tracking-record`, { method: 'DELETE' }),
   siteProvisioningBoundary: () => request('/api/sites/provisioning-boundary'),
-  deploy: (siteId, releaseId, { force = false } = {}) => request(`/api/sites/${siteId}/deploy`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ releaseId, force }) }),
+  deploy: (siteId, releaseId, { force = false } = {}) => managementRequest(`/api/sites/${siteId}/deploy`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ releaseId, force }) }),
   releases: (backend = '') => request(`/api/releases${backend ? `?backend=${encodeURIComponent(backend)}` : ''}`),
   releaseVersionSuggestions: () => request('/api/releases/version-suggestions'),
-  uploadRelease: (formData) => request('/api/releases/upload', { method: 'POST', body: formData }),
-  uploadReleaseFolder: (formData) => request('/api/releases/upload-folder', { method: 'POST', body: formData }),
-  updateRelease: (id, body) => request(`/api/releases/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
-  deleteRelease: (id) => request(`/api/releases/${id}`, { method: 'DELETE' }),
+  uploadRelease: (formData) => managementRequest('/api/releases/upload', { method: 'POST', body: formData }),
+  uploadReleaseFolder: (formData) => managementRequest('/api/releases/upload-folder', { method: 'POST', body: formData }),
+  updateRelease: (id, body) => managementRequest(`/api/releases/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+  deleteRelease: (id) => managementRequest(`/api/releases/${id}`, { method: 'DELETE' }),
   job: (id) => request(`/api/jobs/${id}`),
   verifyLocalDeployment: (id) => request(`/api/deployments/${id}/verify-local`, { method: 'POST' }),
   runs: (backend = '') => request(`/api/runs?limit=100${backend ? `&backend=${encodeURIComponent(backend)}` : ''}`),

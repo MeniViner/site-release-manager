@@ -44,7 +44,7 @@ process or port.
 
 Production daily-data access fails closed unless
 `TRUSTED_IDENTITY_ENABLED=true` and IIS supplies the configured
-`TRUSTED_IDENTITY_HEADER` (default `x-iisnode-auth_user`). The frontend cannot
+`TRUSTED_IDENTITY_HEADER` (default `x-iisnode-auth-user`). The frontend cannot
 authenticate with usernames, administrator flags, an Origin/Referer, a site
 ID, or an API key. Direct Node binding must not be exposed outside IIS.
 
@@ -69,9 +69,14 @@ The SharePoint-hosted Release Manager browser sends `credentials: "include"`
 only for `POST /api/sites` when creating Mongo sites and
 `PATCH /api/sites/:id/data-access`. Those two paths return credentialed CORS
 only for configured SharePoint origins. General management CORS remains
-non-credentialed. IIS Windows Authentication must be enabled and Anonymous
-Authentication disabled; IIS must inject `TRUSTED_IDENTITY_HEADER` from the
-authenticated Windows principal after removing any browser-supplied value.
+non-credentialed. IIS Windows Authentication must establish the principal without a browser
+credential dialog for the approved internal URL. The trusted boundary must
+overwrite any browser-supplied identity value. URL Rewrite server variable
+`HTTP_X_IISNODE_AUTH_USER` is exposed to Node as
+`x-iisnode-auth-user` (hyphens, not an underscore). The generated
+`web.config` assigns it from `AUTH_USER`; this mapping and silent integrated
+authentication remain real-environment acceptance gates. Direct access to the
+Node backend must not bypass IIS.
 
 Daily-data CORS permits configured SharePoint origins plus credentialed
 `PUT`/`PATCH` preflight. Management CORS remains non-credentialed. CORS is not
@@ -105,8 +110,8 @@ Run `npm run package:iis-server-only` on the source workstation, then
 `npm run verify:iis-server-only`. The output is a flat, isolated API folder:
 
 ```text
-server.cjs
 web.config
+index.cjs
 package.json
 package-lock.json
 .env.example
@@ -114,12 +119,13 @@ deployment-manifest.json
 IIS-DEPLOY-README.txt
 src/
 node_modules/
-runtime/node.exe             (when packaged on Windows)
+runtime/node.exe             (only when actually packaged and verified on Windows)
 ```
 
 It deliberately excludes `.env`, `storage/`, Mongo data, releases,
 deployments, client source/build, the SharePoint deployer, Git files, tests,
 and development artifacts. Preserve the closed server's live `.env` and
-`storage/` before whitening, then replace only the artifact files. The flat
-layout is intentional: it maps directly to the proven IIS folder while
-keeping application source at `src/` and dependencies at `node_modules/`.
+`storage/` before whitening, then replace only the artifact files. The flat layout is intentional: `src/index.js` is the sole startup
+implementation and `index.cjs` is a one-line protected IIS handler wrapper.
+Dependencies remain beside `src/` in `node_modules/`. The generated
+`web.config` has no `<iisnode>` section.

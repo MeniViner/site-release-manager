@@ -16,6 +16,16 @@ function requestMeta(req) {
 
 function requireRole(role) {
   return (req, _res, next) => {
+    // Fail closed if the identity middleware never ran. Without this, a future
+    // reordering would leave dailyDataPrincipal undefined and hasRole() would
+    // fall through to the SharePoint access resolver, which reads a REQUEST
+    // header -- turning a missing identity into browser-supplied authorization.
+    if (!req.dailyDataPrincipal) {
+      return next(Object.assign(new Error('A trusted identity is required for site data access.'), {
+        statusCode: 401,
+        code: 'trusted_identity_required',
+      }));
+    }
     if (hasRole(req.dailyDataSite, req.dailyDataPrincipal, role, req)) return next();
     return next(Object.assign(new Error(`The trusted identity is not authorized to ${role} this site's data.`), {
       statusCode: 403,
@@ -31,20 +41,20 @@ function writeRole(req) {
 function createDailyDataRouter() {
   const router = Router();
 
-  router.use((req, _res, next) => {
-    try {
-      req.dailyDataPrincipal = trustedIdentityForRequest(req);
-      next();
-    } catch (error) {
-      next(error);
-    }
-  });
-
+  // Health and readiness describe the SERVICE, not a site. Site Builder's
+  // canonical deploy probe calls {dailyDataApiUrl}/readyz unauthenticated and
+  // only accepts JSON `ok === true`, so these must be registered BEFORE the
+  // identity middleware. Express matches in registration order, so they answer
+  // without ever reaching it. Every site route below stays behind identity.
   router.get('/healthz', (_req, res) => {
     res.json({ ok: true, service: 'site-release-manager-daily-data', version: 1, dataApiBaseUrl: config.dailyDataApiUrl });
   });
 
-  router.get('/readyz', async (_req, res, next) => {
+  router.get('/readyz', async (_req, res) => {
+    // Readiness REPORTS state; it never fails the request. Site Builder's deploy
+    // gate accepts only JSON with ok===true, so an unreachable database has to
+    // come back as a clean "not ready" answer rather than a 500 (which the error
+    // handler could render as something the probe cannot parse).
     try {
       const db = getBuilderDataDb();
       await db.command({ ping: 1 });
@@ -52,7 +62,28 @@ function createDailyDataRouter() {
       const names = new Set(collections.map(({ name }) => name));
       const required = ['sites', 'site_data_revisions', 'site_data_audit_logs'];
       const missingCollections = required.filter((name) => !names.has(name));
-      res.json({ ok: missingCollections.length === 0, service: 'site-release-manager-daily-data', readiness: missingCollections.length ? 'not_ready' : 'ready', missingCollections });
+      return res.json({
+        ok: missingCollections.length === 0,
+        service: 'site-release-manager-daily-data',
+        readiness: missingCollections.length ? 'not_ready' : 'ready',
+        missingCollections,
+      });
+    } catch (error) {
+      return res.json({
+        ok: false,
+        service: 'site-release-manager-daily-data',
+        readiness: 'not_ready',
+        missingCollections: [],
+        // Short and non-sensitive: enough to act on, without a stack or a URI.
+        reason: error?.name === 'MongoServerSelectionError' ? 'database_unreachable' : 'readiness_check_failed',
+      });
+    }
+  });
+
+  router.use((req, _res, next) => {
+    try {
+      req.dailyDataPrincipal = trustedIdentityForRequest(req);
+      next();
     } catch (error) {
       next(error);
     }
