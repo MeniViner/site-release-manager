@@ -1,6 +1,6 @@
 # CONTINUATION — Unified Convergence (site-builder + site-release-manager)
 
-Version: 5 (2026-09-24)
+Version: 6 (2026-09-24)
 Integration branch (both repos): `codex/sitebuilder-unified-convergence-20260923`
 
 ## 1. Four recovered inputs (manifest RUN 20260923-162927-54393)
@@ -736,3 +736,83 @@ this workstream.
    manifest states it was not validated on macOS.
 4. Live SharePoint farm behaviour: historical folder repair and deployment
    against real libraries.
+
+
+---
+
+# Session 6 — selective-restore fixture completed; blocker relocated
+
+Scope was the three `test.fixme` selective-restore scenarios only.
+Netlify was explicitly out of scope and was not touched.
+
+## The fixture is complete (this was the stated blocker)
+
+Traced the real requests from `sharePointBrowserFilesystem.js` rather than
+guessing, and modelled the state they expect **consistently**:
+
+| Probe | Previously | Now |
+|---|---|---|
+| `_api/web/lists/GetByTitle('<lib>')` (BaseTemplate + RootFolder) | unanswered | answered from a two-library model |
+| `GetFolderByServerRelativeUrl(x)/ListItemAllFields` | id only | + owning-library evidence (`ParentList` Id/Title/RootFolder) |
+| list-item id vs parent-enumeration id | two hard-coded constants (17 vs 18) | one **stable id per folder path** |
+| filtered parent enumeration, bare folder-object select | partial | complete |
+| `/Backups/` | read-only | writable (manifest + copied sources), reads back what was written |
+| live site files | empty | seeded, so a safety backup has real sources to copy |
+
+The id inconsistency was the actual readiness failure: the check refuses a folder
+when the list-item probe id differs from the parent-enumeration id
+(`sharePointBrowserFilesystem.js:461`), so every freshly created backup folder
+looked inconsistent and the restore retried and gave up.
+
+**Proven:** the pre-restore safety backup now runs end to end against the fixture
+— 10 source files plus two manifests written and read back — and a manual backup
+outside a restore behaves identically, so `createBackup` is fully exercised.
+
+## The blocker moved into the application
+
+The three scenarios remain `fixme`, now for a product-side reason with evidence.
+Reproduced for a master-involving selection AND for a BOOM-only selection (which
+skips `ConfigService.saveConfig` entirely):
+
+- the safety backup reports success (copied 10, skipped 0, errors 0);
+- **no live-data write is ever issued**;
+- **no result summary renders**;
+- **no error toast appears** — polled every 200ms for 12s from the confirm click;
+- `getAdminRecoveryState()` already reports `frozen:false` / `exclusive:null`, so
+  `endAdminPersistenceSuspension` has **already run**.
+
+So the orchestration leaves `beginAdminPersistenceSuspension('restore')` and
+reaches an end state producing neither writes nor a report, silently. That sits
+in `AdminBackupManagement.jsx` ~1428-1490. Fixing it touches the
+safety-backup/restore contract, so it was not rushed at the end of this pass. The
+assertions are correct as written and were NOT weakened.
+
+## Results
+
+| Run | Result |
+|---|---|
+| `npx playwright test` (fresh dev server) | **46 passed, 0 failed, 3 fixme** |
+| `npx vitest run --maxWorkers=2` | **1325/1325** |
+| affected regressions (AdminBackupManagement, backupPackage, sharePointBrowserFilesystem) | **66/66** |
+| lint vs base (`origin/main` 154/11/49) | **delta 0/0/0** |
+
+## Artifacts
+
+**No production code changed** — the diff is `e2e/helpers/backupFixtures.js` and
+`e2e/selective-restore.spec.js` only. The existing artifacts from session 5
+therefore remain valid and were deliberately NOT rebuilt:
+
+- SB Universal buildId `58c8a4af-4ca7-4c62-8ad0-5bc9d8bf6851`, hash
+  `f8ef76353761e29ed09c6d7f39524bc3c475bc4885bab2391e51369c913e0362`
+- server-only package `…worktrees/srm-server-only-1015f2b` (sourceCommit `1015f2b`)
+- paired manifest `site-release-manager.worktrees/artifact-manifest.json`
+
+Source equivalence: `git diff --stat HEAD~1 -- src/` is empty for this commit, so
+the built artifacts correspond byte-for-byte to the production tree they were
+built from.
+
+## Genuinely external — unchanged from session 5
+
+Silent Windows SSO; IIS honouring rewrite-before-authentication for the Daily
+Data preflight on a real host; Windows-native dependency compatibility; live
+SharePoint farm behaviour.
