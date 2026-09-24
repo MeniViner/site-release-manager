@@ -1,6 +1,6 @@
 # CONTINUATION — Unified Convergence (site-builder + site-release-manager)
 
-Version: 4 (2026-09-24)
+Version: 5 (2026-09-24)
 Integration branch (both repos): `codex/sitebuilder-unified-convergence-20260923`
 
 ## 1. Four recovered inputs (manifest RUN 20260923-162927-54393)
@@ -575,4 +575,164 @@ touching that file.
 2. Windows-native dependency compatibility for the server-only package; the
    manifest states it was not validated on macOS.
 3. Live SharePoint farm behaviour: historical folder repair and deployment
+   against real libraries.
+
+
+---
+
+# Session 5 — bounded closure pass
+
+Starting heads: SB `eff1a22`, RM `48b972b` (both verified clean).
+
+## 1. Cross-origin management contract (CLOSED)
+
+The client and the server policy had drifted apart. `client/src/api.js` sends
+`Idempotency-Key` on Mongo creation, which `MANAGEMENT_SESSION_REQUEST_HEADERS`
+did not allow; site edit/delete/deploy and release upload/update/delete had been
+moved onto Bearer, but `usesManagementSession()` still recognised only create,
+data-access and whoami, so those fell through to a general policy that did not
+advertise `Authorization` either. Every one of them would have been refused by
+the BROWSER before reaching the server.
+
+The ten operations are now one declarative list mirroring the
+`requireManagementPrincipal` guards, with the real methods and headers.
+`Authorization` was also added to the general allow-list so a future guarded
+route that is not registered fails with a clear 401 instead of an opaque CORS
+error; allow-listing a request header grants no authorization. Deploy-worker
+`X-SRM-Lease` and the credentialed Daily Data boundary are untouched.
+
+`server/test/corsContract.test.js` asserts the preflight for all ten operations
+against the real Express app, plus the worker lease, Daily Data with `If-Match`,
+an unconfigured origin, and that a preflight never authorizes the request behind it.
+
+### Real cross-origin proof (not a proxy, not Node fetch)
+
+The REAL built Release Manager client was served from `http://127.0.0.1:4399`
+against the API on `http://127.0.0.1:4300` and driven in Chromium:
+
+- the client booted and rendered live data (`GET /api/health`, `/api/dashboard`
+  cross-origin, 200);
+- unauthorized `POST /api/sites` → **401 with a READABLE JSON body**
+  (`management_session_required`). Readable is the proof: a CORS failure surfaces
+  as an unreadable TypeError, not a response;
+- authorized `POST` with `Authorization` + `Idempotency-Key` → `OPTIONS 204`
+  preflight, then **201**, stable `srm-…` siteId, creator as administrator;
+- retry with the SAME key → **200 `idempotent: true`, same builderSiteId**.
+
+## 2. Packaged IIS preflight chain (CLOSED)
+
+The chain could never have worked. The rule rewrote OPTIONS to an intermediate
+application URL with `stopProcessing="true"`, so no later rule mapped it onto the
+iisnode handler and it would have 404'd — and iisnode passes the ORIGINAL request
+URL to Node, so Express would not have seen that path either.
+
+It now rewrites to `index.cjs`, the entrypoint the handler is actually mapped to.
+Inbound rewrite runs before the authentication stage, so the `<location>`
+requirement on `api/daily-data/v1/sites` no longer applies to the rewritten
+request. Verified directly: OPTIONS on the REAL Daily Data path returns 204 with
+`If-Match` and credentials (the `cors` middleware short-circuits ahead of the
+identity middleware), while the request behind it is still 401. The dead
+intermediate Express route is removed.
+
+`verify:iis-server-only` now enforces this against the GENERATED package, not the
+template: the preflight rewrite target must equal the declared handler path, the
+rule must be OPTIONS-only, the stamp rule must run first, and the set of
+Windows-authenticated locations must be exactly the two intended ones.
+
+## 3. Previously unfinished browser scenarios — 2 of 5 closed
+
+**Closed**, and they found a real product defect:
+
+`buildPreviewFromBackupTexts` parsed every payload eagerly and let
+`parseBackupJson` throw, which took the whole restore SELECTION panel down with
+it — no restore UI at all, no explanation, even though every other unit was
+restorable. Bisected in a real browser: `[]` correctly reads ריק/0 רשומות and
+`null` correctly reads לא תקין/ידולג, but a parse error rendered nothing. The
+preview now skips an unparseable file and carries on.
+
+Two test-side defects the same work exposed: restore-unit rows were matched by an
+unscoped file name (finding the plain file listing instead), and the backup
+import targeted the first `input[type=file]`, which is the demo-data importer.
+
+**Still fixme — 3 selective-restore scenarios.** The blocker is now LOCATED, not
+vague: the fixture gained the full writable persistence layer a restore needs
+(FormDigest, folder creation, direct file PUT, and read-back of the stored bytes
+the app verifies), and the restore still stops at
+`נתיב היעד ב-SharePoint אינו מוכן לביצוע הכנת התיקייה` because at least one
+folder readiness probe in `src/utils/sharePointBrowserFilesystem.js` (127-140,
+622) is still unanswered — most likely the owning-list/ParentList evidence. The
+next step is written at the call site. This is outstanding LOCAL work, explicitly
+NOT external acceptance.
+
+## 4. Generated handoff (CLOSED)
+
+`scripts/create-iis-server-only-package.mjs` generated an IIS README that
+instructed blanket Windows Authentication with Anonymous disabled and referred to
+the removed `TRUSTED_SITE_ACCESS_*` mechanism — contradicting the web.config it
+ships beside. It is now generated from the supported route-specific topology and
+documents the `allowedServerVariables` prerequisite, cryptographic secret
+generation, the offline dependency workflow, artifact destinations, destination
+`.env`/storage preservation and the canonical acceptance entry point.
+`WINDOWS_ACCEPTANCE_CHECKLIST.md` remains canonical.
+
+## 5. Final verified results
+
+Platform darwin 26.6.2, node v26.7.0.
+
+| Run | Result |
+|---|---|
+| SB `npx vitest run --maxWorkers=2` | **1325/1325**, 146 files, 0 skip |
+| SB `npx playwright test` | **46 passed, 0 failed, 3 fixme** |
+| SB lint vs base (`origin/main` 154/11/49) | **delta 0/0/0** |
+| RM `npm test` (disposable Mongo, explicit `SITE_BUILDER_PATH`) | **279/279, 0 skipped** |
+| RM client `vitest` | **33/33** |
+| RM cross-origin acceptance (real client, real browser) | PASS (see §1) |
+| `verify:system` | PASSED |
+| `verify:iis-server-only` | VERIFIED |
+
+### Final artifacts — generated, gitignored, NOT committed
+
+| Artifact | Location | Evidence |
+|---|---|---|
+| SB Universal | `site-builder…/dist-universal` | buildId `58c8a4af-4ca7-4c62-8ad0-5bc9d8bf6851`, 73 files, JS/CSS hash `f8ef76353761e29ed09c6d7f39524bc3c475bc4885bab2391e51369c913e0362`, 31 assets byte-identical across two target identities |
+| RM client | `…/client/dist` | tree hash `66ae559fdee3548c…` |
+| SharePoint deployer | `…/sharepoint-deployer/client/dist` | tree hash `6cdbb40b492e0302…` |
+| Server-only package | `…worktrees/srm-server-only-1015f2b` | sourceCommit `1015f2b` = RM HEAD at build, tree hash `36d94afc874c4907…` |
+| **Paired manifest** | `…site-release-manager.worktrees/artifact-manifest.json` | both repo SHAs, all four artifacts, lock hashes, platform |
+
+The paired manifest is the file named above. It is NOT the unrelated polaris-4178
+physical-PDF manifest.
+
+SB `package-lock.json` sha256 `a692c588b25ea1b89732aac44c7dee78d8de2b67bbd95ee2d0dddddad82abd9d`.
+RM `server/package-lock.json` sha256 `651730b058e47a74bc498a09c24494d6fff00468245c1cad54f054d216f10f8b`.
+
+## Netlify preview — classified, not repaired
+
+The failing check belongs to an externally-configured Netlify site
+(`stupendous-moxie-3e4526`) connected to the repository. It is **not caused by
+this workstream** and is structural:
+
+- there is no `netlify.toml` and no Netlify reference in `package.json`;
+- the default `npm run build` is the SharePoint deployment pipeline, not a static
+  site build. Run here it ends `FAILURE BOUNDARY: LIBRARY_CHECK` /
+  `[postbuild] Failed: check-only failed` because no SharePoint environment
+  exists — which is equally true in Netlify CI, on any branch including main.
+
+No external service settings were changed and the check was not suppressed. The
+owner's options are to disconnect the integration for this repository or add a
+`netlify.toml` pointing at a genuine static build; that is a decision outside
+this workstream.
+
+## Genuinely external — unchanged
+
+1. Silent Windows SSO with no dialog: a domain-joined IIS host, correct
+   zone/policy and an SPN. `docs/WINDOWS_IIS_ACCEPTANCE.md` §3.3.
+2. That IIS honours the rewrite-before-authentication ordering for the preflight
+   on a real host. Exact step: from a browser on the SharePoint origin, issue a
+   cross-origin `PUT` to `{api}/api/daily-data/v1/sites/<id>/data/alerts` with
+   `If-Match`; the OPTIONS must return 204 with no `WWW-Authenticate`, and the
+   PUT behind it must still be challenged/authorized normally.
+3. Windows-native dependency compatibility for the server-only package; the
+   manifest states it was not validated on macOS.
+4. Live SharePoint farm behaviour: historical folder repair and deployment
    against real libraries.
